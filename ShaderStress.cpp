@@ -8,9 +8,23 @@
 #include <shellapi.h>
 #include <cstdio>
 #include <intrin.h>
-#include <immintrin.h>
-#include <dbghelp.h>
 
+// --- ARCHITECTURE COMPATIBILITY HEADER ---
+// This block ensures the code compiles on both x86 (Intel/AMD) and ARM64 (Snapdragon/Apple).
+
+#if defined(_M_AMD64) || defined(_M_IX86)
+// x86/x64 Architecture
+#include <immintrin.h> // AVX/AVX2/AVX512 Intrinsics
+#elif defined(_M_ARM64)
+// ARM64 Architecture
+// Map x86 Bit Manipulation intrinsics to ARM64 hardware instructions
+// _lzcnt_u64 (Leading Zeros) -> _CountLeadingZeros64 (uses 'clz' instruction)
+// _tzcnt_u64 (Trailing Zeros) -> _CountTrailingZeros64 (uses 'rbit' + 'clz')
+#define _lzcnt_u64 _CountLeadingZeros64
+#define _tzcnt_u64 _CountTrailingZeros64
+#endif
+
+#include <dbghelp.h>
 #include <string>
 #include <vector>
 #include <atomic>
@@ -41,7 +55,7 @@
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
 
-const std::wstring APP_VERSION = L"2.0";
+const std::wstring APP_VERSION = L"2.1-Universal";
 
 // --- Constants & Configuration ---
 constexpr uint64_t GOLDEN_RATIO = 0x9E3779B97F4A7C15ull;
@@ -100,8 +114,12 @@ struct CpuFeatures {
     std::wstring brand;
 };
 
-// Helper to get CPU Brand String (e.g. "Intel(R) Core(TM) i9-14900K...")
+// Helper to get CPU Brand String
 std::wstring GetCpuBrand() {
+    #if defined(_M_ARM64)
+    return L"ARM64 Processor";
+    #else
+    // x86 CPUID query
     int regs[4];
     char brand[0x40] = { 0 };
     __cpuid(regs, 0x80000000);
@@ -111,22 +129,28 @@ std::wstring GetCpuBrand() {
         __cpuid((int*)brand + 8, 0x80000004);
     }
     std::string s(brand);
-    // Remove extra spaces
     s.erase(std::unique(s.begin(), s.end(), [](char a, char b){ return a == ' ' && b == ' '; }), s.end());
     if (!s.empty() && s[0] == ' ') s.erase(0, 1);
-
-    // Convert to wstring
     if (s.empty()) return L"Unknown CPU";
     return std::wstring(s.begin(), s.end());
+    #endif
 }
 
 CpuFeatures GetCpuInfo() {
     CpuFeatures f;
+    f.brand = GetCpuBrand();
+
+    #if defined(_M_ARM64)
+    // ARM64 always supports NEON (FMA equivalent), but lacks AVX
+    f.hasFMA = true;
+    f.hasAVX2 = false;
+    f.hasAVX512F = false;
+    f.name = L"ARM64";
+    #else
+    // Standard x86 detection
     int regs[4];
     __cpuid(regs, 0);
     int nIds = regs[0];
-
-    f.brand = GetCpuBrand();
 
     if (nIds >= 1) {
         __cpuid(regs, 1);
@@ -150,6 +174,7 @@ CpuFeatures GetCpuInfo() {
     if (f.hasAVX512F) f.name = L"AVX-512";
     else if (f.hasAVX2 && f.hasFMA) f.name = L"AVX2";
     else f.name = L"Scalar";
+    #endif
     return f;
 }
 
@@ -173,9 +198,9 @@ struct StressConfig {
 
 StressConfig g_ActiveConfig;
 std::mutex g_ConfigMtx;
-std::atomic<uint64_t> g_ConfigVersion{0}; // Optimization: Version check to avoid locking
+std::atomic<uint64_t> g_ConfigVersion{0};
 std::vector<uint64_t> g_ColdStorage;
-std::mutex g_StateMtx; // Fix: Protects Start/Stop logic
+std::mutex g_StateMtx;
 
 enum { WL_AUTO = 0, WL_AVX512 = 1, WL_AVX2 = 2, WL_SCALAR_MATH = 3, WL_SCALAR_SIM = 4 };
 
@@ -185,16 +210,13 @@ struct AppState {
     std::atomic<bool> ioActive{false}, ramActive{false};
     std::atomic<bool> resetTimer{false};
     std::atomic<int> currentPhase{0};
-    // Changed default to WL_AUTO ("Auto") for Dynamic/Steady modes
     std::atomic<int> selectedWorkload{WL_AUTO};
 
-    // Shaders is now a display aggregate, not an atomic contention point
     std::atomic<uint64_t> shaders{0};
     std::atomic<uint64_t> totalNodes{0};
     std::atomic<uint64_t> errors{0}, elapsed{0};
     std::atomic<uint64_t> currentRate{0};
 
-    // Benchmark State
     std::atomic<uint64_t> benchRates[3];
     std::atomic<int> benchWinner{-1};
     std::atomic<bool> benchComplete{false};
@@ -225,7 +247,6 @@ HWND g_MainWindow = nullptr;
 float g_Scale = 1.0f;
 int S(int v) { return (int)(v * g_Scale); }
 
-// --- Helpers ---
 void DisablePowerThrottling() {
     PROCESS_POWER_THROTTLING_STATE PowerThrottling = {0};
     PowerThrottling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
@@ -235,15 +256,11 @@ void DisablePowerThrottling() {
 }
 
 void PinThreadToCore(int coreIdx) {
-    // Improved: Support > 64 cores using Processor Groups (Windows 7+)
     WORD groupCount = GetActiveProcessorGroupCount();
     if (groupCount > 1) {
-        // Simple round-robin distribution across groups
-        DWORD coresPerGroup = GetMaximumProcessorCount(0); // Assuming uniform
-
+        DWORD coresPerGroup = GetMaximumProcessorCount(0);
         WORD group = (WORD)(coreIdx / coresPerGroup);
         BYTE procIndex = (BYTE)(coreIdx % coresPerGroup);
-
         if (group < groupCount) {
             GROUP_AFFINITY affinity = {0};
             affinity.Group = group;
@@ -252,8 +269,6 @@ void PinThreadToCore(int coreIdx) {
             return;
         }
     }
-
-    // Fallback/Legacy for <= 64 cores
     HANDLE hProc = GetCurrentProcess();
     DWORD_PTR processMask = 0, systemMask = 0;
     if (!GetProcessAffinityMask(hProc, &processMask, &systemMask) || processMask == 0) return;
@@ -268,7 +283,6 @@ void PinThreadToCore(int coreIdx) {
     if (bitIndex >= 0) SetThreadAffinityMask(GetCurrentThread(), ((DWORD_PTR)1 << bitIndex));
 }
 
-// --- CRASH DUMPING SYSTEM ---
 LONG WINAPI WriteCrashDump(PEXCEPTION_POINTERS pExceptionInfo, uint64_t seed, int complexity, int threadIdx) {
     auto now = std::chrono::system_clock::now();
     auto time = std::chrono::system_clock::to_time_t(now);
@@ -296,17 +310,17 @@ LONG WINAPI WriteCrashDump(PEXCEPTION_POINTERS pExceptionInfo, uint64_t seed, in
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
-// --- KERNELS ---
 struct alignas(64) HotNode { float fRegs[16]; uint64_t iRegs[8]; };
 __forceinline uint64_t RunGraphColoringMicro(uint64_t val) { uint64_t x = val; x ^= x << 13; x ^= x >> 7; x ^= x << 17; return x * 0x2545F4914F6CDD1Dull; }
 __forceinline void InterlockedXorCold(uint64_t* ptr, uint64_t val) { _InterlockedXor64((volatile __int64*)ptr, (long long)val); }
 
-// Simulated AST Node for Scalar Workload
 struct FakeAstNode { uint32_t children[4]; uint32_t meta; uint64_t payload; };
 
+#if !defined(_M_ARM64)
+// --- X86 SPECIFIC KERNELS (AVX2/AVX512) ---
+// These are only compiled when targeting x64/x86
 void RunHyperStress_AVX2(uint64_t seed, int complexity, const StressConfig& config) {
     const int BLOCK_SIZE = 512; alignas(64) HotNode nodes[BLOCK_SIZE];
-    // Init buffer
     for(int i=0; i<BLOCK_SIZE; ++i) {
         uint64_t s = seed + i * GOLDEN_RATIO;
         for(int j=0; j<16; ++j) nodes[i].fRegs[j] = (float)((s>>(j*4))&0xFF)*1.1f;
@@ -321,12 +335,9 @@ void RunHyperStress_AVX2(uint64_t seed, int complexity, const StressConfig& conf
     for (int i = 0; i < complexity; i += 4) {
         if (g_App.quit) break;
         HotNode* n[4] = { &nodes[i%BLOCK_SIZE], &nodes[(i+1)%BLOCK_SIZE], &nodes[(i+2)%BLOCK_SIZE], &nodes[(i+3)%BLOCK_SIZE] };
-
-        // INT ALU Heavy
         for(int k=0; k < config.int_intensity; ++k) {
             for(int j=0; j<4; ++j) n[j]->iRegs[0] = (n[j]->iRegs[0] ^ 0x9E3779B9) * n[j]->iRegs[1];
         }
-        // AVX2 FMA Heavy
         for(int k=0; k < config.fma_intensity; ++k) {
             for(int j=0; j<4; ++j) {
                 __m256 fA = _mm256_load_ps(n[j]->fRegs);
@@ -352,7 +363,6 @@ void RunHyperStress_AVX512(uint64_t seed, int complexity, const StressConfig& co
         for(int j=0; j<16; ++j) nodes[i].fRegs[j] = (float)((s>>(j*4))&0xFF)*1.1f;
         for(int j=0; j<8; ++j) nodes[i].iRegs[j] = s^((uint64_t)j<<32);
     }
-
     size_t coldMask = g_ColdStorage.size() ? (g_ColdStorage.size() - 1) : 0;
     uint64_t* coldPtr = g_ColdStorage.empty() ? nullptr : g_ColdStorage.data();
     __m512 vFMA = _mm512_set1_ps(1.0001f);
@@ -361,7 +371,6 @@ void RunHyperStress_AVX512(uint64_t seed, int complexity, const StressConfig& co
     for (int i = 0; i < complexity; i += 4) {
         if (g_App.quit) break;
         HotNode* n[4] = { &nodes[i%BLOCK_SIZE], &nodes[(i+1)%BLOCK_SIZE], &nodes[(i+2)%BLOCK_SIZE], &nodes[(i+3)%BLOCK_SIZE] };
-
         for(int k=0; k < config.int_intensity; ++k) {
             for(int j=0; j<4; ++j) n[j]->iRegs[0] = (n[j]->iRegs[0] ^ 0x9E3779B9) * n[j]->iRegs[1];
         }
@@ -379,8 +388,10 @@ void RunHyperStress_AVX512(uint64_t seed, int complexity, const StressConfig& co
         }
     }
 }
+#endif // !defined(_M_ARM64)
 
-// SCALAR MATH (Legacy/Benchmarks)
+// --- SCALAR KERNELS (Universal) ---
+
 void RunHyperStress_Scalar(uint64_t seed, int complexity, const StressConfig& config) {
     const int BLOCK_SIZE = 512; alignas(64) HotNode nodes[BLOCK_SIZE];
     for(int i=0; i<BLOCK_SIZE; ++i) {
@@ -388,7 +399,6 @@ void RunHyperStress_Scalar(uint64_t seed, int complexity, const StressConfig& co
         for(int j=0; j<16; ++j) nodes[i].fRegs[j] = (float)((s>>(j*4))&0xFF)*1.1f;
         for(int j=0; j<8; ++j) nodes[i].iRegs[j] = s^((uint64_t)j<<32);
     }
-
     size_t coldMask = g_ColdStorage.size() ? (g_ColdStorage.size() - 1) : 0;
     uint64_t* coldPtr = g_ColdStorage.empty() ? nullptr : g_ColdStorage.data();
     float vFMA = 1.0001f;
@@ -397,15 +407,12 @@ void RunHyperStress_Scalar(uint64_t seed, int complexity, const StressConfig& co
     for (int i = 0; i < complexity; i += 4) {
         if (g_App.quit) break;
         HotNode* n[4] = { &nodes[i%BLOCK_SIZE], &nodes[(i+1)%BLOCK_SIZE], &nodes[(i+2)%BLOCK_SIZE], &nodes[(i+3)%BLOCK_SIZE] };
-
-        // INT ALU Heavy
         for(int k=0; k < config.int_intensity; ++k) {
             for(int j=0; j<4; ++j) n[j]->iRegs[0] = (n[j]->iRegs[0] ^ 0x9E3779B9) * n[j]->iRegs[1];
         }
-        // Scalar FMA Heavy
         for(int k=0; k < config.fma_intensity; ++k) {
             for(int j=0; j<4; ++j) {
-                // Manually unrolled scalar loop equivalent to one AVX2 register op
+                // Scalar Unroll - Compiles to VFMADD (x86) or FMLA (ARM64)
                 for(int f=0; f<16; ++f) {
                     n[j]->fRegs[f] = (n[j]->fRegs[f] * vMul) + vFMA;
                 }
@@ -419,7 +426,6 @@ void RunHyperStress_Scalar(uint64_t seed, int complexity, const StressConfig& co
     }
 }
 
-// Helper for MSVC to expand case ranges
 #define CASE_BLOCK_32(start, code) \
 case start: case start+1: case start+2: case start+3: \
 case start+4: case start+5: case start+6: case start+7: \
@@ -438,20 +444,14 @@ case start+8: case start+9: case start+10: case start+11: \
 case start+12: case start+13: case start+14: case start+15: \
 { code; } break;
 
-// Enhanced Compiler Simulation V3 - More Power Hungry, More Realistic
-// Implemented based on "Scalar Sim Benchmark Analysis Report"
 void RunRealisticCompilerSim_V3(uint64_t seed, int complexity, const StressConfig& config) {
-    // === Larger Data Structures (spill to L3/RAM) ===
-    constexpr size_t TREE_NODES = 16384;      // 16x larger - L3 pressure
-    constexpr size_t HASH_BUCKETS = 4096;     // Larger symbol table
-    constexpr size_t STRING_POOL_SIZE = 64 * 1024;  // 64KB string pool
-    constexpr size_t BITVEC_WORDS = 256;      // 16K bits for liveness
+    constexpr size_t TREE_NODES = 16384;
+    constexpr size_t HASH_BUCKETS = 4096;
+    constexpr size_t STRING_POOL_SIZE = 64 * 1024;
+    constexpr size_t BITVEC_WORDS = 256;
 
-    // Heap allocation simulates arena allocator behavior
     auto tree = std::make_unique<FakeAstNode[]>(TREE_NODES);
-    auto hashTable = std::make_unique<uint64_t[]>(HASH_BUCKETS); // Storing packed data for simplicity
-    // To properly simulate the struct HashEntry { uint64_t key; uint32_t strOffset; uint32_t strLen; uint32_t next; uint32_t nodeRef; };
-    // we will use parallel arrays or just a simplified larger struct.
+    auto hashTable = std::make_unique<uint64_t[]>(HASH_BUCKETS);
     struct HashEntry {
         uint64_t key;
         uint32_t strOffset;
@@ -460,10 +460,8 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity, const StressConfi
         uint32_t nodeRef;
     };
     auto tableEntries = std::make_unique<HashEntry[]>(HASH_BUCKETS);
-
     auto stringPool = std::make_unique<char[]>(STRING_POOL_SIZE);
 
-    // Using stack for hot registers, but heap for large liveness sets
     auto liveInArr = std::make_unique<uint64_t[]>(BITVEC_WORDS);
     auto liveOutArr = std::make_unique<uint64_t[]>(BITVEC_WORDS);
     auto liveKillArr = std::make_unique<uint64_t[]>(BITVEC_WORDS);
@@ -472,13 +470,9 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity, const StressConfi
     uint64_t* liveOut = liveOutArr.get();
     uint64_t* liveKill = liveKillArr.get();
 
-    // === Initialization ===
-    // Fill String Pool with random-ish chars
     for (size_t i = 0; i < STRING_POOL_SIZE; ++i) {
         stringPool[i] = (char)((seed + i * 13) % 255);
     }
-
-    // Init Tree
     for (size_t i = 0; i < TREE_NODES; ++i) {
         uint64_t s = seed + i * GOLDEN_RATIO;
         tree[i].payload = s;
@@ -486,8 +480,6 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity, const StressConfi
         for (int k = 0; k < 4; ++k)
             tree[i].children[k] = (uint32_t)((s >> (k * 5)) & (TREE_NODES - 1));
     }
-
-    // Init Hash Table
     for (size_t i = 0; i < HASH_BUCKETS; ++i) {
         uint64_t s = seed ^ (i * 0x517cc1b727220a95ULL);
         tableEntries[i].key = s;
@@ -496,8 +488,6 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity, const StressConfi
         tableEntries[i].next = 0;
         tableEntries[i].nodeRef = (uint32_t)(s & (TREE_NODES - 1));
     }
-
-    // Init Bitvectors
     for (size_t i = 0; i < BITVEC_WORDS; ++i) {
         liveIn[i] = seed ^ Rotl64(seed, (unsigned)i);
         liveOut[i] = ~liveIn[i];
@@ -506,31 +496,24 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity, const StressConfi
 
     uint64_t acc0 = seed, acc1 = seed + 1, acc2 = seed + 2, acc3 = seed + 3;
 
-    // === Enhanced Main Loop ===
     for (int iter = 0; iter < complexity; iter += 4) {
         if (g_App.quit) break;
-
-        // --- Phase 1: String-Based Symbol Lookup ---
-        // Realistic: hash variable-length identifier, then compare
+        // Phase 1: Symbol Lookup
         {
             uint32_t strStart = (uint32_t)(acc0 & (STRING_POOL_SIZE - 256));
-            uint32_t strLen = 4 + (uint32_t)(acc1 & 0x1F);  // 4-36 char identifiers
+            uint32_t strLen = 4 + (uint32_t)(acc1 & 0x1F);
 
-            // FNV-1a on variable length (realistic identifier hashing)
             uint64_t hash = 0xcbf29ce484222325ULL;
             for (uint32_t i = 0; i < strLen; ++i) {
                 hash ^= (unsigned char)stringPool[strStart + i];
                 hash *= 0x100000001b3ULL;
             }
 
-            // Chain walk with string comparison (cache-miss heavy)
             uint32_t bucket = (uint32_t)(hash & (HASH_BUCKETS - 1));
             uint32_t probes = 0;
             while (tableEntries[bucket].key != 0 && probes < 8) {
-                // String compare (data-dependent branch)
                 if (tableEntries[bucket].strLen == strLen) {
                     bool match = true;
-                    // Intentionally not using memcmp to simulate custom lexer behavior
                     for (uint32_t i = 0; i < strLen; ++i) {
                         if (stringPool[tableEntries[bucket].strOffset + i] != stringPool[strStart + i]) {
                             match = false;
@@ -543,62 +526,44 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity, const StressConfi
                 probes++;
             }
         }
-
-        // --- Phase 2: SSA/Dominator Tree Walk (Pointer Chasing) ---
-        // Simulates dominance frontier calculation
+        // Phase 2: Pointer Chasing (DOM Tree)
         {
             uint32_t nodeIdx = (uint32_t)(acc0 & (TREE_NODES - 1));
-            for (int depth = 0; depth < 12; ++depth) {  // Deep tree walk
+            for (int depth = 0; depth < 12; ++depth) {
                 FakeAstNode& node = tree[nodeIdx];
-
-                // Dependent load chain (pointer chasing)
-                uint32_t idom = node.children[0];  // Immediate dominator
+                uint32_t idom = node.children[0];
                 acc1 = Rotl64(acc1 ^ tree[idom].payload, 7);
-
-                // Conditional child selection (unpredictable)
                 uint32_t selector = (uint32_t)((acc1 >> (depth * 2)) & 0x3);
                 nodeIdx = node.children[selector];
-
-                // PHI node simulation (merge point)
                 if (node.meta & 0x100) {
                     acc2 ^= tree[node.children[1]].payload;
                     acc2 ^= tree[node.children[2]].payload;
                 }
             }
         }
-
-        // --- Phase 3: Register Pressure Simulation ---
-        // Keep 16 "virtual registers" live to stress physical register file
+        // Phase 3: Register Pressure & ALU
         {
             uint64_t vr[16];
             for (int i = 0; i < 16; ++i) vr[i] = acc0 + i * GOLDEN_RATIO;
 
-            // Interleaved operations (high register pressure)
             for (int op = 0; op < 32; ++op) {
                 int dst = (acc1 >> (op & 7)) & 0xF;
                 int src1 = (acc2 >> ((op + 1) & 7)) & 0xF;
                 int src2 = (acc3 >> ((op + 2) & 7)) & 0xF;
 
-                // Large switch for instruction selection (256 cases)
-                // Expanded using macros for MSVC compatibility
                 uint32_t opcode = (uint32_t)((vr[src1] ^ vr[src2]) & 0xFF);
                 switch (opcode) {
                     CASE_BLOCK_32(0,   vr[dst] = vr[src1] + vr[src2]; )
                     CASE_BLOCK_32(32,  vr[dst] = vr[src1] - vr[src2]; )
-                    CASE_BLOCK_32(64,  vr[dst] = vr[src1] * vr[src2]; ) // Expensive MUL
+                    CASE_BLOCK_32(64,  vr[dst] = vr[src1] * vr[src2]; )
                     CASE_BLOCK_16(96,  vr[dst] = vr[src1] ^ vr[src2]; )
                     CASE_BLOCK_16(112, vr[dst] = Rotl64(vr[src1], src2 & 63); )
+                    // Bit intrinsics handled by top-of-file macros on ARM64
                     CASE_BLOCK_16(128, vr[dst] = __popcnt64(vr[src1]); )
                     CASE_BLOCK_16(144, vr[dst] = _lzcnt_u64(vr[src1]); )
                     CASE_BLOCK_16(160, vr[dst] = _tzcnt_u64(vr[src1]); )
-                    CASE_BLOCK_16(176,
-                                  // Division (very expensive on all architectures)
-                                  vr[dst] = vr[src2] ? vr[src1] / vr[src2] : vr[src1];
-                    )
-                    CASE_BLOCK_32(192,
-                                  // Memory operation simulation
-                                  vr[dst] = tree[vr[src1] & (TREE_NODES-1)].payload;
-                    )
+                    CASE_BLOCK_16(176, vr[dst] = vr[src2] ? vr[src1] / vr[src2] : vr[src1]; )
+                    CASE_BLOCK_32(192, vr[dst] = tree[vr[src1] & (TREE_NODES-1)].payload; )
                     default:
                         vr[dst] = (vr[src1] << (src2 & 31)) | (vr[src1] >> (32 - (src2 & 31)));
                         break;
@@ -606,23 +571,14 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity, const StressConfi
             }
             acc0 = vr[0] ^ vr[15];
         }
-
-        // --- Phase 4: Bitvector Dataflow (Vectorizable by compiler) ---
-        // Let the compiler auto-vectorize this if it can
+        // Phase 4: BitVectors
         {
             for (size_t w = 0; w < BITVEC_WORDS; ++w) {
                 uint64_t gen = tree[w & (TREE_NODES-1)].payload;
                 uint64_t kill = liveKill[w];
-
-                // Transfer function: OUT = GEN U (IN - KILL)
                 liveOut[w] = gen | (liveIn[w] & ~kill);
-
-                // Meet operation: IN = U OUT[predecessors]
-                liveIn[w] = liveOut[(w + 1) & (BITVEC_WORDS - 1)]
-                | liveOut[(w + 7) & (BITVEC_WORDS - 1)];
+                liveIn[w] = liveOut[(w + 1) & (BITVEC_WORDS - 1)] | liveOut[(w + 7) & (BITVEC_WORDS - 1)];
             }
-
-            // Reduction with popcount
             for (size_t w = 0; w < BITVEC_WORDS; w += 4) {
                 acc3 += __popcnt64(liveIn[w]) + __popcnt64(liveIn[w+1])
                 + __popcnt64(liveIn[w+2]) + __popcnt64(liveIn[w+3]);
@@ -634,27 +590,32 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity, const StressConfi
     (void)sink;
 }
 
-
 void UnsafeRunWorkload(uint64_t seed, int complexity, const StressConfig& config) {
     if (g_App.quit) return;
 
     int sel = g_App.selectedWorkload.load();
+    #if defined(_M_ARM64)
+    bool can512 = false;
+    bool canAVX2 = false;
+    #else
     bool can512 = g_Cpu.hasAVX512F && !g_ForceNoAVX512;
     bool canAVX2 = g_Cpu.hasAVX2 && g_Cpu.hasFMA && !g_ForceNoAVX2;
+    #endif
 
+    #if !defined(_M_ARM64)
     if (sel == WL_AVX512 && can512) { RunHyperStress_AVX512(seed, complexity, config); return; }
     if (sel == WL_AVX2 && canAVX2) { RunHyperStress_AVX2(seed, complexity, config); return; }
+    #endif
 
-    // Explicit selection logic
     if (sel == WL_SCALAR_MATH) { RunHyperStress_Scalar(seed, complexity, config); return; }
-
-    // Upgraded to V3
     if (sel == WL_SCALAR_SIM) { RunRealisticCompilerSim_V3(seed, complexity, config); return; }
 
-    // Auto Fallback
+    #if !defined(_M_ARM64)
     if (can512) RunHyperStress_AVX512(seed, complexity, config);
     else if (canAVX2) RunHyperStress_AVX2(seed, complexity, config);
-    else RunRealisticCompilerSim_V3(seed, complexity, config); // Default to V3 now
+    else
+        #endif
+        RunRealisticCompilerSim_V3(seed, complexity, config);
 }
 
 void SafeRunWorkload(uint64_t seed, int complexity, const StressConfig& config, int threadIdx) {
@@ -674,9 +635,9 @@ struct ThreadWrapper {
 
 struct Worker {
     alignas(64) std::atomic<bool> terminate{false};
-    alignas(64) std::atomic<uint64_t> localShaders{0}; // Optimization: Per-thread counter
+    alignas(64) std::atomic<uint64_t> localShaders{0};
     std::atomic<uint64_t> lastTick{0};
-    uint8_t pad[64]; // padding to prevent false sharing
+    uint8_t pad[64];
 };
 
 std::vector<std::unique_ptr<Worker>> g_Workers;
@@ -686,7 +647,6 @@ std::vector<std::unique_ptr<ThreadWrapper>> g_Threads;
 std::unique_ptr<ThreadWrapper> g_DynThread, g_WdThread;
 
 void RunCompilerLogic(int idx, Worker& w) {
-    // Optimization: Pre-generate complexity to avoid RNG overhead in hot loop
     static thread_local std::array<int, 1024> pregenComplexity;
     static thread_local size_t complexityIdx = 0;
     static thread_local bool initialized = false;
@@ -695,7 +655,6 @@ void RunCompilerLogic(int idx, Worker& w) {
         std::mt19937 gen(1234 + idx);
         std::exponential_distribution<> dist(0.0001);
         for (auto& c : pregenComplexity) {
-            // FIX: Overflow safety. Clamp before cast.
             double dComp = std::min(dist(gen), 495000.0);
             c = 5000 + static_cast<int>(dComp);
         }
@@ -703,9 +662,7 @@ void RunCompilerLogic(int idx, Worker& w) {
     }
 
     int complexity = pregenComplexity[complexityIdx++ & 1023];
-    if (g_App.mode == 1) complexity = 12000; // Steady
-
-    // Cache config locally to avoid lock contention
+    if (g_App.mode == 1) complexity = 12000;
     static thread_local uint64_t lastVer = 0;
     static thread_local StressConfig cachedCfg;
     if (lastVer != g_ConfigVersion.load(std::memory_order_relaxed)) {
@@ -714,12 +671,8 @@ void RunCompilerLogic(int idx, Worker& w) {
         lastVer = g_ConfigVersion;
     }
 
-    // Optimization: Generate seed without atomic fetch
     uint64_t seed = (uint64_t)GetTick() ^ ((uint64_t)idx << 32) ^ (w.localShaders.load(std::memory_order_relaxed) * GOLDEN_RATIO);
-
     SafeRunWorkload(seed, complexity, cachedCfg, idx);
-
-    // Optimization: Local increment, no global atomic contention
     w.localShaders.fetch_add(1, std::memory_order_relaxed);
     g_App.totalNodes.fetch_add(complexity, std::memory_order_relaxed);
 }
@@ -782,8 +735,6 @@ void IOThread(int ioIdx) {
 
     wchar_t path[MAX_PATH]; GetTempPathW(MAX_PATH, path);
     std::wstring fpath = std::wstring(path) + L"stress_" + std::to_wstring(ioIdx) + L".tmp";
-
-    // Setup dummy file
     {
         std::ofstream f(fpath, std::ios::binary);
         std::vector<char> junk(1024*1024, 'x');
@@ -809,8 +760,6 @@ void IOThread(int ioIdx) {
         }
         w.lastTick = GetTick();
     }
-
-    // ScopedHandle closes hFile
     DeleteFileW(fpath.c_str());
 }
 
@@ -827,14 +776,12 @@ void RAMThread() {
         if (safeSize > 16ull * 1024 * 1024 * 1024) safeSize = 16ull * 1024 * 1024 * 1024;
         safeSize &= ~4095;
 
-        // Fix: Avoid zero allocation
         if (safeSize < 1024 * 1024) { std::this_thread::sleep_for(1s); continue; }
 
         ScopedMem mem(safeSize);
         if(mem.ptr) {
             uint64_t* p = mem.As<uint64_t>();
             size_t count = safeSize / sizeof(uint64_t);
-            // Linear fill
             for(size_t i = 0; i < count; i += 16) { p[i] = (i + 16) % count; }
 
             uint64_t burstEnd = GetTick() + 5000;
@@ -852,13 +799,10 @@ void RAMThread() {
     }
 }
 
-// --- DYNAMIC CONTROL ---
-
 void SetWork(int comps, int decomp, bool io, bool ram) {
     size_t cpu = g_Workers.size();
     if (comps > (int)cpu) comps = (int)cpu;
     if (comps + decomp > (int)cpu) decomp = (int)cpu - comps;
-
     g_App.activeCompilers = comps;
     g_App.activeDecomp = decomp;
     g_App.ioActive = io;
@@ -872,7 +816,6 @@ void SmartSleep(int ms) {
     }
 }
 
-// Struct to holding state to avoid static variable bugs
 struct PhaseState {
     bool toggle2 = false;
     bool toggle4 = false;
@@ -882,7 +825,7 @@ void DynamicLoop() {
     DisablePowerThrottling();
     int cpu = (int)g_Workers.size();
     int pIdx = 0;
-    PhaseState state; // Clean state on entry
+    PhaseState state;
 
     auto SetStrict = [&](int c, int d, bool io, bool ram) { SetWork(c, d, io, ram); };
     std::mt19937 rng((unsigned)GetTick());
@@ -919,8 +862,6 @@ void DynamicLoop() {
     }
 }
 
-// --- WATCHDOG ---
-
 void Watchdog() {
     DisablePowerThrottling();
     uint64_t runStart = 0;
@@ -928,15 +869,12 @@ void Watchdog() {
     uint64_t benchIntervalStartShaders = 0;
     int lastBenchIntervalIndex = -1;
 
-    // 1-Second Instant Rate Variables
     uint64_t lastRateTime = GetTick();
     uint64_t lastRateShaders = 0;
 
     while(!g_App.quit) {
         bool currentRunning = g_App.running;
         uint64_t now = GetTick();
-
-        // Update Global Counter from Thread Locals
         uint64_t totalShaders = 0;
         for(const auto& w : g_Workers) totalShaders += w->localShaders.load(std::memory_order_relaxed);
         g_App.shaders = totalShaders;
@@ -944,20 +882,16 @@ void Watchdog() {
         if (g_App.resetTimer.exchange(false)) {
             g_App.elapsed = 0; runStart = now; warmingUp = true;
             g_App.currentRate = 0;
-
-            // Reset Benchmark
             benchIntervalStartShaders = g_App.shaders;
             lastBenchIntervalIndex = -1;
             g_App.benchWinner = -1; g_App.benchComplete = false;
             for(int i=0; i<3; ++i) g_App.benchRates[i] = 0;
-
-            // Reset Rate Timer
             lastRateTime = now;
             lastRateShaders = g_App.shaders;
         }
 
         if (currentRunning && !lastRunning) {
-            g_App.resetTimer = true; // Signal self to reset next tick
+            g_App.resetTimer = true;
         }
         lastRunning = currentRunning;
 
@@ -967,7 +901,6 @@ void Watchdog() {
             }
             g_App.elapsed = (now - runStart) / 1000;
 
-            // --- 1-Second Instant Rate Calculation ---
             if (warmingUp) {
                 if (now - runStart > 2000) {
                     warmingUp = false;
@@ -978,43 +911,25 @@ void Watchdog() {
                 uint64_t current = g_App.shaders;
                 uint64_t dt = now - lastRateTime;
                 uint64_t dShader = current - lastRateShaders;
-
                 if (dt > 0) g_App.currentRate = (dShader * 1000) / dt;
-
                 lastRateTime = now;
                 lastRateShaders = current;
             }
 
-            // --- Benchmark Logic (Remains unchanged) ---
             if (g_App.mode == 0) {
                 int currentIntervalIdx = (int)(g_App.elapsed / 60);
-
-                // Detect interval change (minute boundary crossed)
                 if (currentIntervalIdx > lastBenchIntervalIndex) {
-                    // Calculate rate for the COMPLETED interval (lastBenchIntervalIndex)
-                    // We only care about intervals 0, 1, 2 (Min 1, 2, 3)
                     if (lastBenchIntervalIndex >= 0 && lastBenchIntervalIndex < 3) {
                         uint64_t diff = g_App.shaders - benchIntervalStartShaders;
                         g_App.benchRates[lastBenchIntervalIndex] = diff / 60;
-                        benchIntervalStartShaders = g_App.shaders; // Reset start for next interval
-
-                        // LOG PARTIAL RESULTS
+                        benchIntervalStartShaders = g_App.shaders;
                         g_App.Log(L"Benchmark Minute " + std::to_wstring(lastBenchIntervalIndex + 1) + L": " + FmtNum(g_App.benchRates[lastBenchIntervalIndex]) + L" Jobs/s");
                     }
                     lastBenchIntervalIndex = currentIntervalIdx;
                 }
 
-                // Check for Completion (Time >= 180s)
                 if (g_App.elapsed >= BENCHMARK_DURATION_SEC && !g_App.benchComplete) {
-
-                    // Safety catch to ensure Min 3 is captured if the loop timing was tight
-                    if (g_App.benchRates[2] == 0 && lastBenchIntervalIndex == 3) {
-                        // The interval check above likely handled it, but being safe
-                    }
-
                     g_App.benchComplete = true;
-                    // Note: We do NOT stop running here. Indefinite run requested.
-
                     uint64_t r0 = g_App.benchRates[0];
                     uint64_t r1 = g_App.benchRates[1];
                     uint64_t r2 = g_App.benchRates[2];
@@ -1058,7 +973,6 @@ void Watchdog() {
     }
 }
 
-// --- GUI ---
 HFONT g_Font = nullptr;
 HBRUSH g_BgBrush = nullptr;
 HBRUSH g_BtnActive = nullptr;
@@ -1085,7 +999,6 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         PAINTSTRUCT ps; BeginPaint(h, &ps);
         RECT rc; GetClientRect(h, &rc);
 
-        // Optimization: Double buffering with static cache to reduce object creation
         static HDC s_memDC = nullptr;
         static HBITMAP s_memBM = nullptr;
         static int s_width = 0, s_height = 0;
@@ -1113,18 +1026,21 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         };
 
             bool run = g_App.running;
-            // Row 1: Controls
             btn(1, run ? L"STOP" : L"START", S(10), S(10), run);
             btn(2, L"Dynamic", S(160), S(10), g_App.mode==2);
             btn(3, L"Steady", S(310), S(10), g_App.mode==1);
             btn(4, L"Benchmark", S(460), S(10), g_App.mode==0);
             btn(5, L"Close", S(610), S(10), false);
 
-            // Row 2: Instruction Set
             int y2 = S(50);
             int sel = g_App.selectedWorkload;
+            #if defined(_M_ARM64)
+            bool has512 = false;
+            bool hasAVX2 = false;
+            #else
             bool has512 = g_Cpu.hasAVX512F && !g_ForceNoAVX512;
             bool hasAVX2 = g_Cpu.hasAVX2 && !g_ForceNoAVX2;
+            #endif
 
             btn(10, L"Auto", S(10), y2, sel==WL_AUTO);
             btn(11, L"AVX-512 (synthetic)", S(160), y2, sel==WL_AVX512, has512);
@@ -1170,7 +1086,6 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             part3 += L"\nRAM Thread: " + std::wstring(g_App.ramActive ? L"ACTIVE" : L"Idle");
             part3 += L"\nI/O Threads: " + std::wstring(g_App.ioActive ? L"ACTIVE (4x)" : L"Idle");
 
-            // Optimized layout rect to use full width with consistent margins
             RECT tr{S(20), S(100), S(740), S(620)};
             DrawTextW(s_memDC, part1.c_str(), -1, &tr, DT_LEFT | DT_NOCLIP);
             RECT measure = tr; DrawTextW(s_memDC, part1.c_str(), -1, &measure, DT_LEFT | DT_CALCRECT); tr.top += (measure.bottom - measure.top);
@@ -1198,7 +1113,6 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             else if (x > S(460) && x < S(600)) newMode = 0;
             else if (x > S(610) && x < S(750)) PostMessage(h, WM_CLOSE, 0, 0);
 
-            // Fix: Atomic start sequence to prevent race conditions
             std::lock_guard<std::mutex> lock(g_StateMtx);
 
             auto StartWorkload = []() {
@@ -1206,12 +1120,12 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 if (g_App.mode == 2) {
                     g_DynThread = std::make_unique<ThreadWrapper>();
                     g_DynThread->t = std::thread(DynamicLoop);
-                } else if (g_App.mode == 1) { // Steady
+                } else if (g_App.mode == 1) {
                     int cpu = (int)g_Workers.size();
                     int d = std::min(4, std::max(1, cpu / 2));
                     int c = std::max(0, cpu - d);
                     SetWork(c, d, true, true);
-                } else { // Benchmark
+                } else {
                     for(int i=0; i<3; ++i) g_App.benchRates[i] = 0;
                     g_App.benchWinner = -1; g_App.benchComplete = false;
                     SetWork((int)g_Workers.size(), 0, 0, 0);
@@ -1220,7 +1134,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
             auto ResetState = []() {
                 g_App.shaders=0; g_App.elapsed=0; g_App.totalNodes=0; g_App.loops=0; g_App.currentPhase=0;
-                for(auto& w : g_Workers) w->localShaders = 0; // Reset local counters
+                for(auto& w : g_Workers) w->localShaders = 0;
             };
 
                 if (clickedStart) {
@@ -1235,21 +1149,24 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     }
                 } else if (newMode != -1 && newMode != g_App.mode) {
                     g_App.mode = newMode;
-
-                    // Enforce workload defaults: Benchmark -> Scalar Real, Others -> Auto
                     if (newMode == 0) g_App.selectedWorkload = WL_SCALAR_SIM;
                     else g_App.selectedWorkload = WL_AUTO;
 
                     if(g_App.running) {
-                        ResetState(); // Reset counters cleanly on mode switch
+                        ResetState();
                         StartWorkload();
                     }
                 }
                 g_App.resetTimer = true; InvalidateRect(h, nullptr, FALSE);
         }
         if (y > S(50) && y < S(80)) {
+            #if defined(_M_ARM64)
+            bool has512 = false;
+            bool hasAVX2 = false;
+            #else
             bool has512 = g_Cpu.hasAVX512F && !g_ForceNoAVX512;
             bool hasAVX2 = g_Cpu.hasAVX2 && !g_ForceNoAVX2;
+            #endif
             int newSel = -1;
             if (x > S(10) && x < S(150)) newSel = WL_AUTO;
             else if (x > S(160) && x < S(300) && has512) newSel = WL_AVX512;
@@ -1258,15 +1175,11 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             else if (x > S(610) && x < S(750)) newSel = WL_SCALAR_SIM;
 
             if (newSel != -1 && newSel != g_App.selectedWorkload) {
-                // Version update to force config refresh
                 g_ConfigVersion++;
                 g_App.selectedWorkload = newSel;
-
-                // FIX: Instantly reset timer/benchmarks if running
                 if (g_App.running) {
                     g_App.resetTimer = true;
                 }
-
                 InvalidateRect(h, nullptr, FALSE);
             }
         }
@@ -1348,9 +1261,6 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
         wc.hIcon = LoadIconW(inst, MAKEINTRESOURCE(1)); RegisterClassW(&wc);
         InitGDI();
 
-        // Calculate correct window size for desired client area
-        // Desired client width: 760 (10px margin on each side of 740px content)
-        // Desired client height: 620
         RECT rc = {0, 0, S(760), S(620)};
         DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE;
         AdjustWindowRect(&rc, style, FALSE);
@@ -1371,6 +1281,6 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     for(auto& w : g_IOThreads) w->terminate = true;
     g_RAM.terminate = true;
     g_DynThread.reset(); g_WdThread.reset();
-    g_Threads.clear(); // Joins all
+    g_Threads.clear();
     return 0;
 }
