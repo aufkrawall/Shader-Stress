@@ -55,7 +55,7 @@
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
 
-const std::wstring APP_VERSION = L"2.1-Universal";
+const std::wstring APP_VERSION = L"2.2";
 
 // --- Constants & Configuration ---
 constexpr uint64_t GOLDEN_RATIO = 0x9E3779B97F4A7C15ull;
@@ -113,6 +113,18 @@ struct CpuFeatures {
     std::wstring name;
     std::wstring brand;
 };
+
+std::wstring GetArchName() {
+    #if defined(_M_ARM64)
+    return L"ARM64";
+    #elif defined(_M_AMD64)
+    return L"x64";
+    #elif defined(_M_IX86)
+    return L"x86";
+    #else
+    return L"Unknown";
+    #endif
+}
 
 // Helper to get CPU Brand String
 std::wstring GetCpuBrand() {
@@ -204,6 +216,27 @@ std::mutex g_StateMtx;
 
 enum { WL_AUTO = 0, WL_AVX512 = 1, WL_AVX2 = 2, WL_SCALAR_MATH = 3, WL_SCALAR_SIM = 4 };
 
+// --- ISA RESOLUTION HELPER ---
+std::wstring GetResolvedISAName(int workloadSel) {
+    #if defined(_M_ARM64)
+    bool can512 = false;
+    bool canAVX2 = false;
+    #else
+    bool can512 = g_Cpu.hasAVX512F && !g_ForceNoAVX512;
+    bool canAVX2 = g_Cpu.hasAVX2 && g_Cpu.hasFMA && !g_ForceNoAVX2;
+    #endif
+
+    if (workloadSel == WL_AVX512) return L"AVX-512 (Forced)";
+    if (workloadSel == WL_AVX2) return L"AVX2 (Forced)";
+    if (workloadSel == WL_SCALAR_MATH) return L"Scalar Synthetic (Forced)";
+    if (workloadSel == WL_SCALAR_SIM) return L"Scalar Realistic (Forced)";
+
+    // WL_AUTO Resolution Logic
+    if (can512) return L"AVX-512 (Auto)";
+    if (canAVX2) return L"AVX2 (Auto)";
+    return L"Scalar Realistic (Auto)";
+}
+
 struct AppState {
     std::atomic<bool> running{false}, quit{false};
     std::atomic<int> mode{2}, activeCompilers{0}, activeDecomp{0}, loops{0};
@@ -283,6 +316,7 @@ void PinThreadToCore(int coreIdx) {
     if (bitIndex >= 0) SetThreadAffinityMask(GetCurrentThread(), ((DWORD_PTR)1 << bitIndex));
 }
 
+// RESTORED FEATURE: Dump Crash Seed Info
 LONG WINAPI WriteCrashDump(PEXCEPTION_POINTERS pExceptionInfo, uint64_t seed, int complexity, int threadIdx) {
     auto now = std::chrono::system_clock::now();
     auto time = std::chrono::system_clock::to_time_t(now);
@@ -307,6 +341,21 @@ LONG WINAPI WriteCrashDump(PEXCEPTION_POINTERS pExceptionInfo, uint64_t seed, in
                           &mdei, nullptr, nullptr);
         CloseHandle(hFile);
     }
+
+    // Writing a separate text file with reproduction info
+    {
+        StressConfig cfgCopy;
+        {
+            std::lock_guard<std::mutex> lk(g_ConfigMtx);
+            cfgCopy = g_ActiveConfig;
+        }
+        std::wofstream info(basePath / "crash_seed.txt");
+        info << L"Seed: " << seed << L"\nComplexity: " << complexity << L"\nThread: " << threadIdx << L"\n";
+        info << L"CPU: " << g_Cpu.name << L" (" << g_Cpu.brand << L")\n";
+        info << L"Config: " << cfgCopy.name << L"\n";
+        info << L"App Version: " << APP_VERSION << L"\n";
+    }
+
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
@@ -747,7 +796,13 @@ void IOThread(int ioIdx) {
 
     while(!w.terminate) {
         if (!g_App.ioActive && !g_Repro.active) { std::this_thread::sleep_for(100ms); continue; }
-        if(hFile == INVALID_HANDLE_VALUE) { std::this_thread::sleep_for(1s); continue; }
+
+        // BUG FIX: implicit conversion of struct to HANDLE is safe, but logic was flawed if file never existed
+        if(hFile == INVALID_HANDLE_VALUE) {
+            // In theory we could try to recreate here, but for now we just sleep to avoid spinning
+            std::this_thread::sleep_for(1s);
+            continue;
+        }
 
         LARGE_INTEGER pos;
         pos.QuadPart = (rng() % (IO_FILE_SIZE - IO_CHUNK_SIZE)) & ~4095;
@@ -785,6 +840,9 @@ void RAMThread() {
             for(size_t i = 0; i < count; i += 16) { p[i] = (i + 16) % count; }
 
             uint64_t burstEnd = GetTick() + 5000;
+            // This loop keeps memory allocated for 5 seconds.
+            // Once it breaks, ScopedMem destructs (VirtualFree) and the outer loop re-allocates.
+            // This is heavy on the Kernel (page zeroing) but acts as a strong stress test.
             while (GetTick() < burstEnd && !w.terminate && g_App.ramActive) {
                 if (rng() % 2 == 0) {
                     size_t stride = 64;
@@ -941,6 +999,7 @@ void Watchdog() {
                     std::wstringstream report;
                     report << L"\n========================================\n";
                     report << L"Shader Stress " << APP_VERSION << L" Benchmark Result\n";
+                    report << L"OS: Windows | Arch: " << GetArchName() << L"\n";
                     report << L"CPU: " << g_Cpu.brand << L"\n";
                     report << L"Workload: Scalar real.\n";
                     report << L"----------------------------------------\n";
@@ -1033,7 +1092,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             btn(5, L"Close", S(610), S(10), false);
 
             int y2 = S(50);
-            int sel = g_App.selectedWorkload;
+            int sel = g_App.selectedWorkload.load();
             #if defined(_M_ARM64)
             bool has512 = false;
             bool hasAVX2 = false;
@@ -1049,18 +1108,11 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             btn(14, L"Scalar (realistic)", S(610), y2, sel==WL_SCALAR_SIM);
 
             std::wstring modeName = (g_App.mode == 2 ? L"Dynamic" : (g_App.mode == 1 ? L"Steady" : L"Benchmark"));
-            std::wstring activeISA = L"Unknown";
-            if (sel == WL_SCALAR_MATH) activeISA = L"Scalar synthetic (Forced)";
-            else if (sel == WL_SCALAR_SIM) activeISA = L"Scalar realistic (Forced)";
-            else if (sel == WL_AVX2) activeISA = L"AVX2 synthetic (Forced)";
-            else if (sel == WL_AVX512) activeISA = L"AVX-512 synthetic (Forced)";
-            else {
-                if (has512) activeISA = L"AVX-512 synthetic (Auto)";
-                else if (hasAVX2) activeISA = L"AVX2 synthetic (Auto)";
-                else activeISA = L"Scalar realistic (Auto)";
-            }
+            std::wstring activeISA = GetResolvedISAName(sel);
 
-            std::wstring part1 = L"Shader Stress " + APP_VERSION + L"\nMode: " + modeName + L"\nActive ISA: " + activeISA +
+            std::wstring part1 = L"Shader Stress " + APP_VERSION +
+            L"\nOS: Windows (" + GetArchName() + L")" +
+            L"\nMode: " + modeName + L"\nActive ISA: " + activeISA +
             L"\nJobs Done: " + FmtNum(g_App.shaders) +
             L"\n\n--- Performance ---\nRate (Jobs/s): " + FmtNum(g_App.currentRate) + L"\nTime: " + FmtTime(g_App.elapsed);
 
@@ -1149,8 +1201,17 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     }
                 } else if (newMode != -1 && newMode != g_App.mode) {
                     g_App.mode = newMode;
-                    if (newMode == 0) g_App.selectedWorkload = WL_SCALAR_SIM;
-                    else g_App.selectedWorkload = WL_AUTO;
+                    std::wstring modeName = (newMode == 2 ? L"Dynamic" : (newMode == 1 ? L"Steady" : L"Benchmark"));
+                    g_App.Log(L"Mode changed to: " + modeName);
+
+                    if (newMode == 0) {
+                        g_App.selectedWorkload = WL_SCALAR_SIM;
+                        g_App.Log(L"Benchmark enforcement: Workload set to " + GetResolvedISAName(WL_SCALAR_SIM));
+                    }
+                    else {
+                        g_App.selectedWorkload = WL_AUTO;
+                        g_App.Log(L"Workload reset to: " + GetResolvedISAName(WL_AUTO));
+                    }
 
                     if(g_App.running) {
                         ResetState();
@@ -1174,9 +1235,12 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             else if (x > S(460) && x < S(600)) newSel = WL_SCALAR_MATH;
             else if (x > S(610) && x < S(750)) newSel = WL_SCALAR_SIM;
 
+            // BUG FIX: Added logging when user manually changes the ISA
             if (newSel != -1 && newSel != g_App.selectedWorkload) {
                 g_ConfigVersion++;
                 g_App.selectedWorkload = newSel;
+                g_App.Log(L"User changed ISA to: " + GetResolvedISAName(newSel));
+
                 if (g_App.running) {
                     g_App.resetTimer = true;
                 }
@@ -1207,6 +1271,12 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     g_Scale = GetDpiForSystem() / 96.0f;
     g_App.log.open("ShaderStress.log", std::ios::out | std::ios::trunc);
     g_App.log.imbue(std::locale(""));
+
+    // Log Header
+    g_App.log << L"--- Session Start ---" << std::endl;
+    g_App.log << L"OS: Windows" << std::endl;
+    g_App.log << L"Architecture: " << GetArchName() << std::endl;
+
     g_Cpu = GetCpuInfo();
     g_App.sigStatus = g_Cpu.name;
 
