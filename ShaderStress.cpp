@@ -56,25 +56,14 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
   int cpu = std::thread::hardware_concurrency();
   if (cpu == 0)
     cpu = 4;
+  // Workers (Data)
   for (int i = 0; i < cpu; ++i)
     g_Workers.push_back(std::make_unique<Worker>());
-  for (int i = 0; i < 4; ++i)
-    g_IOThreads.push_back(std::make_unique<Worker>());
-  for (int i = 0; i < cpu; ++i) {
-    auto t = std::make_unique<ThreadWrapper>();
-    t->t = std::thread(WorkerThread, i);
-    g_Threads.push_back(std::move(t));
-  }
-  for (int i = 0; i < 4; ++i) {
-    auto t = std::make_unique<ThreadWrapper>();
-    t->t = std::thread(IOThread, i);
-    g_Threads.push_back(std::move(t));
-  }
-  {
-    auto t = std::make_unique<ThreadWrapper>();
-    t->t = std::thread(RAMThread);
-    g_Threads.push_back(std::move(t));
-  }
+
+  // Thread spawning is now fully managed by SetWork() to enforce strict thread
+  // limits
+
+  // RAM/IO threads spawned dynamically in SetWork
 
   if (g_Repro.active) {
     g_App.Log(L"Repro Mode Active. Running workload...");
@@ -94,7 +83,7 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     RegisterClassW(&wc);
     InitGDI();
 
-    RECT rc = {0, 0, S(760), S(680)};
+    RECT rc = {0, 0, S(760), S(710)};
     DWORD style =
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE;
     AdjustWindowRect(&rc, style, FALSE);
@@ -311,30 +300,10 @@ int main(int argc, char *argv[]) {
   for (int i = 0; i < cpu; ++i)
     g_Workers.push_back(std::make_unique<Worker>());
 
-  // Initialize IO threads (4 threads for IO stress)
-  for (int i = 0; i < 4; ++i)
-    g_IOThreads.push_back(std::make_unique<Worker>());
-
   // Start workers
-  for (int i = 0; i < cpu; ++i) {
-    auto t = std::make_unique<ThreadWrapper>();
-    t->t = std::thread(WorkerThread, i);
-    g_Threads.push_back(std::move(t));
-  }
 
-  // Start IO threads
-  for (int i = 0; i < 4; ++i) {
-    auto t = std::make_unique<ThreadWrapper>();
-    t->t = std::thread(IOThread, i);
-    g_Threads.push_back(std::move(t));
-  }
-
-  // Start RAM thread
-  {
-    auto t = std::make_unique<ThreadWrapper>();
-    t->t = std::thread(RAMThread);
-    g_Threads.push_back(std::move(t));
-  }
+  // IO/RAM threads are spawned lazily when first activated (see Threading.cpp)
+  // This avoids thread overhead during benchmark mode or compute-only phases
 
   // Watchdog & Start
   g_WdThread = std::make_unique<ThreadWrapper>();
