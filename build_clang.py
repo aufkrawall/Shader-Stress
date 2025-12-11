@@ -18,8 +18,9 @@ CLANG_EXE = os.path.join(CLANG64_BIN, "clang++.exe")
 WINDRES_EXE = os.path.join(CLANG64_BIN, "llvm-windres.exe")
 MSYS_SHELL = os.path.join(MSYS_DIR, "usr", "bin", "bash.exe")
 
-# Zig for cross-platform builds (Linux/macOS)
-ZIG_EXE = os.path.join(CLANG64_BIN, "zig.exe")
+# Zig for cross-platform builds (Linux/macOS) - Official binary from ziglang.org
+# MSYS2 package has LLVM/libc++ mismatch bug, use official instead
+ZIG_EXE = os.path.join(BASE_DIR, "zig-x86_64-windows-0.15.2", "zig.exe")
 
 # MSYS2 download URL
 MSYS2_URL = "https://repo.msys2.org/distrib/x86_64/msys2-base-x86_64-20240113.tar.xz"
@@ -54,6 +55,8 @@ def cleanup_build_artifacts():
         "bin/arm64/*.pdb",
         "bin/x64-zig/*.o",
         "bin/x64-zig/*.pdb",
+        "bin/arm64-zig/*.o",
+        "bin/arm64-zig/*.pdb",
     ]
     for pattern in patterns:
         for f in glob.glob(pattern):
@@ -76,7 +79,9 @@ def create_zip_archives():
         ("bin/x64", "ShaderStress-Windows-x64.7z", ["ShaderStress.exe"]),
         ("bin/arm64", "ShaderStress-Windows-ARM64.7z", ["ShaderStress.exe"]),
         ("bin/x64-zig", "ShaderStress-Windows-x64-Zig.7z", ["ShaderStress.exe"]),
+        ("bin/arm64-zig", "ShaderStress-Windows-ARM64-Zig.7z", ["ShaderStress.exe"]),
         ("bin/linux-x64", "ShaderStress-Linux-x64.7z", ["shaderstress"]),
+        ("bin/linux-arm64", "ShaderStress-Linux-ARM64.7z", ["shaderstress"]),
         ("bin/macos-arm64", "ShaderStress-macOS-ARM64.7z", ["shaderstress"]),
         ("bin/macos-x64", "ShaderStress-macOS-x64.7z", ["shaderstress"]),
     ]
@@ -318,7 +323,7 @@ def build_x64_zig():
         "-target", "x86_64-windows-gnu",
         "-std=c++20", "-O3",
         "-ffast-math",  # Fast floating point for stress testing
-        "-s",  # Skip LTO - causes libc++ issues with Zig
+        "-flto", "-s",  # LTO enabled with official Zig binary
         "-Wno-macro-redefined",  # Suppress _WIN32_WINNT redefinition warning
         "-DUNICODE", "-D_UNICODE",
         "-DDISABLE_SEH",  # __try/__except not supported by Zig
@@ -330,6 +335,47 @@ def build_x64_zig():
     ]
     
     log("Running Zig for Windows x64...")
+    subprocess.check_call(cmd_build)
+    log(f"Success: {os.path.join(out_dir, 'ShaderStress.exe')}")
+    return True
+
+
+# ============================================================================
+# Windows ARM64 Cross-Compile (via Zig)
+# ============================================================================
+def build_arm64_zig():
+    if not os.path.exists(ZIG_EXE):
+        log(f"Skipping Windows ARM64 Zig (Zig not found at {ZIG_EXE})")
+        return False
+    
+    log("Building Windows ARM64 (via Zig)...")
+    out_dir = os.path.join("bin", "arm64-zig")
+    if not os.path.exists(out_dir): os.makedirs(out_dir)
+    
+    # 1. Compile Resource using llvm-windres for ARM64
+    res_obj = os.path.join(out_dir, "resource.o")
+    cmd_res = [WINDRES_EXE, "--target=aarch64-w64-mingw32", "resource.rc", res_obj]
+    subprocess.check_call(cmd_res)
+    
+    # 2. Build with Zig
+    cmd_build = [
+        ZIG_EXE, "c++",
+        "-target", "aarch64-windows-gnu",
+        "-std=c++20", "-O3",
+        "-ffast-math",  # Fast floating point for stress testing
+        "-flto", "-s",  # LTO enabled with official Zig binary
+        "-Wno-macro-redefined",  # Suppress _WIN32_WINNT redefinition warning
+        "-DUNICODE", "-D_UNICODE",
+        "-D_M_ARM64", "-D_WIN64",
+        "-DDISABLE_SEH",  # __try/__except not supported by Zig
+        "-municode",  # Use wWinMain entry point (Unicode)
+        "-Xlinker", "--subsystem", "-Xlinker", "windows",  # GUI app - no console window
+    ] + SRC_FILES_WINDOWS + [res_obj,
+        "-o", os.path.join(out_dir, "ShaderStress.exe"),
+        "-luser32", "-lgdi32", "-ldwmapi", "-lshcore", "-lshell32", "-lole32", "-ldbghelp"
+    ]
+    
+    log("Running Zig for Windows ARM64...")
     subprocess.check_call(cmd_build)
     log(f"Success: {os.path.join(out_dir, 'ShaderStress.exe')}")
     return True
@@ -353,7 +399,7 @@ def build_linux_x64():
         "-target", "x86_64-linux-gnu",
         "-std=c++20", "-O3",
         "-ffast-math",  # Fast floating point for stress testing
-        "-flto", "-s",
+        "-flto", "-s",  # LTO enabled with official Zig binary
         "-DPLATFORM_LINUX",
     ] + SRC_FILES_UNIX + [
         "-o", os.path.join(out_dir, "shaderstress"),
@@ -362,6 +408,38 @@ def build_linux_x64():
     
     log("Running Zig for Linux x64...")
     subprocess.check_call(cmd_build)
+    log(f"Success: {os.path.join(out_dir, 'shaderstress')}")
+    log(f"Success: {os.path.join(out_dir, 'shaderstress')}")
+    return True
+
+
+# ============================================================================
+# Linux ARM64 Cross-Compile (via Zig)
+# ============================================================================
+def build_linux_arm64():
+    if not os.path.exists(ZIG_EXE):
+        log(f"Skipping Linux ARM64 (Zig not found at {ZIG_EXE})")
+        return False
+    
+    log("Building Linux ARM64 (cross-compile via Zig)...")
+    out_dir = os.path.join("bin", "linux-arm64")
+    if not os.path.exists(out_dir): os.makedirs(out_dir)
+    
+    cmd_build = [
+        ZIG_EXE, "c++",
+        "-target", "aarch64-linux-gnu",
+        "-std=c++20", "-O3",
+        "-ffast-math",  # Fast floating point for stress testing
+        "-flto", "-s",  # LTO enabled with official Zig binary
+        "-DPLATFORM_LINUX",
+    ] + SRC_FILES_UNIX + [
+        "-o", os.path.join(out_dir, "shaderstress"),
+        "-lpthread"
+    ]
+    
+    log("Running Zig for Linux ARM64...")
+    subprocess.check_call(cmd_build)
+    log(f"Success: {os.path.join(out_dir, 'shaderstress')}")
     log(f"Success: {os.path.join(out_dir, 'shaderstress')}")
     return True
 
@@ -384,7 +462,7 @@ def build_macos_arm64():
         "-target", "aarch64-macos",
         "-std=c++20", "-O3",
         "-ffast-math",  # Fast floating point for stress testing
-        "-s",  # LTO not available on macOS (requires LLD)
+        "-s",  # LTO unavailable for macOS (requires LLD linker)
         "-DPLATFORM_MACOS",
     ] + SRC_FILES_UNIX + [
         "-o", os.path.join(out_dir, "shaderstress"),
@@ -414,7 +492,7 @@ def build_macos_x64():
         "-target", "x86_64-macos",
         "-std=c++20", "-O3",
         "-ffast-math",  # Fast floating point for stress testing
-        "-s",  # LTO not available on macOS (requires LLD)
+        "-s",  # LTO unavailable for macOS (requires LLD linker)
         "-DPLATFORM_MACOS",
     ] + SRC_FILES_UNIX + [
         "-o", os.path.join(out_dir, "shaderstress"),
@@ -459,19 +537,29 @@ def main():
         except Exception as e:
             log(f"Windows ARM64 Build Failed: {e}")
     
-    # Windows x64 via Zig (for comparison)
+    # Windows via Zig (for comparison)
     if "zig" in targets:
         try:
             build_x64_zig()
         except Exception as e:
             log(f"Windows x64 Zig Build Failed: {e}")
+        
+        try:
+            build_arm64_zig()
+        except Exception as e:
+            log(f"Windows ARM64 Zig Build Failed: {e}")
     
-    # Linux target (via Zig)
+    # Linux targets (via Zig)
     if "linux" in targets:
         try:
             build_linux_x64()
         except Exception as e:
             log(f"Linux x64 Build Failed: {e}")
+        
+        try:
+            build_linux_arm64()
+        except Exception as e:
+            log(f"Linux ARM64 Build Failed: {e}")
     
     # macOS targets (via Zig)
     if "macos" in targets:
