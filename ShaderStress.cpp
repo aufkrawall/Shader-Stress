@@ -94,7 +94,7 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     RegisterClassW(&wc);
     InitGDI();
 
-    RECT rc = {0, 0, S(760), S(620)};
+    RECT rc = {0, 0, S(760), S(680)};
     DWORD style =
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE;
     AdjustWindowRect(&rc, style, FALSE);
