@@ -1,533 +1,515 @@
-// Gui.cpp - Windows GDI GUI, button handling, painting
+// Workloads.cpp - CPU stress test kernels (AVX2, AVX512, Scalar, Realistic)
 #include "Common.h"
-#include <CommCtrl.h>
 
-// GDI Resources
-HFONT g_Font = nullptr;
-HBRUSH g_BgBrush = nullptr;
-HBRUSH g_BtnActive = nullptr;
-HBRUSH g_BtnInactive = nullptr;
-HBRUSH g_BtnDisabled = nullptr;
-
-// Forward declarations
-void ShowVerifyDialog(HWND parent);
-
-void InitGDI() {
-  g_Font = CreateFontW(-(int)(16 * g_Scale), 0, 0, 0, FW_NORMAL, 0, 0, 0,
-                       DEFAULT_CHARSET, 0, 0, 0, 0, L"Segoe UI");
-  g_BgBrush = CreateSolidBrush(RGB(20, 20, 20));
-  g_BtnActive = CreateSolidBrush(RGB(60, 100, 160));
-  g_BtnInactive = CreateSolidBrush(RGB(50, 50, 50));
-  g_BtnDisabled = CreateSolidBrush(RGB(30, 30, 30));
-}
-
-void CleanupGDI() {
-  DeleteObject(g_Font);
-  DeleteObject(g_BgBrush);
-  DeleteObject(g_BtnActive);
-  DeleteObject(g_BtnInactive);
-  DeleteObject(g_BtnDisabled);
-}
-
-LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-  if (m == WM_DESTROY) {
-    g_App.running = false;
-    g_App.quit = true;
-    PostQuitMessage(0);
-    return 0;
-  }
-  if (m == WM_PAINT) {
-    PAINTSTRUCT ps;
-    BeginPaint(h, &ps);
-    RECT rc;
-    GetClientRect(h, &rc);
-
-    static HDC s_memDC = nullptr;
-    static HBITMAP s_memBM = nullptr;
-    static int s_width = 0, s_height = 0;
-
-    if (rc.right != s_width || rc.bottom != s_height || !s_memDC) {
-      if (s_memDC) {
-        DeleteDC(s_memDC);
-        DeleteObject(s_memBM);
-      }
-      s_memDC = CreateCompatibleDC(ps.hdc);
-      s_memBM = CreateCompatibleBitmap(ps.hdc, rc.right, rc.bottom);
-      SelectObject(s_memDC, s_memBM);
-      s_width = rc.right;
-      s_height = rc.bottom;
-    }
-
-    FillRect(s_memDC, &rc, g_BgBrush);
-    SetBkMode(s_memDC, TRANSPARENT);
-    SetTextColor(s_memDC, RGB(200, 200, 200));
-    HFONT oldFont = (HFONT)SelectObject(s_memDC, g_Font);
-
-    auto btn = [&](int id, const wchar_t *txt, int x, int y, bool active,
-                   bool enabled = true) {
-      RECT r{x, y, x + S(140), y + S(30)};
-      HBRUSH b =
-          enabled ? (active ? g_BtnActive : g_BtnInactive) : g_BtnDisabled;
-      FillRect(s_memDC, &r, b);
-      if (!enabled)
-        SetTextColor(s_memDC, RGB(80, 80, 80));
-      DrawTextW(s_memDC, txt, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-      if (!enabled)
-        SetTextColor(s_memDC, RGB(200, 200, 200));
-    };
-
-    bool run = g_App.running;
-    btn(1, run ? L"STOP" : L"START", S(10), S(10), run);
-    btn(2, L"Dynamic", S(160), S(10), g_App.mode == 2);
-    btn(3, L"Steady", S(310), S(10), g_App.mode == 1);
-    btn(4, L"Benchmark", S(460), S(10), g_App.mode == 0);
-    btn(5, L"Close", S(610), S(10), false);
-
-    int y2 = S(50);
-    int sel = g_App.selectedWorkload.load();
-#if defined(_M_ARM64) || defined(__aarch64__)
-    bool has512 = false;
-    bool hasAVX2 = false;
-#else
-    bool has512 = g_Cpu.hasAVX512F && !g_ForceNoAVX512;
-    bool hasAVX2 = g_Cpu.hasAVX2 && !g_ForceNoAVX2;
+// Forward declaration for crash dump (Windows only)
+#ifdef _WIN32
+LONG WINAPI WriteCrashDump(PEXCEPTION_POINTERS pExceptionInfo, uint64_t seed,
+                           int complexity, int threadIdx);
 #endif
 
-    btn(10, L"Auto", S(10), y2, sel == WL_AUTO);
-    btn(11, L"AVX-512 (synthetic)", S(160), y2, sel == WL_AVX512, has512);
-    btn(12, L"AVX2 (synthetic)", S(310), y2, sel == WL_AVX2, hasAVX2);
-    btn(13, L"Scalar (synthetic)", S(460), y2, sel == WL_SCALAR_MATH);
-    btn(14, L"Scalar (realistic)", S(610), y2, sel == WL_SCALAR_SIM);
+// --- Helper Functions ---
+ALWAYS_INLINE uint64_t RunGraphColoringMicro(uint64_t val) {
+  uint64_t x = val;
+  x ^= x << 13;
+  x ^= x >> 7;
+  x ^= x << 17;
+  return x * 0x2545F4914F6CDD1Dull;
+}
 
-    // Third row - Verify Hash button
-    int y3 = S(90);
-    btn(20, L"Verify Hash", S(610), y3, false);
-
-    std::wstring modeName =
-        (g_App.mode == 2 ? L"Dynamic"
-                         : (g_App.mode == 1 ? L"Steady" : L"Benchmark"));
-    std::wstring activeISA = GetResolvedISAName(sel);
-
-    std::wstring part1 =
-        L"Shader Stress " + APP_VERSION + L"\nOS: Windows (" + GetArchName() +
-        L")" + L"\nMode: " + modeName + L"\nActive ISA: " + activeISA +
-        L"\nJobs Done: " + FmtNum(g_App.shaders) +
-        L"\n\n--- Performance ---\nRate (Jobs/s): " +
-        FmtNum(g_App.currentRate) + L"\nTime: " + FmtTime(g_App.elapsed);
-
-    if (g_App.mode == 2) {
-      part1 += L"\nPhase: " + std::to_wstring(g_App.currentPhase) + L" / 15";
-      part1 += L"\nLoop: " + std::to_wstring(g_App.loops);
-    } else if (g_App.mode == 0) {
-      part1 += L"\n\n--- Benchmark Rounds (60s each) ---";
-      part1 += L"\n1st Minute: " +
-               (g_App.benchRates[0] > 0
-                    ? FmtNum(g_App.benchRates[0])
-                    : (g_App.elapsed < 60 && run ? L"Running..." : L"-"));
-      part1 += L"\n2nd Minute: " +
-               (g_App.benchRates[1] > 0
-                    ? FmtNum(g_App.benchRates[1])
-                    : (g_App.elapsed >= 60 && g_App.elapsed < 120 && run
-                           ? L"Running..."
-                           : L"-"));
-      part1 += L"\n3rd Minute: " +
-               (g_App.benchRates[2] > 0
-                    ? FmtNum(g_App.benchRates[2])
-                    : (g_App.elapsed >= 120 && g_App.elapsed < 180 && run
-                           ? L"Running..."
-                           : L"-"));
-      // Hash is displayed on the right side, not here
-      if (g_App.benchComplete && g_App.benchWinner != -1) {
-        part1 +=
-            L"\n\nWINNER: Interval " + std::to_wstring(g_App.benchWinner + 1);
-        part1 += L"\n(Results written to ShaderStress.log)";
-      }
-    }
-
-    std::wstring partError = L"Errors: " + FmtNum(g_App.errors);
-    std::wstring part3 = L"\n\n--- Stress Status ---";
-    part3 += L"\nWorker Threads: " +
-             FmtNum(g_App.activeCompilers + g_App.activeDecomp);
-    part3 += L"\n  > Sim Compilers: " + FmtNum(g_App.activeCompilers);
-    part3 += L"\n  > Decompressors: " + FmtNum(g_App.activeDecomp);
-    part3 +=
-        L"\nRAM Thread: " + std::wstring(g_App.ramActive ? L"ACTIVE" : L"Idle");
-    part3 += L"\nI/O Threads: " +
-             std::wstring(g_App.ioActive ? L"ACTIVE (4x)" : L"Idle");
-
-    RECT tr{S(20), S(100), S(740), S(680)};
-    DrawTextW(s_memDC, part1.c_str(), -1, &tr, DT_LEFT | DT_NOCLIP);
-    RECT measure = tr;
-    DrawTextW(s_memDC, part1.c_str(), -1, &measure, DT_LEFT | DT_CALCRECT);
-    tr.top += (measure.bottom - measure.top);
-
-    if (g_App.errors > 0)
-      SetTextColor(s_memDC, RGB(255, 80, 80));
-    else
-      SetTextColor(s_memDC, RGB(80, 255, 80));
-    DrawTextW(s_memDC, partError.c_str(), -1, &tr, DT_LEFT | DT_NOCLIP);
-    measure = tr;
-    DrawTextW(s_memDC, partError.c_str(), -1, &measure, DT_LEFT | DT_CALCRECT);
-    tr.top += (measure.bottom - measure.top);
-
-    SetTextColor(s_memDC, RGB(200, 200, 200));
-    DrawTextW(s_memDC, part3.c_str(), -1, &tr, DT_LEFT | DT_NOCLIP);
-
-    // Draw hash on right side below Verify Hash button (in Benchmark mode)
-    if (g_App.mode == 0 && !g_App.benchHash.empty()) {
-      SetTextColor(s_memDC, RGB(120, 200, 255)); // Light blue for hash
-      RECT hashRect = {S(610), S(125), S(750), S(200)};
-      std::wstring hashLabel = L"Hash:\n" + g_App.benchHash;
-      DrawTextW(s_memDC, hashLabel.c_str(), -1, &hashRect, DT_LEFT | DT_NOCLIP);
-      SetTextColor(s_memDC, RGB(200, 200, 200));
-    }
-
-    BitBlt(ps.hdc, 0, 0, rc.right, rc.bottom, s_memDC, 0, 0, SRCCOPY);
-    SelectObject(s_memDC, oldFont);
-    EndPaint(h, &ps);
-    return 0;
-  }
-  if (m == WM_LBUTTONDOWN) {
-    int x = GET_X_LPARAM(l);
-    int y = GET_Y_LPARAM(l);
-
-    if (y > S(10) && y < S(40)) {
-      bool clickedStart = (x > S(10) && x < S(150));
-      int newMode = -1;
-      if (x > S(160) && x < S(300))
-        newMode = 2;
-      else if (x > S(310) && x < S(450))
-        newMode = 1;
-      else if (x > S(460) && x < S(600))
-        newMode = 0;
-      else if (x > S(610) && x < S(750))
-        PostMessage(h, WM_CLOSE, 0, 0);
-
-      std::lock_guard<std::mutex> lock(g_StateMtx);
-
-      auto StartWorkload = []() {
-        if (g_DynThread && g_DynThread->t.joinable())
-          g_DynThread->t.join();
-        if (g_App.mode == 2) {
-          g_DynThread = std::make_unique<ThreadWrapper>();
-          g_DynThread->t = std::thread(DynamicLoop);
-        } else if (g_App.mode == 1) {
-          int cpu = (int)g_Workers.size();
-          int d = std::min(4, std::max(1, cpu / 2));
-          int c = std::max(0, cpu - d);
-          SetWork(c, d, true, true);
-        } else {
-          for (int i = 0; i < 3; ++i)
-            g_App.benchRates[i] = 0;
-          g_App.benchWinner = -1;
-          g_App.benchComplete = false;
-          SetWork((int)g_Workers.size(), 0, 0, 0);
-        }
-      };
-
-      auto ResetState = []() {
-        g_App.shaders = 0;
-        g_App.elapsed = 0;
-        g_App.totalNodes = 0;
-        g_App.loops = 0;
-        g_App.currentPhase = 0;
-        for (auto &w : g_Workers)
-          w->localShaders = 0;
-      };
-
-      if (clickedStart) {
-        g_App.running = !g_App.running;
-        if (g_App.running) {
-          g_App.Log(L"State changed: STARTED");
-          ResetState();
-          StartWorkload();
-        } else {
-          g_App.Log(L"State changed: STOPPED");
-          SetWork(0, 0, 0, 0);
-        }
-      } else if (newMode != -1 && newMode != g_App.mode) {
-        g_App.mode = newMode;
-        std::wstring modeName =
-            (newMode == 2 ? L"Dynamic"
-                          : (newMode == 1 ? L"Steady" : L"Benchmark"));
-        g_App.Log(L"Mode changed to: " + modeName);
-
-        if (newMode == 0) {
-          g_App.selectedWorkload = WL_SCALAR_SIM;
-          g_App.Log(L"Benchmark enforcement: Workload set to " +
-                    GetResolvedISAName(WL_SCALAR_SIM));
-        } else {
-          g_App.selectedWorkload = WL_AUTO;
-          g_App.Log(L"Workload reset to: " + GetResolvedISAName(WL_AUTO));
-        }
-
-        if (g_App.running) {
-          ResetState();
-          StartWorkload();
-        }
-      }
-      g_App.resetTimer = true;
-      InvalidateRect(h, nullptr, FALSE);
-    }
-    if (y > S(50) && y < S(80)) {
-#if defined(_M_ARM64) || defined(__aarch64__)
-      bool has512 = false;
-      bool hasAVX2 = false;
+#ifdef _WIN32
+ALWAYS_INLINE void InterlockedXorCold(uint64_t *ptr, uint64_t val) {
+  _InterlockedXor64((volatile __int64 *)ptr, (long long)val);
+}
 #else
-      bool has512 = g_Cpu.hasAVX512F && !g_ForceNoAVX512;
-      bool hasAVX2 = g_Cpu.hasAVX2 && !g_ForceNoAVX2;
+ALWAYS_INLINE void InterlockedXorCold(uint64_t *ptr, uint64_t val) {
+  __atomic_fetch_xor(ptr, val, __ATOMIC_RELAXED);
+}
 #endif
-      int newSel = -1;
-      if (x > S(10) && x < S(150))
-        newSel = WL_AUTO;
-      else if (x > S(160) && x < S(300) && has512)
-        newSel = WL_AVX512;
-      else if (x > S(310) && x < S(450) && hasAVX2)
-        newSel = WL_AVX2;
-      else if (x > S(460) && x < S(600))
-        newSel = WL_SCALAR_MATH;
-      else if (x > S(610) && x < S(750))
-        newSel = WL_SCALAR_SIM;
 
-      if (newSel != -1 && newSel != g_App.selectedWorkload) {
-        g_ConfigVersion++;
-        g_App.selectedWorkload = newSel;
-        g_App.Log(L"User changed ISA to: " + GetResolvedISAName(newSel));
-        if (g_App.running) {
-          g_App.resetTimer = true;
+// --- X86 SPECIFIC KERNELS ---
+#if !defined(_M_ARM64) && !defined(__aarch64__)
+
+__attribute__((target("avx2,fma"))) void
+RunHyperStress_AVX2(uint64_t seed, int complexity, const StressConfig &config) {
+  const int BLOCK_SIZE = 512;
+  alignas(64) HotNode nodes[BLOCK_SIZE];
+  for (int i = 0; i < BLOCK_SIZE; ++i) {
+    uint64_t s = seed + i * GOLDEN_RATIO;
+    for (int j = 0; j < 16; ++j)
+      nodes[i].fRegs[j] = (float)((s >> (j * 4)) & 0xFF) * 1.1f;
+    for (int j = 0; j < 8; ++j)
+      nodes[i].iRegs[j] = s ^ ((uint64_t)j << 32);
+  }
+
+  size_t coldMask = g_ColdStorage.size() ? (g_ColdStorage.size() - 1) : 0;
+  uint64_t *coldPtr = g_ColdStorage.empty() ? nullptr : g_ColdStorage.data();
+  __m256 vFMA = _mm256_set1_ps(1.0001f);
+  __m256 vMul = _mm256_set1_ps(0.9999f);
+
+  for (int i = 0; i < complexity; i += 4) {
+    if (g_App.quit)
+      break;
+    HotNode *n[4] = {&nodes[i % BLOCK_SIZE], &nodes[(i + 1) % BLOCK_SIZE],
+                     &nodes[(i + 2) % BLOCK_SIZE],
+                     &nodes[(i + 3) % BLOCK_SIZE]};
+    for (int k = 0; k < config.int_intensity; ++k) {
+      for (int j = 0; j < 4; ++j)
+        n[j]->iRegs[0] = (n[j]->iRegs[0] ^ 0x9E3779B9) * n[j]->iRegs[1];
+    }
+    for (int k = 0; k < config.fma_intensity; ++k) {
+      for (int j = 0; j < 4; ++j) {
+        __m256 fA = _mm256_load_ps(n[j]->fRegs);
+        __m256 fB = _mm256_load_ps(n[j]->fRegs + 8);
+        fA = _mm256_fmadd_ps(fA, vMul, vFMA);
+        fB = _mm256_fmadd_ps(fB, vMul, vFMA);
+        _mm256_store_ps(n[j]->fRegs, fA);
+        _mm256_store_ps(n[j]->fRegs + 8, fB);
+      }
+    }
+    if (config.mem_pressure > 0 && coldPtr) {
+      for (int m = 0; m < config.mem_pressure; ++m) {
+        for (int j = 0; j < 4; ++j)
+          InterlockedXorCold(&coldPtr[n[j]->iRegs[0] & coldMask],
+                             n[j]->iRegs[1]);
+      }
+    }
+  }
+}
+
+__attribute__((
+    target("avx512f,avx512vl,avx512bw,avx512dq,avx512cd,evex512"))) void
+RunHyperStress_AVX512(uint64_t seed, int complexity,
+                      const StressConfig &config) {
+  const int BLOCK_SIZE = 512;
+  alignas(64) HotNode nodes[BLOCK_SIZE];
+  for (int i = 0; i < BLOCK_SIZE; ++i) {
+    uint64_t s = seed + i * GOLDEN_RATIO;
+    for (int j = 0; j < 16; ++j)
+      nodes[i].fRegs[j] = (float)((s >> (j * 4)) & 0xFF) * 1.1f;
+    for (int j = 0; j < 8; ++j)
+      nodes[i].iRegs[j] = s ^ ((uint64_t)j << 32);
+  }
+  size_t coldMask = g_ColdStorage.size() ? (g_ColdStorage.size() - 1) : 0;
+  uint64_t *coldPtr = g_ColdStorage.empty() ? nullptr : g_ColdStorage.data();
+  __m512 vFMA = _mm512_set1_ps(1.0001f);
+  __m512 vMul = _mm512_set1_ps(0.9999f);
+
+  for (int i = 0; i < complexity; i += 4) {
+    if (g_App.quit)
+      break;
+    HotNode *n[4] = {&nodes[i % BLOCK_SIZE], &nodes[(i + 1) % BLOCK_SIZE],
+                     &nodes[(i + 2) % BLOCK_SIZE],
+                     &nodes[(i + 3) % BLOCK_SIZE]};
+    for (int k = 0; k < config.int_intensity; ++k) {
+      for (int j = 0; j < 4; ++j)
+        n[j]->iRegs[0] = (n[j]->iRegs[0] ^ 0x9E3779B9) * n[j]->iRegs[1];
+    }
+    // Enhanced: 2x ZMM registers per node for maximum vector unit saturation
+    for (int k = 0; k < config.fma_intensity; ++k) {
+      for (int j = 0; j < 4; ++j) {
+        __m512 f0 = _mm512_load_ps(n[j]->fRegs);
+        __m512 f1 =
+            _mm512_load_ps(n[j]->fRegs); // Re-use same data, stress units
+        f0 = _mm512_fmadd_ps(f0, vMul, vFMA);
+        f1 = _mm512_fmadd_ps(f1, vFMA, vMul); // Different operand order
+        f0 = _mm512_fmadd_ps(f0, f1, vFMA);   // Chain for dependency
+        _mm512_store_ps(n[j]->fRegs, f0);
+      }
+    }
+    if (config.mem_pressure > 0 && coldPtr) {
+      for (int m = 0; m < config.mem_pressure; ++m) {
+        for (int j = 0; j < 4; ++j)
+          InterlockedXorCold(&coldPtr[n[j]->iRegs[0] & coldMask],
+                             n[j]->iRegs[1]);
+      }
+    }
+  }
+}
+
+#endif // !defined(_M_ARM64) && !defined(__aarch64__)
+
+// --- ARM NEON KERNEL ---
+#if defined(_M_ARM64) || defined(__aarch64__)
+#include <arm_neon.h>
+
+void RunHyperStress_NEON(uint64_t seed, int complexity,
+                         const StressConfig &config) {
+  const int BLOCK_SIZE = 512;
+  alignas(64) HotNode nodes[BLOCK_SIZE];
+  for (int i = 0; i < BLOCK_SIZE; ++i) {
+    uint64_t s = seed + i * GOLDEN_RATIO;
+    for (int j = 0; j < 16; ++j)
+      nodes[i].fRegs[j] = (float)((s >> (j * 4)) & 0xFF) * 1.1f;
+    for (int j = 0; j < 8; ++j)
+      nodes[i].iRegs[j] = s ^ ((uint64_t)j << 32);
+  }
+  size_t coldMask = g_ColdStorage.size() ? (g_ColdStorage.size() - 1) : 0;
+  uint64_t *coldPtr = g_ColdStorage.empty() ? nullptr : g_ColdStorage.data();
+
+  // NEON vectors
+  float32x4_t vFMA = vdupq_n_f32(1.0001f);
+  float32x4_t vMul = vdupq_n_f32(0.9999f);
+
+  for (int i = 0; i < complexity; i += 4) {
+    if (g_App.quit)
+      break;
+    HotNode *n[4] = {&nodes[i % BLOCK_SIZE], &nodes[(i + 1) % BLOCK_SIZE],
+                     &nodes[(i + 2) % BLOCK_SIZE],
+                     &nodes[(i + 3) % BLOCK_SIZE]};
+    // Integer work
+    for (int k = 0; k < config.int_intensity; ++k) {
+      for (int j = 0; j < 4; ++j)
+        n[j]->iRegs[0] = (n[j]->iRegs[0] ^ 0x9E3779B9) * n[j]->iRegs[1];
+    }
+    // NEON FMA: 4 vectors x 4 floats = 16 floats per node
+    for (int k = 0; k < config.fma_intensity; ++k) {
+      for (int j = 0; j < 4; ++j) {
+        float32x4_t f0 = vld1q_f32(n[j]->fRegs);
+        float32x4_t f1 = vld1q_f32(n[j]->fRegs + 4);
+        float32x4_t f2 = vld1q_f32(n[j]->fRegs + 8);
+        float32x4_t f3 = vld1q_f32(n[j]->fRegs + 12);
+        // FMA: result = a + b*c -> vfmaq_f32(a, b, c)
+        f0 = vfmaq_f32(vFMA, f0, vMul);
+        f1 = vfmaq_f32(vFMA, f1, vMul);
+        f2 = vfmaq_f32(vFMA, f2, vMul);
+        f3 = vfmaq_f32(vFMA, f3, vMul);
+        vst1q_f32(n[j]->fRegs, f0);
+        vst1q_f32(n[j]->fRegs + 4, f1);
+        vst1q_f32(n[j]->fRegs + 8, f2);
+        vst1q_f32(n[j]->fRegs + 12, f3);
+      }
+    }
+    // Memory pressure
+    if (config.mem_pressure > 0 && coldPtr) {
+      for (int m = 0; m < config.mem_pressure; ++m) {
+        for (int j = 0; j < 4; ++j)
+          InterlockedXorCold(&coldPtr[n[j]->iRegs[0] & coldMask],
+                             n[j]->iRegs[1]);
+      }
+    }
+  }
+}
+
+#endif // ARM64
+
+// --- SCALAR KERNELS (Universal) ---
+void RunHyperStress_Scalar(uint64_t seed, int complexity,
+                           const StressConfig &config) {
+  const int BLOCK_SIZE = 512;
+  alignas(64) HotNode nodes[BLOCK_SIZE];
+  for (int i = 0; i < BLOCK_SIZE; ++i) {
+    uint64_t s = seed + i * GOLDEN_RATIO;
+    for (int j = 0; j < 16; ++j)
+      nodes[i].fRegs[j] = (float)((s >> (j * 4)) & 0xFF) * 1.1f;
+    for (int j = 0; j < 8; ++j)
+      nodes[i].iRegs[j] = s ^ ((uint64_t)j << 32);
+  }
+  size_t coldMask = g_ColdStorage.size() ? (g_ColdStorage.size() - 1) : 0;
+  uint64_t *coldPtr = g_ColdStorage.empty() ? nullptr : g_ColdStorage.data();
+  float vFMA = 1.0001f;
+  float vMul = 0.9999f;
+
+  for (int i = 0; i < complexity; i += 4) {
+    if (g_App.quit)
+      break;
+    HotNode *n[4] = {&nodes[i % BLOCK_SIZE], &nodes[(i + 1) % BLOCK_SIZE],
+                     &nodes[(i + 2) % BLOCK_SIZE],
+                     &nodes[(i + 3) % BLOCK_SIZE]};
+    for (int k = 0; k < config.int_intensity; ++k) {
+      for (int j = 0; j < 4; ++j)
+        n[j]->iRegs[0] = (n[j]->iRegs[0] ^ 0x9E3779B9) * n[j]->iRegs[1];
+    }
+    for (int k = 0; k < config.fma_intensity; ++k) {
+      for (int j = 0; j < 4; ++j) {
+        for (int f = 0; f < 16; ++f) {
+          n[j]->fRegs[f] = (n[j]->fRegs[f] * vMul) + vFMA;
         }
-        InvalidateRect(h, nullptr, FALSE);
       }
     }
-    // Third row - Verify Hash button
-    if (y > S(90) && y < S(120)) {
-      if (x > S(610) && x < S(750)) {
-        ShowVerifyDialog(h);
+    if (config.mem_pressure > 0 && coldPtr) {
+      for (int m = 0; m < config.mem_pressure; ++m) {
+        for (int j = 0; j < 4; ++j)
+          InterlockedXorCold(&coldPtr[n[j]->iRegs[0] & coldMask],
+                             n[j]->iRegs[1]);
       }
     }
   }
-  return DefWindowProc(h, m, w, l);
 }
 
-// Custom dark dialog state
-static HWND g_HashEditBox = nullptr;
-static std::wstring g_HashResult;
-static bool g_HashValid = false;
-static HashResult g_DecodedHash = {};
+// --- Case Block Macros for switch optimization ---
+#define CASE_BLOCK_32(start, code)                                             \
+  case start:                                                                  \
+  case start + 1:                                                              \
+  case start + 2:                                                              \
+  case start + 3:                                                              \
+  case start + 4:                                                              \
+  case start + 5:                                                              \
+  case start + 6:                                                              \
+  case start + 7:                                                              \
+  case start + 8:                                                              \
+  case start + 9:                                                              \
+  case start + 10:                                                             \
+  case start + 11:                                                             \
+  case start + 12:                                                             \
+  case start + 13:                                                             \
+  case start + 14:                                                             \
+  case start + 15:                                                             \
+  case start + 16:                                                             \
+  case start + 17:                                                             \
+  case start + 18:                                                             \
+  case start + 19:                                                             \
+  case start + 20:                                                             \
+  case start + 21:                                                             \
+  case start + 22:                                                             \
+  case start + 23:                                                             \
+  case start + 24:                                                             \
+  case start + 25:                                                             \
+  case start + 26:                                                             \
+  case start + 27:                                                             \
+  case start + 28:                                                             \
+  case start + 29:                                                             \
+  case start + 30:                                                             \
+  case start + 31: {                                                           \
+    code;                                                                      \
+  } break;
 
-LRESULT CALLBACK HashDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
-                                LPARAM lParam) {
-  switch (msg) {
-  case WM_CREATE: {
-    // Enable dark mode titlebar (Windows 10 1809+ / Windows 11)
-    BOOL useDarkMode = TRUE;
-    DwmSetWindowAttribute(hwnd, 20, &useDarkMode, sizeof(useDarkMode));
+#define CASE_BLOCK_16(start, code)                                             \
+  case start:                                                                  \
+  case start + 1:                                                              \
+  case start + 2:                                                              \
+  case start + 3:                                                              \
+  case start + 4:                                                              \
+  case start + 5:                                                              \
+  case start + 6:                                                              \
+  case start + 7:                                                              \
+  case start + 8:                                                              \
+  case start + 9:                                                              \
+  case start + 10:                                                             \
+  case start + 11:                                                             \
+  case start + 12:                                                             \
+  case start + 13:                                                             \
+  case start + 14:                                                             \
+  case start + 15: {                                                           \
+    code;                                                                      \
+  } break;
 
-    // Create Edit control for hash input
-    g_HashEditBox = CreateWindowExW(
-        0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-        S(20), S(60), S(360), S(28), hwnd, (HMENU)101, GetModuleHandle(nullptr),
-        nullptr);
-    SendMessage(g_HashEditBox, WM_SETFONT, (WPARAM)g_Font, TRUE);
+// --- Realistic Compiler Simulation ---
+void RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
+                                const StressConfig &config) {
+  constexpr size_t TREE_NODES = 16384;
+  constexpr size_t HASH_BUCKETS = 4096;
+  constexpr size_t STRING_POOL_SIZE = 64 * 1024;
+  constexpr size_t BITVEC_WORDS = 256;
 
-    // Create Verify button (owner-drawn)
-    CreateWindowExW(0, L"BUTTON", L"Verify",
-                    WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, S(20), S(100), S(120),
-                    S(30), hwnd, (HMENU)102, GetModuleHandle(nullptr), nullptr);
+  auto tree = std::make_unique<FakeAstNode[]>(TREE_NODES);
+  auto hashTable = std::make_unique<uint64_t[]>(HASH_BUCKETS);
+  struct HashEntry {
+    uint64_t key;
+    uint32_t strOffset;
+    uint32_t strLen;
+    uint32_t next;
+    uint32_t nodeRef;
+  };
+  auto tableEntries = std::make_unique<HashEntry[]>(HASH_BUCKETS);
+  auto stringPool = std::make_unique<char[]>(STRING_POOL_SIZE);
+  auto liveInArr = std::make_unique<uint64_t[]>(BITVEC_WORDS);
+  auto liveOutArr = std::make_unique<uint64_t[]>(BITVEC_WORDS);
+  auto liveKillArr = std::make_unique<uint64_t[]>(BITVEC_WORDS);
 
-    // Create Close button (owner-drawn)
-    CreateWindowExW(0, L"BUTTON", L"Close",
-                    WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, S(260), S(100),
-                    S(120), S(30), hwnd, (HMENU)103, GetModuleHandle(nullptr),
-                    nullptr);
+  uint64_t *liveIn = liveInArr.get();
+  uint64_t *liveOut = liveOutArr.get();
+  uint64_t *liveKill = liveKillArr.get();
 
-    g_HashResult = L"Enter a hash and click Verify";
-    return 0;
+  for (size_t i = 0; i < STRING_POOL_SIZE; ++i)
+    stringPool[i] = (char)((seed + i * 13) % 255);
+  for (size_t i = 0; i < TREE_NODES; ++i) {
+    uint64_t s = seed + i * GOLDEN_RATIO;
+    tree[i].payload = s;
+    tree[i].meta = (uint32_t)s;
+    for (int k = 0; k < 4; ++k)
+      tree[i].children[k] = (uint32_t)((s >> (k * 5)) & (TREE_NODES - 1));
   }
-  case WM_DRAWITEM: {
-    LPDRAWITEMSTRUCT dis = (LPDRAWITEMSTRUCT)lParam;
-    if (dis->CtlType == ODT_BUTTON) {
-      bool pressed = (dis->itemState & ODS_SELECTED) != 0;
-      HBRUSH brush = pressed ? g_BtnActive : g_BtnInactive;
-      FillRect(dis->hDC, &dis->rcItem, brush);
-
-      SetBkMode(dis->hDC, TRANSPARENT);
-      SetTextColor(dis->hDC, RGB(200, 200, 200));
-      HFONT oldFont = (HFONT)SelectObject(dis->hDC, g_Font);
-
-      wchar_t btnText[32];
-      GetWindowTextW(dis->hwndItem, btnText, 32);
-      DrawTextW(dis->hDC, btnText, -1, &dis->rcItem,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-      SelectObject(dis->hDC, oldFont);
-      return TRUE;
-    }
-    break;
+  for (size_t i = 0; i < HASH_BUCKETS; ++i) {
+    uint64_t s = seed ^ (i * 0x517cc1b727220a95ULL);
+    tableEntries[i].key = s;
+    tableEntries[i].strOffset = (uint32_t)(s & (STRING_POOL_SIZE - 256));
+    tableEntries[i].strLen = 4 + ((uint32_t)s & 0x1F);
+    tableEntries[i].next = 0;
+    tableEntries[i].nodeRef = (uint32_t)(s & (TREE_NODES - 1));
   }
-  case WM_CTLCOLOREDIT:
-  case WM_CTLCOLORSTATIC: {
-    HDC hdc = (HDC)wParam;
-    SetTextColor(hdc, RGB(200, 200, 200));
-    SetBkColor(hdc, RGB(40, 40, 40));
-    static HBRUSH editBrush = CreateSolidBrush(RGB(40, 40, 40));
-    return (LRESULT)editBrush;
+  for (size_t i = 0; i < BITVEC_WORDS; ++i) {
+    liveIn[i] = seed ^ Rotl64(seed, (unsigned)i);
+    liveOut[i] = ~liveIn[i];
+    liveKill[i] = liveIn[i] ^ 0xAAAAAAAA55555555;
   }
-  case WM_CTLCOLORBTN: {
-    return (LRESULT)g_BtnInactive;
-  }
-  case WM_ERASEBKGND: {
-    HDC hdc = (HDC)wParam;
-    RECT rc;
-    GetClientRect(hwnd, &rc);
-    FillRect(hdc, &rc, g_BgBrush);
-    return 1;
-  }
-  case WM_PAINT: {
-    PAINTSTRUCT ps;
-    BeginPaint(hwnd, &ps);
 
-    SetBkMode(ps.hdc, TRANSPARENT);
-    SetTextColor(ps.hdc, RGB(200, 200, 200));
-    HFONT oldFont = (HFONT)SelectObject(ps.hdc, g_Font);
+  uint64_t acc0 = seed, acc1 = seed + 1, acc2 = seed + 2, acc3 = seed + 3;
 
-    // Title
-    RECT titleRect = {S(20), S(15), S(380), S(50)};
-    DrawTextW(ps.hdc, L"Hash Verification", -1, &titleRect, DT_LEFT);
+  for (int iter = 0; iter < complexity; iter += 4) {
+    if (g_App.quit)
+      break;
 
-    // Input label
-    RECT labelRect = {S(20), S(40), S(380), S(60)};
-    DrawTextW(ps.hdc, L"Enter hash (format: SS3-XXXXXXXXXXX):", -1, &labelRect,
-              DT_LEFT);
-
-    // Result area - extended to show all content
-    RECT resultRect = {S(20), S(145), S(380), S(480)};
-    if (g_HashValid) {
-      SetTextColor(ps.hdc, RGB(80, 255, 80)); // Green for valid
-    } else if (!g_HashResult.empty() &&
-               g_HashResult.find(L"INVALID") != std::wstring::npos) {
-      SetTextColor(ps.hdc, RGB(255, 80, 80)); // Red for invalid
-    }
-    DrawTextW(ps.hdc, g_HashResult.c_str(), -1, &resultRect,
-              DT_LEFT | DT_WORDBREAK);
-
-    SelectObject(ps.hdc, oldFont);
-    EndPaint(hwnd, &ps);
-    return 0;
-  }
-  case WM_COMMAND: {
-    if (LOWORD(wParam) == 102) { // Verify button
-      wchar_t hashBuf[64] = {0};
-      GetWindowTextW(g_HashEditBox, hashBuf, 64);
-      std::wstring hashInput = hashBuf;
-
-      // Trim whitespace
-      size_t start = hashInput.find_first_not_of(L" \t\r\n");
-      size_t end = hashInput.find_last_not_of(L" \t\r\n");
-      if (start != std::wstring::npos && end != std::wstring::npos) {
-        hashInput = hashInput.substr(start, end - start + 1);
+    // Phase 1: Symbol Lookup (FNV-1a hashing, hash table probing)
+    {
+      uint32_t strStart = (uint32_t)(acc0 & (STRING_POOL_SIZE - 256));
+      uint32_t strLen = 4 + (uint32_t)(acc1 & 0x1F);
+      uint64_t hash = 0xcbf29ce484222325ULL;
+      for (uint32_t i = 0; i < strLen; ++i) {
+        hash ^= (unsigned char)stringPool[strStart + i];
+        hash *= 0x100000001b3ULL;
       }
+      uint32_t bucket = (uint32_t)(hash & (HASH_BUCKETS - 1));
+      uint32_t probes = 0;
+      while (tableEntries[bucket].key != 0 && probes < 8) {
+        if (tableEntries[bucket].strLen == strLen) {
+          bool match = true;
+          for (uint32_t i = 0; i < strLen; ++i) {
+            if (stringPool[tableEntries[bucket].strOffset + i] !=
+                stringPool[strStart + i]) {
+              match = false;
+              break;
+            }
+          }
+          if (match) {
+            acc0 ^= tableEntries[bucket].nodeRef;
+            break;
+          }
+        }
+        bucket = (bucket + 1) & (HASH_BUCKETS - 1);
+        probes++;
+      }
+    }
 
-      if (hashInput.empty()) {
-        g_HashResult = L"Please enter a hash to verify.";
-        g_HashValid = false;
-      } else {
-        g_DecodedHash = ValidateBenchmarkHash(hashInput);
-
-        if (g_DecodedHash.valid) {
-          g_HashValid = true;
-          std::wstring osName = (g_DecodedHash.osType == 0)   ? L"Windows"
-                                : (g_DecodedHash.osType == 1) ? L"Linux"
-                                                              : L"macOS";
-          std::wstring archName =
-              (g_DecodedHash.archType == 0) ? L"x64" : L"ARM64";
-
-          g_HashResult = L"VALID HASH\n\n";
-          g_HashResult += L"Hash: " + hashInput + L"\n\n";
-          g_HashResult += L"--- Decoded Info ---\n";
-          g_HashResult += L"OS: " + osName + L"\n";
-          g_HashResult += L"Arch: " + archName + L"\n\n";
-          g_HashResult += L"--- Benchmark Scores ---\n";
-          g_HashResult +=
-              L"1st Min: " + FmtNum(g_DecodedHash.rates[0]) + L"/s\n";
-          g_HashResult +=
-              L"2nd Min: " + FmtNum(g_DecodedHash.rates[1]) + L"/s\n";
-          g_HashResult += L"3rd Min: " + FmtNum(g_DecodedHash.rates[2]) + L"/s";
-        } else {
-          g_HashValid = false;
-          g_HashResult = L"INVALID HASH\n\n";
-          g_HashResult += L"\"" + hashInput + L"\"\n\n";
-          g_HashResult += L"Possible reasons:\n";
-          g_HashResult += L"- Hash is corrupted\n";
-          g_HashResult += L"- Not from ShaderStress 3.0\n";
-          g_HashResult += L"- Hash was modified";
+    // Phase 2: Pointer Chasing (DOM Tree traversal)
+    {
+      uint32_t nodeIdx = (uint32_t)(acc0 & (TREE_NODES - 1));
+      for (int depth = 0; depth < 12; ++depth) {
+        FakeAstNode &node = tree[nodeIdx];
+        uint32_t idom = node.children[0];
+        acc1 = Rotl64(acc1 ^ tree[idom].payload, 7);
+        uint32_t selector = (uint32_t)((acc1 >> (depth * 2)) & 0x3);
+        nodeIdx = node.children[selector];
+        if (node.meta & 0x100) {
+          acc2 ^= tree[node.children[1]].payload;
+          acc2 ^= tree[node.children[2]].payload;
         }
       }
-      InvalidateRect(hwnd, nullptr, TRUE);
     }
-    if (LOWORD(wParam) == 103) { // Close button
-      DestroyWindow(hwnd);
+
+    // Phase 3: Register Pressure & ALU
+    {
+      uint64_t vr[16];
+      for (int i = 0; i < 16; ++i)
+        vr[i] = acc0 + i * GOLDEN_RATIO;
+
+      for (int op = 0; op < 32; ++op) {
+        int dst = (acc1 >> (op & 7)) & 0xF;
+        int src1 = (acc2 >> ((op + 1) & 7)) & 0xF;
+        int src2 = (acc3 >> ((op + 2) & 7)) & 0xF;
+        uint32_t opcode = (uint32_t)((vr[src1] ^ vr[src2]) & 0xFF);
+
+        switch (opcode) {
+          CASE_BLOCK_32(0, vr[dst] = vr[src1] + vr[src2];)
+          CASE_BLOCK_32(32, vr[dst] = vr[src1] - vr[src2];)
+          CASE_BLOCK_32(64, vr[dst] = vr[src1] * vr[src2];)
+          CASE_BLOCK_16(96, vr[dst] = vr[src1] ^ vr[src2];)
+          CASE_BLOCK_16(112, vr[dst] = Rotl64(vr[src1], src2 & 63);)
+          CASE_BLOCK_16(128, vr[dst] = __popcnt64(vr[src1]);)
+          CASE_BLOCK_16(144, vr[dst] = _lzcnt_u64(vr[src1]);)
+          CASE_BLOCK_16(160, vr[dst] = _tzcnt_u64(vr[src1]);)
+          CASE_BLOCK_16(176,
+                        vr[dst] = vr[src2] ? vr[src1] / vr[src2] : vr[src1];)
+          CASE_BLOCK_32(192,
+                        vr[dst] = tree[vr[src1] & (TREE_NODES - 1)].payload;)
+        default:
+          vr[dst] =
+              (vr[src1] << (src2 & 31)) | (vr[src1] >> (32 - (src2 & 31)));
+          break;
+        }
+      }
+      acc0 = vr[0] ^ vr[15];
     }
-    return 0;
+
+    // Phase 4: BitVector dataflow (compiler liveness analysis)
+    {
+      for (size_t w = 0; w < BITVEC_WORDS; ++w) {
+        uint64_t gen = tree[w & (TREE_NODES - 1)].payload;
+        uint64_t kill = liveKill[w];
+        liveOut[w] = gen | (liveIn[w] & ~kill);
+        liveIn[w] = liveOut[(w + 1) & (BITVEC_WORDS - 1)] |
+                    liveOut[(w + 7) & (BITVEC_WORDS - 1)];
+      }
+      for (size_t w = 0; w < BITVEC_WORDS; w += 4) {
+        acc3 += __popcnt64(liveIn[w]) + __popcnt64(liveIn[w + 1]) +
+                __popcnt64(liveIn[w + 2]) + __popcnt64(liveIn[w + 3]);
+      }
+    }
   }
-  case WM_CLOSE:
-    DestroyWindow(hwnd);
-    return 0;
-  case WM_DESTROY:
-    g_HashEditBox = nullptr;
-    g_HashResult.clear();
-    return 0;
-  }
-  return DefWindowProc(hwnd, msg, wParam, lParam);
+
+  volatile uint64_t sink = acc0 ^ acc1 ^ acc2 ^ acc3;
+  (void)sink;
 }
 
-void ShowVerifyDialog(HWND parent) {
-  // Register window class for dialog
-  static bool registered = false;
-  if (!registered) {
-    WNDCLASSEXW wc = {};
-    wc.cbSize = sizeof(wc);
-    wc.lpfnWndProc = HashDialogProc;
-    wc.hInstance = GetModuleHandle(nullptr);
-    wc.lpszClassName = L"ShaderStressHashDialog";
-    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.hbrBackground = g_BgBrush;
-    RegisterClassExW(&wc);
-    registered = true;
+// --- Workload Dispatcher ---
+void UnsafeRunWorkload(uint64_t seed, int complexity,
+                       const StressConfig &config) {
+  if (g_App.quit)
+    return;
+
+  int sel = g_App.selectedWorkload.load();
+#if defined(_M_ARM64) || defined(__aarch64__)
+  bool can512 = false;
+  bool canAVX2 = false;
+#else
+  bool can512 = g_Cpu.hasAVX512F && !g_ForceNoAVX512;
+  bool canAVX2 = g_Cpu.hasAVX2 && g_Cpu.hasFMA && !g_ForceNoAVX2;
+#endif
+
+#if !defined(_M_ARM64) && !defined(__aarch64__)
+  if (sel == WL_AVX512 && can512) {
+    RunHyperStress_AVX512(seed, complexity, config);
+    return;
+  }
+  if (sel == WL_AVX2 && canAVX2) {
+    RunHyperStress_AVX2(seed, complexity, config);
+    return;
+  }
+#endif
+
+  if (sel == WL_SCALAR_MATH) {
+#if defined(_M_ARM64) || defined(__aarch64__)
+    RunHyperStress_NEON(seed, complexity, config); // Use NEON on ARM
+#else
+    RunHyperStress_Scalar(seed, complexity, config);
+#endif
+    return;
+  }
+  if (sel == WL_SCALAR_SIM) {
+    RunRealisticCompilerSim_V3(seed, complexity, config);
+    return;
   }
 
-  // Get parent window position
-  RECT parentRect;
-  GetWindowRect(parent, &parentRect);
-  int px = parentRect.left + (parentRect.right - parentRect.left - S(400)) / 2;
-  int py = parentRect.top + (parentRect.bottom - parentRect.top - S(500)) / 2;
-
-  // Create dialog window
-  HWND dialog = CreateWindowExW(
-      WS_EX_DLGMODALFRAME, L"ShaderStressHashDialog", L"Verify Hash",
-      WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU, px, py, S(400), S(500),
-      parent, nullptr, GetModuleHandle(nullptr), nullptr);
-
-  // Modal message loop
-  EnableWindow(parent, FALSE);
-  MSG msg;
-  while (IsWindow(dialog) && GetMessage(&msg, nullptr, 0, 0)) {
-    TranslateMessage(&msg);
-    DispatchMessage(&msg);
-  }
-  EnableWindow(parent, TRUE);
-  SetForegroundWindow(parent);
+#if !defined(_M_ARM64) && !defined(__aarch64__)
+  if (can512)
+    RunHyperStress_AVX512(seed, complexity, config);
+  else if (canAVX2)
+    RunHyperStress_AVX2(seed, complexity, config);
+  else
+#endif
+    RunRealisticCompilerSim_V3(seed, complexity, config);
 }
 
-void PrintHelp() {
-  AllocConsole();
-  freopen("CONOUT$", "w", stdout);
-  wprintf(L"ShaderStress v%ls\n\n", APP_VERSION.c_str());
-  printf(
-      "Options:\n  --repro <seed> <complexity>  : Run a specific crash "
-      "reproduction case.\n  --max-duration <sec>         : Automatically stop "
-      "after N seconds.\n  --no-avx512                  : Force AVX2/Scalar "
-      "path.\n  --no-avx2                    : Force Scalar path.\n");
-  getchar();
-  ExitProcess(0);
+void SafeRunWorkload(uint64_t seed, int complexity, const StressConfig &config,
+                     int threadIdx) {
+#if defined(_WIN32) && !defined(DISABLE_SEH)
+  __try {
+    UnsafeRunWorkload(seed, complexity, config);
+  } __except (
+      WriteCrashDump(GetExceptionInformation(), seed, complexity, threadIdx)) {
+    ExitProcess(-1);
+  }
+#else
+  (void)threadIdx; // Unused when SEH disabled
+  UnsafeRunWorkload(seed, complexity, config);
+#endif
 }
