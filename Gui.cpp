@@ -155,7 +155,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     part3 += L"\nI/O Threads: " +
              std::wstring(g_App.ioActive ? L"ACTIVE (4x)" : L"Idle");
 
-    RECT tr{S(20), S(100), S(740), S(620)};
+    RECT tr{S(20), S(100), S(740), S(680)};
     DrawTextW(s_memDC, part1.c_str(), -1, &tr, DT_LEFT | DT_NOCLIP);
     RECT measure = tr;
     DrawTextW(s_memDC, part1.c_str(), -1, &measure, DT_LEFT | DT_CALCRECT);
