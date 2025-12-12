@@ -195,7 +195,7 @@ int main(int argc, char *argv[]) {
   g_App.log << L"CPU: " << g_Cpu.brand << std::endl;
 
   // Print startup info to console
-  std::cout << "ShaderStress " << "3.0" << std::endl;
+  std::cout << "ShaderStress " << "3.2" << std::endl;
   std::wcout << L"CPU: " << g_Cpu.brand << std::endl;
 
   // Cold Storage Init
