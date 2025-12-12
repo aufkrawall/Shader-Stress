@@ -227,7 +227,7 @@ def build_x64():
         "-s",     # Strip symbols (smaller binary)
         "-municode", "-mwindows",
         "-static",  # Static linking
-        "-DUNICODE", "-D_UNICODE",
+        "-DUNICODE", "-D_UNICODE", "-D_WIN32_WINNT=0x0A00",
         "-fms-extensions"] + src_files + [res_obj,
         "-o", os.path.join(out_dir, "ShaderStress.exe"),
         "-luser32", "-lgdi32", "-ldwmapi", "-lshcore", "-lshell32", "-lole32", "-ldbghelp"
