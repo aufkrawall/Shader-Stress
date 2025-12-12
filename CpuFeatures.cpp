@@ -4,10 +4,16 @@
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) ||             \
     defined(_M_IX86)
 // Helper with target attribute for safe XGETBV
+#if defined(__clang__) || defined(__GNUC__)
 __attribute__((target("xsave"))) static unsigned long long
 safe_xgetbv(unsigned int index) {
   return _xgetbv(index);
 }
+#else
+static unsigned long long safe_xgetbv(unsigned int index) {
+  return _xgetbv(index);
+}
+#endif
 #endif
 
 std::wstring GetCpuBrand() {

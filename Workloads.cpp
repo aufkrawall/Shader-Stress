@@ -301,8 +301,6 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
   constexpr size_t STRING_POOL_SIZE = 64 * 1024;
   constexpr size_t BITVEC_WORDS = 256;
 
-  auto tree = std::make_unique<FakeAstNode[]>(TREE_NODES);
-  auto hashTable = std::make_unique<uint64_t[]>(HASH_BUCKETS);
   struct HashEntry {
     uint64_t key;
     uint32_t strOffset;
@@ -310,11 +308,21 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
     uint32_t next;
     uint32_t nodeRef;
   };
-  auto tableEntries = std::make_unique<HashEntry[]>(HASH_BUCKETS);
-  auto stringPool = std::make_unique<char[]>(STRING_POOL_SIZE);
-  auto liveInArr = std::make_unique<uint64_t[]>(BITVEC_WORDS);
-  auto liveOutArr = std::make_unique<uint64_t[]>(BITVEC_WORDS);
-  auto liveKillArr = std::make_unique<uint64_t[]>(BITVEC_WORDS);
+
+  // Thread-local storage to avoid repeated large allocations
+  static thread_local std::unique_ptr<FakeAstNode[]> tree =
+      std::make_unique<FakeAstNode[]>(TREE_NODES);
+  // unused hashTable removed
+  static thread_local std::unique_ptr<HashEntry[]> tableEntries =
+      std::make_unique<HashEntry[]>(HASH_BUCKETS);
+  static thread_local std::unique_ptr<char[]> stringPool =
+      std::make_unique<char[]>(STRING_POOL_SIZE);
+  static thread_local std::unique_ptr<uint64_t[]> liveInArr =
+      std::make_unique<uint64_t[]>(BITVEC_WORDS);
+  static thread_local std::unique_ptr<uint64_t[]> liveOutArr =
+      std::make_unique<uint64_t[]>(BITVEC_WORDS);
+  static thread_local std::unique_ptr<uint64_t[]> liveKillArr =
+      std::make_unique<uint64_t[]>(BITVEC_WORDS);
 
   uint64_t *liveIn = liveInArr.get();
   uint64_t *liveOut = liveOutArr.get();
@@ -456,7 +464,10 @@ void UnsafeRunWorkload(uint64_t seed, int complexity,
   if (g_App.quit)
     return;
 
+  // Benchmark Mode used to enforce Scalar Realistic, but user requested
+  // freedom.
   int sel = g_App.selectedWorkload.load();
+
 #if defined(_M_ARM64) || defined(__aarch64__)
   bool can512 = false;
   bool canAVX2 = false;

@@ -1,6 +1,11 @@
 // Platform.cpp - Cross-platform helpers (Windows/Linux/macOS)
 #include "Common.h"
 
+#ifdef PLATFORM_MACOS
+#include <mach/mach.h>
+#include <mach/thread_policy.h>
+#endif
+
 void DisablePowerThrottling() {
 #ifdef PLATFORM_WINDOWS
   PROCESS_POWER_THROTTLING_STATE PowerThrottling = {0};
@@ -52,14 +57,15 @@ void PinThreadToCore(int coreIdx) {
   CPU_SET(coreIdx, &cpuset);
   pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
 #elif defined(PLATFORM_MACOS)
-  // macOS: Thread affinity is advisory only, using thread_policy_set is complex
-  // For now, we skip explicit pinning on macOS
-  (void)coreIdx;
+  thread_affinity_policy_data_t policy = {static_cast<integer_t>(coreIdx)};
+  thread_policy_set(mach_thread_self(), THREAD_AFFINITY_POLICY,
+                    (thread_policy_t)&policy, THREAD_AFFINITY_POLICY_COUNT);
 #endif
 }
 
 // Crash dump writing for debugging (Windows only)
 #ifdef PLATFORM_WINDOWS
+#include <dbghelp.h>
 LONG WINAPI WriteCrashDump(PEXCEPTION_POINTERS pExceptionInfo, uint64_t seed,
                            int complexity, int threadIdx) {
   auto now = std::chrono::system_clock::now();

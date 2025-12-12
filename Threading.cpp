@@ -3,36 +3,74 @@
 
 // --- Worker Logic ---
 static void RunCompilerLogic(int idx, Worker &w) {
-  static thread_local std::array<int, 1024> pregenComplexity;
-  static thread_local size_t complexityIdx = 0;
-  static thread_local bool initialized = false;
-
-  if (!initialized) {
-    std::mt19937 gen(1234 + idx);
-    std::exponential_distribution<> dist(0.0001);
-    for (auto &c : pregenComplexity) {
-      double dComp = std::min(dist(gen), 495000.0);
-      c = 5000 + static_cast<int>(dComp);
-    }
-    initialized = true;
+  // Lightweight PRNG (XorShift64*) state per thread
+  static thread_local uint64_t rngState = 0;
+  if (rngState == 0) {
+    // Seed with high-res tick mixed with thread ID
+    uint64_t s = GetTick() + ((uint64_t)idx * 0x9E3779B97F4A7C15ULL);
+    rngState = (s == 0) ? 1 : s;
   }
 
-  int complexity = pregenComplexity[complexityIdx++ & 1023];
-  if (g_App.mode == 1)
+  auto NextRand = [&]() -> uint64_t {
+    uint64_t x = rngState;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    rngState = x;
+    return x * 0x2545F4914F6CDD1DULL;
+  };
+
+  // Generate complexity: Exponential distribution approx
+  // Range: ~5000 to ~500000
+  uint64_t r = NextRand();
+  // Use log loading to simulate exponential-like distribution
+  int complexity = 5000 + (r % 10000);
+  // Occasional spikes
+  if ((r & 0xF) == 0)
+    complexity += (r % 100000);
+  if ((r & 0xFF) == 0)
+    complexity += (r % 400000);
+
+  if (g_App.mode == 1) // Steady mode
     complexity = 12000;
 
   static thread_local uint64_t lastVer = 0;
   static thread_local StressConfig cachedCfg;
+
+  // Per-job randomization of knobs (Simulation of varying shader
+  // characteristics) We offset the global config slightly per job to create
+  // "de-correlated" load
+  StressConfig jobCfg;
+
   if (lastVer != g_ConfigVersion.load(std::memory_order_relaxed)) {
     std::lock_guard<std::mutex> lk(g_ConfigMtx);
     cachedCfg = g_ActiveConfig;
-    lastVer = g_ConfigVersion;
+    lastVer = g_ConfigVersion.load(std::memory_order_relaxed);
+  }
+  jobCfg = cachedCfg;
+
+  // Apply micro-variation
+  if (g_App.mode !=
+      0) { // Don't randomize in benchmark mode if strictness is needed?
+    // Actually, benchmark should be consistent?
+    // Report says: "Randomize... per job... or periodically shuffle".
+    // Let's vary intensity slightly if not steady mode?
+    // For now, keep it simple: apply complexity variation.
+    // Knobs:
+    uint64_t r2 = NextRand();
+    if ((r2 & 3) == 0)
+      jobCfg.int_intensity =
+          std::max(1, jobCfg.int_intensity + ((int)(r2 % 3) - 1));
+    if ((r2 & 7) == 0)
+      jobCfg.fma_intensity =
+          std::max(1, jobCfg.fma_intensity + ((int)((r2 >> 4) % 3) - 1));
   }
 
   uint64_t seed =
       (uint64_t)GetTick() ^ ((uint64_t)idx << 32) ^
       (w.localShaders.load(std::memory_order_relaxed) * GOLDEN_RATIO);
-  SafeRunWorkload(seed, complexity, cachedCfg, idx);
+
+  SafeRunWorkload(seed, complexity, jobCfg, idx);
   w.localShaders.fetch_add(1, std::memory_order_relaxed);
   g_App.totalNodes.fetch_add(complexity, std::memory_order_relaxed);
 }
@@ -300,11 +338,17 @@ void RAMThread() {
     if (pages > 0 && pageSize > 0)
       availPhys = (uint64_t)pages * (uint64_t)pageSize;
 #elif defined(PLATFORM_MACOS)
-    // macOS specific vm_stat logic could go here, or just basic physical guess
-    // For simplicity, assume 16GB limit or user config on macOS for now
-    // Actually, sysctl hw.memsize for total, but available is harder.
-    // Let's use a safe fallback or sysctl.
-    availPhys = 8ULL * 1024 * 1024 * 1024; // Placeholder safe fallback
+    // macOS specific memory detection
+    int mib[2];
+    mib[0] = CTL_HW;
+    mib[1] = HW_MEMSIZE;
+    int64_t size = 0;
+    size_t len = sizeof(size);
+    if (sysctl(mib, 2, &size, &len, NULL, 0) == 0) {
+      availPhys = (uint64_t)size;
+    } else {
+      availPhys = 8ULL * 1024 * 1024 * 1024; // Fallback
+    }
 #endif
 
     uint64_t safeSize = availPhys * 7 / 10;
@@ -358,6 +402,11 @@ void RAMThread() {
 #endif // PLATFORM_WINDOWS
 
 void SetWork(int requestComps, int requestDecomp, bool io, bool ram) {
+  // Benchmark Mode Integrity: Force disable IO and RAM threads
+  if (g_App.mode == 0) {
+    io = false;
+    ram = false;
+  }
   // 1. Calculate Budget
   int cpuTotal = (int)g_Workers.size();
   int cntIO = io ? 1 : 0;   // User requested single IO thread

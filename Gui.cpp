@@ -9,6 +9,11 @@ HBRUSH g_BtnActive = nullptr;
 HBRUSH g_BtnInactive = nullptr;
 HBRUSH g_BtnDisabled = nullptr;
 
+// Backbuffer resources
+static HDC s_memDC = nullptr;
+static HBITMAP s_memBM = nullptr;
+static int s_width = 0, s_height = 0;
+
 // Forward declarations
 void ShowVerifyDialog(HWND parent);
 
@@ -31,6 +36,10 @@ void CleanupGDI() {
 
 LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
   if (m == WM_DESTROY) {
+    if (s_memDC)
+      DeleteDC(s_memDC);
+    if (s_memBM)
+      DeleteObject(s_memBM);
     g_App.running = false;
     g_App.quit = true;
     PostQuitMessage(0);
@@ -42,9 +51,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     RECT rc;
     GetClientRect(h, &rc);
 
-    static HDC s_memDC = nullptr;
-    static HBITMAP s_memBM = nullptr;
-    static int s_width = 0, s_height = 0;
+    GetClientRect(h, &rc);
 
     if (rc.right != s_width || rc.bottom != s_height || !s_memDC) {
       if (s_memDC) {
@@ -279,6 +286,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       bool has512 = g_Cpu.hasAVX512F && !g_ForceNoAVX512;
       bool hasAVX2 = g_Cpu.hasAVX2 && !g_ForceNoAVX2;
 #endif
+
       int newSel = -1;
       if (x > S(10) && x < S(150))
         newSel = WL_AUTO;

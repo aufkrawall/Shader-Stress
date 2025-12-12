@@ -121,12 +121,12 @@ cleanup:
 
 #else // Linux/macOS CLI
 
-#include <iostream>
-#include <signal.h>
-
+#include <filesystem>
 #include <iostream>
 #include <locale>
 #include <signal.h>
+
+// ... signalHandler ...
 
 static void signalHandler(int sig) {
   (void)sig;
@@ -151,9 +151,28 @@ static int AskInput(const std::string &prompt, int def, int min, int max) {
 
 int main(int argc, char *argv[]) {
   // Setup Locale and Logging
-  std::setlocale(LC_ALL, ""); // Use environment locale
+  try {
+    // Try forcing UTF-8 locale for consistent wide-char handling on macOS
+    std::locale::global(std::locale("en_US.UTF-8"));
+  } catch (...) {
+    std::setlocale(LC_ALL, ""); // Fallback
+  }
+
+  std::cout << "Working Directory: " << std::filesystem::current_path()
+            << std::endl;
+
   g_App.log.open("ShaderStress.log", std::ios::out | std::ios::trunc);
-  g_App.log.imbue(std::locale(""));
+  if (!g_App.log.is_open()) {
+    std::cerr << "ERROR: Failed to open ShaderStress.log for writing!"
+              << std::endl;
+    perror("Reason"); // Print system error (permission denied, etc)
+  }
+
+  try {
+    g_App.log.imbue(std::locale());
+  } catch (...) {
+    // If imbue fails, we define no special locale (C default)
+  }
 
   // Log Header
   g_App.log << L"--- Session Start ---" << std::endl;
@@ -164,8 +183,12 @@ int main(int argc, char *argv[]) {
 #endif
   g_App.log << L"Architecture: " << GetArchName() << std::endl;
 
-  signal(SIGINT, signalHandler);
-  signal(SIGTERM, signalHandler);
+  struct sigaction sa;
+  sa.sa_handler = signalHandler;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0; // No SA_RESTART -> interrupts sleep/read calls
+  sigaction(SIGINT, &sa, NULL);
+  sigaction(SIGTERM, &sa, NULL);
 
   g_Cpu = GetCpuInfo();
   g_App.sigStatus = g_Cpu.name;

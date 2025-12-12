@@ -1,12 +1,14 @@
 // Common.h - Shared types
 #pragma once
 
-#if defined(_WIN32) || defined(_WIN64)
-#define PLATFORM_WINDOWS 1
-#elif defined(__linux__)
+#include <cstdint>
+
+#if defined(__linux__) || defined(__linux) || defined(linux)
 #define PLATFORM_LINUX 1
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) || defined(__MACH__)
 #define PLATFORM_MACOS 1
+#elif defined(_WIN32) || defined(_WIN64)
+#define PLATFORM_WINDOWS 1
 #endif
 
 #ifdef PLATFORM_WINDOWS
@@ -16,14 +18,14 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <windows.h>
 #include <cstdio>
-#include <dbghelp.h>
 #include <dwmapi.h>
 #include <processthreadsapi.h>
 #include <shellapi.h>
+#include <windows.h>
 #include <windowsx.h>
-
+// Note: dbghelp.h removed from Common to avoid pollution, include in
+// Platform.cpp if needed
 #else
 #include <cstdio>
 #include <cstdlib>
@@ -32,6 +34,11 @@
 #include <sys/mman.h>
 #include <sys/time.h>
 #include <unistd.h>
+#ifdef PLATFORM_MACOS
+#include <sys/sysctl.h>
+#include <sys/types.h>
+
+#endif
 typedef void *HWND;
 typedef void *HANDLE;
 typedef unsigned long DWORD;
@@ -42,6 +49,7 @@ typedef int BOOL;
 #endif
 
 // Architecture-specific intrinsics
+// Architecture-specific intrinsics
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) ||             \
     defined(_M_IX86)
 #include <cpuid.h>
@@ -50,17 +58,44 @@ typedef int BOOL;
 #ifndef __popcnt64
 #define __popcnt64 __builtin_popcountll
 #endif
-#ifndef _lzcnt_u64
-#define _lzcnt_u64 __builtin_clzll
+// Use safe static inlines instead of direct macros for 0-check
+static inline uint64_t SafeLZCNT(uint64_t x) {
+  return (x == 0) ? 64 : __builtin_clzll(x);
+}
+static inline uint64_t SafeTZCNT(uint64_t x) {
+  return (x == 0) ? 64 : __builtin_ctzll(x);
+}
+#ifdef _lzcnt_u64
+#undef _lzcnt_u64
 #endif
-#ifndef _tzcnt_u64
-#define _tzcnt_u64 __builtin_ctzll
+#define _lzcnt_u64 SafeLZCNT
+
+#ifdef _tzcnt_u64
+#undef _tzcnt_u64
 #endif
+#define _tzcnt_u64 SafeTZCNT
 #endif
 #elif defined(_M_ARM64) || defined(__aarch64__)
-#define _lzcnt_u64 __builtin_clzll
-#define _tzcnt_u64 __builtin_ctzll
+// ARM64 CLZ counts leading zeros. RBIT+CLZ for CTZ.
+static inline uint64_t SafeLZCNT(uint64_t x) {
+  return (x == 0) ? 64 : __builtin_clzll(x);
+}
+static inline uint64_t SafeTZCNT(uint64_t x) {
+  return (x == 0) ? 64 : __builtin_ctzll(x);
+}
+#ifdef _lzcnt_u64
+#undef _lzcnt_u64
+#endif
+#define _lzcnt_u64 SafeLZCNT
+
+#ifdef _tzcnt_u64
+#undef _tzcnt_u64
+#endif
+#define _tzcnt_u64 SafeTZCNT
+
+#ifndef __popcnt64
 #define __popcnt64 __builtin_popcountll
+#endif
 #endif
 
 #include <algorithm>
