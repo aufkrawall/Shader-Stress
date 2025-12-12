@@ -719,7 +719,8 @@ void Watchdog() {
             g_App.Log(L"Benchmark Minute " +
                       std::to_wstring(lastBenchIntervalIndex + 1) + L": " +
                       FmtNum(g_App.benchRates[lastBenchIntervalIndex]) +
-                      L" Jobs/s | Hash: " + g_App.benchHash);
+                      L" Jobs/s | Hash: " + g_App.benchHash + L" (v" +
+                      std::wstring(APP_VERSION) + L")");
           }
           lastBenchIntervalIndex = currentIntervalIdx;
         }

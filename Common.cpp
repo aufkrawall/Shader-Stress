@@ -1,7 +1,7 @@
 // Common.cpp - Global variable definitions and utility function implementations
 #include "Common.h"
 
-const std::wstring APP_VERSION = L"3.2";
+const std::wstring APP_VERSION = L"3.3";
 
 // --- Global Variables ---
 CpuFeatures g_Cpu;
@@ -93,32 +93,82 @@ std::wstring GetResolvedISAName(int workloadSel) {
   return L"Scalar Realistic (Auto)";
 }
 
+// Helper for logging
+static std::string ToLogStr(const std::wstring &w) {
+  if (w.empty())
+    return "";
+#ifdef PLATFORM_WINDOWS
+  int size = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr,
+                                 0, nullptr, nullptr);
+  std::string s(size, 0);
+  WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), &s[0], size, nullptr,
+                      nullptr);
+  return s;
+#else
+  // Simple rough conversion for Linux/macOS logging ease (flawed for non-ASCII
+  // if locale bad, but robust against crash) std::wcstombs relies on locale. If
+  // locale is C, it might fail. Fallback: manual cast (ASCII only safe) + '?'
+  // replacement
+  std::string s;
+  s.reserve(w.size());
+  for (wchar_t c : w) {
+    if (c < 128)
+      s.push_back((char)c);
+    else
+      s.push_back('?');
+  }
+  return s;
+#endif
+}
+
 // --- AppState Methods ---
+// Logs with timestamp to both valid outputs and history
 void AppState::Log(const std::wstring &msg) {
+  auto now = std::chrono::system_clock::now();
+  auto time = std::chrono::system_clock::to_time_t(now);
+  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now.time_since_epoch()) %
+            1000;
+  std::tm tm_buf;
+#ifdef PLATFORM_WINDOWS
+  localtime_s(&tm_buf, &time);
+#else
+  localtime_r(&time, &tm_buf);
+#endif
+
+  std::wstringstream ss;
+  ss << L"[" << tm_buf.tm_hour << L":" << tm_buf.tm_min << L":" << tm_buf.tm_sec
+     << L"." << ms.count() << L"] " << msg;
+
+  std::wstring fullMsg = ss.str();
+
+  // Send to history (for clipboard)
+  {
+    std::lock_guard<std::mutex> lk(historyMtx);
+    logHistory.push_back(fullMsg);
+    if (logHistory.size() > 1000)
+      logHistory.erase(logHistory.begin());
+  }
+
+  // Send to file/console
   std::lock_guard<std::mutex> lk(logMtx);
   if (log.is_open()) {
-    auto now = std::chrono::system_clock::now();
-    auto time = std::chrono::system_clock::to_time_t(now);
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                  now.time_since_epoch()) %
-              1000;
-    std::tm tm_buf;
-#ifdef PLATFORM_WINDOWS
-    localtime_s(&tm_buf, &time);
-#else
-    localtime_r(&time, &tm_buf);
-#endif
-    log << L"[" << tm_buf.tm_hour << L":" << tm_buf.tm_min << L":"
-        << tm_buf.tm_sec << L"." << ms.count() << L"] " << msg << std::endl;
+    log << ToLogStr(fullMsg) << std::endl;
   }
   if (g_Repro.active)
     std::wcout << msg << std::endl;
 }
 
 void AppState::LogRaw(const std::wstring &msg) {
+  {
+    std::lock_guard<std::mutex> lk(historyMtx);
+    logHistory.push_back(msg);
+    if (logHistory.size() > 1000)
+      logHistory.erase(logHistory.begin());
+  }
   std::lock_guard<std::mutex> lk(logMtx);
   if (log.is_open()) {
-    log << msg << std::endl;
+    log << ToLogStr(msg) << std::endl;
   }
 }
 
@@ -140,8 +190,88 @@ void DetectBestConfig() {
 // Encoding scheme: SS3-XXXXXXXXXXX (11 char Base62 hash)
 // Layout: [OS:2][ARCH:2][CPUHASH:8][R0:16][R1:16][R2:16][CHECK:8] = 68 bits
 
+// --- Benchmark Hash Validation ---
+// Encoding scheme: SS3-XXXXXXXXXXXXXXXX (16 char Base62 hash)
+// Payload (92 bits): [Data:60][Checksum:32]
+// Data Layout: [OS:2][ARCH:2][CPUHASH:8][R0:16][R1:16][R2:16]
+
 static const wchar_t *B62 =
     L"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+// --- 128-bit Helper for Base62 Encoding/Encryption ---
+struct u128 {
+  uint64_t lo, hi;
+};
+
+// Portable FNV-1a 32-bit hash
+static uint32_t FNV1a(const void *data, size_t len) {
+  uint32_t hash = 2166136261u;
+  const uint8_t *p = (const uint8_t *)data;
+  for (size_t i = 0; i < len; ++i) {
+    hash ^= p[i];
+    hash *= 16777619u;
+  }
+  return hash;
+}
+
+static uint64_t DivMod62(u128 &n) {
+  uint64_t rem = 0;
+  uint32_t chunks[4];
+  chunks[3] = (uint32_t)(n.hi >> 32);
+  chunks[2] = (uint32_t)(n.hi);
+  chunks[1] = (uint32_t)(n.lo >> 32);
+  chunks[0] = (uint32_t)(n.lo);
+
+  for (int i = 3; i >= 0; --i) {
+    uint64_t cur = chunks[i] + (rem << 32);
+    chunks[i] = (uint32_t)(cur / 62);
+    rem = cur % 62;
+  }
+
+  n.hi = ((uint64_t)chunks[3] << 32) | chunks[2];
+  n.lo = ((uint64_t)chunks[1] << 32) | chunks[0];
+  return rem;
+}
+
+static void MulAdd62(u128 &n, uint64_t add) {
+  uint64_t carry = add;
+  uint32_t chunks[4];
+  chunks[0] = (uint32_t)n.lo;
+  chunks[1] = (uint32_t)(n.lo >> 32);
+  chunks[2] = (uint32_t)n.hi;
+  chunks[3] = (uint32_t)(n.hi >> 32);
+
+  for (int i = 0; i < 4; ++i) {
+    uint64_t res = (uint64_t)chunks[i] * 62 + carry;
+    chunks[i] = (uint32_t)res;
+    carry = res >> 32;
+  }
+  n.lo = ((uint64_t)chunks[1] << 32) | chunks[0];
+  n.hi = ((uint64_t)chunks[3] << 32) | chunks[2];
+}
+
+// Reversible XOR mixing for 128-bit block (Preserves bit width of Hi/Lo)
+static void Mix(u128 &v) {
+  // Ensure we stay within 92 bits (Lo: 64, Hi: 28)
+  // Max Hi = 0x0FFFFFFF
+  const uint64_t K_LO = 0x9E3779B97F4A7C15ull;
+  const uint64_t K_HI = 0x5A3C9E7B1F4D2A6Cull & 0x0FFFFFFFull;
+
+  v.lo ^= K_LO;
+  v.hi ^= K_HI;
+
+  // Scramble Lo slightly based on Hi (safe as Lo is 64 bits)
+  v.lo ^= (v.hi << 13) | (v.hi >> 15);
+}
+
+static void Unmix(u128 &v) {
+  const uint64_t K_LO = 0x9E3779B97F4A7C15ull;
+  const uint64_t K_HI = 0x5A3C9E7B1F4D2A6Cull & 0x0FFFFFFFull;
+
+  v.lo ^= (v.hi << 13) | (v.hi >> 15);
+  v.hi ^= K_HI;
+  v.lo ^= K_LO;
+}
 
 static uint8_t ComputeCpuHash() {
   uint32_t h = 0x811c9dc5;
@@ -172,44 +302,61 @@ static uint8_t GetArchType() {
 #endif
 }
 
-// Scale rate to 16 bits (0-65535), max ~65k jobs/s maps to 65535
 static uint16_t ScaleRate(uint64_t rate) {
-  if (rate > 65535)
-    rate = 65535;
-  return (uint16_t)rate;
+  return (rate > 65535) ? 65535 : (uint16_t)rate;
 }
 
 static uint64_t UnscaleRate(uint16_t scaled) { return scaled; }
 
-// Simple XOR obfuscation with rotating key
-static uint64_t Obfuscate(uint64_t v) {
-  const uint64_t key = 0x5A3C9E7B1F4D2A6Cull;
-  v ^= key;
-  v = (v << 17) | (v >> 47);
-  v ^= (key >> 13);
-  return v;
-}
+std::wstring GenerateBenchmarkHash(uint64_t r0, uint64_t r1, uint64_t r2) {
+  uint8_t verMaj = APP_VERSION_MAJOR & 0xF;
+  uint8_t verMin = APP_VERSION_MINOR & 0xF;
+  uint8_t cpuH = ComputeCpuHash() & 0xF; // Truncate to 4 bits
 
-static uint64_t Deobfuscate(uint64_t v) {
-  const uint64_t key = 0x5A3C9E7B1F4D2A6Cull;
-  v ^= (key >> 13);
-  v = (v >> 17) | (v << 47);
-  v ^= key;
-  return v;
-}
+  uint16_t sr0 = ScaleRate(r0);
+  uint16_t sr1 = ScaleRate(r1);
+  uint16_t sr2 = ScaleRate(r2);
 
-static std::wstring EncodeB62(uint64_t v, int len) {
-  std::wstring result(len, L'0');
-  for (int i = len - 1; i >= 0; --i) {
-    result[i] = B62[v % 62];
-    v /= 62;
+  // Hash Layout (60 bits data):
+  // [Major:4][Minor:4][CPU:4][R0:16][R1:16][R2:16]
+
+  uint64_t data = 0;
+  data |= ((uint64_t)verMaj) << 56;
+  data |= ((uint64_t)verMin) << 52;
+  data |= ((uint64_t)cpuH) << 48;
+  data |= ((uint64_t)sr0) << 32;
+  data |= ((uint64_t)sr1) << 16;
+  data |= ((uint64_t)sr2);
+
+  uint32_t check = FNV1a(&data, sizeof(data));
+
+  u128 payload;
+  payload.lo = (data << 32) | check;
+  payload.hi = (data >> 32);
+
+  Mix(payload);
+
+  std::wstring result(16, L'0');
+  for (int i = 15; i >= 0; --i) {
+    result[i] = B62[DivMod62(payload)];
   }
-  return result;
+
+  return L"SS3-" + result;
 }
 
-static uint64_t DecodeB62(const std::wstring &s) {
-  uint64_t v = 0;
-  for (wchar_t c : s) {
+HashResult ValidateBenchmarkHash(const std::wstring &hash) {
+  HashResult result;
+
+  // Check prefix and length
+  if (hash.length() != 20 || hash.substr(0, 4) != L"SS3-") {
+    return result;
+  }
+
+  std::wstring encoded = hash.substr(4);
+  u128 payload = {0, 0};
+
+  // Decode Base62
+  for (wchar_t c : encoded) {
     int idx = -1;
     for (int i = 0; i < 62; ++i) {
       if (B62[i] == c) {
@@ -218,81 +365,41 @@ static uint64_t DecodeB62(const std::wstring &s) {
       }
     }
     if (idx < 0)
-      return 0;
-    v = v * 62 + idx;
-  }
-  return v;
-}
-
-std::wstring GenerateBenchmarkHash(uint64_t r0, uint64_t r1, uint64_t r2) {
-  uint8_t os = GetOsType();
-  uint8_t arch = GetArchType();
-  uint8_t cpuH = ComputeCpuHash();
-
-  uint16_t sr0 = ScaleRate(r0);
-  uint16_t sr1 = ScaleRate(r1);
-  uint16_t sr2 = ScaleRate(r2);
-
-  // Pack into 64 bits: [os:2][arch:2][cpu:8][r0:16][r1:16][r2:16] = 60 bits
-  uint64_t packed = 0;
-  packed |= ((uint64_t)(os & 0x3)) << 58;
-  packed |= ((uint64_t)(arch & 0x3)) << 56;
-  packed |= ((uint64_t)cpuH) << 48;
-  packed |= ((uint64_t)sr0) << 32;
-  packed |= ((uint64_t)sr1) << 16;
-  packed |= ((uint64_t)sr2);
-
-  // Compute checksum
-  uint8_t check = (uint8_t)(packed ^ (packed >> 8) ^ (packed >> 16) ^
-                            (packed >> 24) ^ (packed >> 32) ^ (packed >> 40));
-
-  // Add checksum to high bits (use remaining 4 bits + extra)
-  packed = (packed & 0x0FFFFFFFFFFFFFFFull) | ((uint64_t)(check & 0xF) << 60);
-
-  // Obfuscate
-  uint64_t obf = Obfuscate(packed);
-
-  // Encode to Base62 (64 bits = ~11 chars)
-  return L"SS3-" + EncodeB62(obf, 11);
-}
-
-HashResult ValidateBenchmarkHash(const std::wstring &hash) {
-  HashResult result = {false, {0, 0, 0}, 0, 0, 0};
-
-  // Check prefix
-  if (hash.length() < 15 || hash.substr(0, 4) != L"SS3-") {
-    return result;
+      return result;
+    MulAdd62(payload, idx);
   }
 
-  std::wstring encoded = hash.substr(4);
-  if (encoded.length() != 11)
-    return result;
+  // De-Obfuscate
+  Unmix(payload);
 
-  // Decode
-  uint64_t obf = DecodeB62(encoded);
-  uint64_t packed = Deobfuscate(obf);
+  // Extract Data and Checksum
+  // layout: lo = (low_data << 32) | check
+  //         hi = high_data
+  uint32_t storedCheck = (uint32_t)(payload.lo & 0xFFFFFFFF);
+  uint64_t data = (payload.hi << 32) | (payload.lo >> 32);
 
-  // Extract checksum
-  uint8_t storedCheck = (packed >> 60) & 0xF;
-  uint64_t dataOnly = packed & 0x0FFFFFFFFFFFFFFFull;
+  // Mask purely unused top bits (just in case artifacting, though strictly 0)
+  // data is 60 bits, so top 4 bits should be 0.
+  data &= 0x0FFFFFFFFFFFFFFFull;
 
-  // Recompute checksum
-  uint8_t computedCheck =
-      (uint8_t)(dataOnly ^ (dataOnly >> 8) ^ (dataOnly >> 16) ^
-                (dataOnly >> 24) ^ (dataOnly >> 32) ^ (dataOnly >> 40));
+  // Recompute Checksum
+  uint32_t computedCheck = FNV1a(&data, sizeof(data));
 
-  if ((computedCheck & 0xF) != storedCheck) {
-    return result; // Invalid checksum
+  if (computedCheck != storedCheck) {
+    return result; // Invalid checksum (Tampered!)
   }
 
-  // Extract fields
-  result.osType = (dataOnly >> 58) & 0x3;
-  result.archType = (dataOnly >> 56) & 0x3;
-  result.cpuHash = (dataOnly >> 48) & 0xFF;
-  result.rates[0] = UnscaleRate((dataOnly >> 32) & 0xFFFF);
-  result.rates[1] = UnscaleRate((dataOnly >> 16) & 0xFFFF);
-  result.rates[2] = UnscaleRate(dataOnly & 0xFFFF);
   result.valid = true;
+  // Unpack: [Major:4][Minor:4][CPU:4][R0:16][R1:16][R2:16]
+
+  result.versionMajor = (data >> 56) & 0xF;
+  result.versionMinor = (data >> 52) & 0xF;
+  result.cpuHash = (data >> 48) & 0xF; // 4-bit CPU hash
+  result.r0 = (data >> 32) & 0xFFFF;
+  result.r1 = (data >> 16) & 0xFFFF;
+  result.r2 = (data) & 0xFFFF;
+
+  // No OS/Arch extraction anymore
 
   return result;
 }

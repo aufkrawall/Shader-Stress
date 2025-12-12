@@ -1,6 +1,7 @@
 // Gui.cpp - Windows GDI GUI, button handling, painting
 #include "Common.h"
 #include <CommCtrl.h>
+#include <sstream>
 
 // GDI Resources
 HFONT g_Font = nullptr;
@@ -63,6 +64,38 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       SelectObject(s_memDC, s_memBM);
       s_width = rc.right;
       s_height = rc.bottom;
+    }
+
+    // Auto-clipboard Check (polled during Paint for simplicity via Timer)
+    static std::wstring s_lastHash;
+    static uint64_t s_notifyTime = 0;
+    if (!g_App.benchHash.empty() && g_App.benchHash != s_lastHash) {
+      s_lastHash = g_App.benchHash;
+
+      std::wstringstream ss;
+      {
+        std::lock_guard<std::mutex> lk(g_App.historyMtx);
+        for (const auto &line : g_App.logHistory) {
+          ss << line
+             << L"\n"; // LogRaw lines don't have newlines stored usually? NO,
+                       // LogRaw adds newline to stream but stores msg.
+          // Wait, LogRaw pushes 'msg'. 'msg' usually doesn't end in newline.
+        }
+      }
+      std::wstring fullText = ss.str();
+
+      if (OpenClipboard(h)) {
+        EmptyClipboard();
+        size_t bytes = (fullText.size() + 1) * sizeof(wchar_t);
+        HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        if (hMem) {
+          memcpy(GlobalLock(hMem), fullText.data(), bytes);
+          GlobalUnlock(hMem);
+          SetClipboardData(CF_UNICODETEXT, hMem);
+        }
+        CloseClipboard();
+        s_notifyTime = GetTickCount64();
+      }
     }
 
     FillRect(s_memDC, &rc, g_BgBrush);
@@ -180,14 +213,23 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     SetTextColor(s_memDC, RGB(200, 200, 200));
     DrawTextW(s_memDC, part3.c_str(), -1, &tr, DT_LEFT | DT_NOCLIP);
 
-    // Draw hash on right side below Verify Hash button (in Benchmark mode)
+    // Draw hash on right side (Moved left to avoid clipping)
     if (g_App.mode == 0 && !g_App.benchHash.empty()) {
       SetTextColor(s_memDC, RGB(120, 200, 255)); // Light blue for hash
-      RECT hashRect = {S(610), S(125), S(750), S(200)};
+      // Moved from 610 to 480 to give more room
+      RECT hashRect = {S(480), S(125), S(750), S(200)};
       std::wstring hashLabel = L"Hash:\n" + g_App.benchHash;
       DrawTextW(s_memDC, hashLabel.c_str(), -1, &hashRect, DT_LEFT | DT_NOCLIP);
-      SetTextColor(s_memDC, RGB(200, 200, 200));
     }
+
+    // Notification
+    if (s_notifyTime > 0 && (GetTickCount64() - s_notifyTime < 5000)) {
+      SetTextColor(s_memDC, RGB(80, 255, 80));
+      RECT noteRect = {S(480), S(200), S(750), S(240)};
+      DrawTextW(s_memDC, L"[Copied to Clipboard]", -1, &noteRect,
+                DT_LEFT | DT_NOCLIP);
+    }
+    SetTextColor(s_memDC, RGB(200, 200, 200));
 
     BitBlt(ps.hdc, 0, 0, rc.right, rc.bottom, s_memDC, 0, 0, SRCCOPY);
     SelectObject(s_memDC, oldFont);
@@ -315,6 +357,10 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         ShowVerifyDialog(h);
       }
     }
+  }
+  if (m == WM_TIMER) {
+    InvalidateRect(h, nullptr, FALSE);
+    return 0;
   }
   return DefWindowProc(h, m, w, l);
 }
@@ -446,30 +492,33 @@ LRESULT CALLBACK HashDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
 
         if (g_DecodedHash.valid) {
           g_HashValid = true;
-          std::wstring osName = (g_DecodedHash.osType == 0)   ? L"Windows"
-                                : (g_DecodedHash.osType == 1) ? L"Linux"
-                                                              : L"macOS";
-          std::wstring archName =
-              (g_DecodedHash.archType == 0) ? L"x64" : L"ARM64";
+          g_HashResult = L"Hash is VALID!\n\n";
+          g_HashResult += L"Version: ShaderStress " +
+                          std::to_wstring(g_DecodedHash.versionMajor) + L"." +
+                          std::to_wstring(g_DecodedHash.versionMinor) + L"\n";
+          g_HashResult +=
+              L"CPU Hash: " + std::to_wstring(g_DecodedHash.cpuHash) + L"\n";
+          g_HashResult += L"Algorithm: Base62 + FNV1a Checksum (Strict)\n\n";
 
-          g_HashResult = L"VALID HASH\n\n";
-          g_HashResult += L"Hash: " + hashInput + L"\n\n";
-          g_HashResult += L"--- Decoded Info ---\n";
-          g_HashResult += L"OS: " + osName + L"\n";
-          g_HashResult += L"Arch: " + archName + L"\n\n";
-          g_HashResult += L"--- Benchmark Scores ---\n";
+          g_HashResult += L"Rates:\n";
           g_HashResult +=
-              L"1st Min: " + FmtNum(g_DecodedHash.rates[0]) + L"/s\n";
+              L"R0: " + std::to_wstring(g_DecodedHash.r0) + L" Jobs/s\n";
           g_HashResult +=
-              L"2nd Min: " + FmtNum(g_DecodedHash.rates[1]) + L"/s\n";
-          g_HashResult += L"3rd Min: " + FmtNum(g_DecodedHash.rates[2]) + L"/s";
+              L"R1: " + std::to_wstring(g_DecodedHash.r1) + L" Jobs/s\n";
+          g_HashResult +=
+              L"R2: " + std::to_wstring(g_DecodedHash.r2) + L" Jobs/s\n";
+
+          if (g_DecodedHash.versionMajor != APP_VERSION_MAJOR ||
+              g_DecodedHash.versionMinor != APP_VERSION_MINOR) {
+            g_HashResult += L"\n(Note: Hash is from a different version)\n";
+          }
         } else {
           g_HashValid = false;
           g_HashResult = L"INVALID HASH\n\n";
           g_HashResult += L"\"" + hashInput + L"\"\n\n";
           g_HashResult += L"Possible reasons:\n";
           g_HashResult += L"- Hash is corrupted\n";
-          g_HashResult += L"- Not from ShaderStress 3.0\n";
+          g_HashResult += L"- Not from ShaderStress 3.3\n";
           g_HashResult += L"- Hash was modified";
         }
       }

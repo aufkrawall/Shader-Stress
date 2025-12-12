@@ -1,7 +1,13 @@
 // Common.h - Shared types
 #pragma once
 
+#include <atomic>
 #include <cstdint>
+#include <fstream>
+#include <iostream>
+#include <mutex>
+#include <string>
+#include <vector>
 
 #if defined(__linux__) || defined(__linux) || defined(linux)
 #define PLATFORM_LINUX 1
@@ -124,6 +130,9 @@ static inline uint64_t SafeTZCNT(uint64_t x) {
 using namespace std::chrono_literals;
 
 extern const std::wstring APP_VERSION;
+// Numeric version for hash encoding
+static const uint8_t APP_VERSION_MAJOR = 3;
+static const uint8_t APP_VERSION_MINOR = 3;
 
 constexpr uint64_t GOLDEN_RATIO = 0x9E3779B97F4A7C15ull;
 constexpr size_t IO_CHUNK_SIZE = 256 * 1024;
@@ -265,7 +274,12 @@ struct AppState {
   std::atomic<uint64_t> maxDuration{0};
   std::wstring sigStatus;
   std::wstring benchHash; // Generated hash for benchmark validation
-  std::wofstream log;
+  std::vector<std::wstring> logHistory;
+  std::mutex historyMtx;
+
+  // Platform-Specific
+  void *windowHandle = nullptr;
+  std::ofstream log;
   std::mutex logMtx;
 
   void Log(const std::wstring &msg);
@@ -343,11 +357,13 @@ void PrintHelp();
 
 // Benchmark hash validation
 struct HashResult {
-  bool valid;
-  uint64_t rates[3];
-  uint8_t osType;   // 0=Win, 1=Linux, 2=macOS
-  uint8_t archType; // 0=x64, 1=ARM64
-  uint8_t cpuHash;
+  bool valid = false;
+  uint8_t versionMajor = 0;
+  uint8_t versionMinor = 0;
+  uint8_t os = 0;
+  uint8_t arch = 0;
+  uint8_t cpuHash = 0;
+  uint64_t r0 = 0, r1 = 0, r2 = 0;
 };
 std::wstring GenerateBenchmarkHash(uint64_t r0, uint64_t r1, uint64_t r2);
 HashResult ValidateBenchmarkHash(const std::wstring &hash);
