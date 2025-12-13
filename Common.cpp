@@ -1,7 +1,7 @@
 // Common.cpp - Global variable definitions and utility function implementations
 #include "Common.h"
 
-const std::wstring APP_VERSION = L"3.3";
+const std::wstring APP_VERSION = L"3.4";
 
 // --- Global Variables ---
 CpuFeatures g_Cpu;
@@ -308,21 +308,42 @@ static uint16_t ScaleRate(uint64_t rate) {
 
 static uint64_t UnscaleRate(uint16_t scaled) { return scaled; }
 
+std::wstring GetOsName(uint8_t os) {
+  switch (os) {
+  case 0:
+    return L"Windows";
+  case 1:
+    return L"Linux";
+  case 2:
+    return L"macOS";
+  default:
+    return L"Unknown";
+  }
+}
+
+std::wstring GetArchNameFromCode(uint8_t arch) {
+  return (arch == 1) ? L"ARM64" : L"x64";
+}
+
 std::wstring GenerateBenchmarkHash(uint64_t r0, uint64_t r1, uint64_t r2) {
   uint8_t verMaj = APP_VERSION_MAJOR & 0xF;
   uint8_t verMin = APP_VERSION_MINOR & 0xF;
-  uint8_t cpuH = ComputeCpuHash() & 0xF; // Truncate to 4 bits
+  uint8_t osType = GetOsType() & 0x3;     // 2 bits
+  uint8_t archType = GetArchType() & 0x1; // 1 bit
+  uint8_t cpuH = ComputeCpuHash() & 0x1F; // 5 bits (expanded from 4)
 
   uint16_t sr0 = ScaleRate(r0);
   uint16_t sr1 = ScaleRate(r1);
   uint16_t sr2 = ScaleRate(r2);
 
-  // Hash Layout (60 bits data):
-  // [Major:4][Minor:4][CPU:4][R0:16][R1:16][R2:16]
+  // Hash Layout (64 bits data):
+  // [Major:4][Minor:4][OS:2][Arch:1][CPU:5][R0:16][R1:16][R2:16]
 
   uint64_t data = 0;
-  data |= ((uint64_t)verMaj) << 56;
-  data |= ((uint64_t)verMin) << 52;
+  data |= ((uint64_t)verMaj) << 60;
+  data |= ((uint64_t)verMin) << 56;
+  data |= ((uint64_t)osType) << 54;
+  data |= ((uint64_t)archType) << 53;
   data |= ((uint64_t)cpuH) << 48;
   data |= ((uint64_t)sr0) << 32;
   data |= ((uint64_t)sr1) << 16;
@@ -378,9 +399,7 @@ HashResult ValidateBenchmarkHash(const std::wstring &hash) {
   uint32_t storedCheck = (uint32_t)(payload.lo & 0xFFFFFFFF);
   uint64_t data = (payload.hi << 32) | (payload.lo >> 32);
 
-  // Mask purely unused top bits (just in case artifacting, though strictly 0)
-  // data is 60 bits, so top 4 bits should be 0.
-  data &= 0x0FFFFFFFFFFFFFFFull;
+  // Data is now 64 bits (no mask needed)
 
   // Recompute Checksum
   uint32_t computedCheck = FNV1a(&data, sizeof(data));
@@ -390,16 +409,16 @@ HashResult ValidateBenchmarkHash(const std::wstring &hash) {
   }
 
   result.valid = true;
-  // Unpack: [Major:4][Minor:4][CPU:4][R0:16][R1:16][R2:16]
+  // Unpack: [Major:4][Minor:4][OS:2][Arch:1][CPU:5][R0:16][R1:16][R2:16]
 
-  result.versionMajor = (data >> 56) & 0xF;
-  result.versionMinor = (data >> 52) & 0xF;
-  result.cpuHash = (data >> 48) & 0xF; // 4-bit CPU hash
+  result.versionMajor = (data >> 60) & 0xF;
+  result.versionMinor = (data >> 56) & 0xF;
+  result.os = (data >> 54) & 0x3;
+  result.arch = (data >> 53) & 0x1;
+  result.cpuHash = (data >> 48) & 0x1F; // 5-bit CPU hash
   result.r0 = (data >> 32) & 0xFFFF;
   result.r1 = (data >> 16) & 0xFFFF;
   result.r2 = (data) & 0xFFFF;
-
-  // No OS/Arch extraction anymore
 
   return result;
 }

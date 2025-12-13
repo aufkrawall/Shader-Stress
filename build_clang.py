@@ -76,10 +76,10 @@ def create_zip_archives():
             break
     
     targets = [
-        ("bin/x64", "ShaderStress-Windows-x64.7z", ["ShaderStress.exe"]),
-        ("bin/arm64", "ShaderStress-Windows-ARM64.7z", ["ShaderStress.exe"]),
-        ("bin/x64-zig", "ShaderStress-Windows-x64-Zig.7z", ["ShaderStress.exe"]),
-        ("bin/arm64-zig", "ShaderStress-Windows-ARM64-Zig.7z", ["ShaderStress.exe"]),
+        ("bin/x64", "ShaderStress-Windows-x64.7z", ["ShaderStress.exe", "ShaderStress.com"]),
+        ("bin/arm64", "ShaderStress-Windows-ARM64.7z", ["ShaderStress.exe", "ShaderStress.com"]),
+        ("bin/x64-zig", "ShaderStress-Windows-x64-Zig.7z", ["ShaderStress.exe", "ShaderStress.com"]),
+        ("bin/arm64-zig", "ShaderStress-Windows-ARM64-Zig.7z", ["ShaderStress.exe", "ShaderStress.com"]),
         ("bin/linux-x64", "ShaderStress-Linux-x64.7z", ["shaderstress"]),
         ("bin/linux-arm64", "ShaderStress-Linux-ARM64.7z", ["shaderstress"]),
         ("bin/macos-arm64", "ShaderStress-macOS-ARM64.7z", ["shaderstress"]),
@@ -199,15 +199,7 @@ def build_x64():
     if not os.path.exists(out_dir): os.makedirs(out_dir)
 
     # Source Files - Modular build
-    src_files = [
-        "Common.cpp", 
-        "CpuFeatures.cpp", 
-        "Platform.cpp", 
-        "Workloads.cpp", 
-        "Threading.cpp", 
-        "Gui.cpp", 
-        "ShaderStress.cpp"
-    ]
+    src_files = SRC_FILES_WINDOWS
 
 
 
@@ -238,6 +230,20 @@ def build_x64():
     subprocess.check_call(cmd_build)
     log(f"Success: {os.path.join(out_dir, 'ShaderStress.exe')}")
 
+    # 3. Build CLI launcher (.com) - tiny stub that runs .exe
+    cmd_build_cli = [
+        CLANG_EXE,
+        "--target=x86_64-w64-mingw32",
+        "-x", "c",  # Force C mode (avoid warning about .c file in C++ mode)
+        "-O2", "-s",
+        "-mconsole",  # Console subsystem
+        "-static",
+        "cli_launcher.c",
+        "-o", os.path.join(out_dir, "ShaderStress.com"),
+    ]
+    subprocess.check_call(cmd_build_cli)
+    log(f"Success: {os.path.join(out_dir, 'ShaderStress.com')}")
+
 
 def build_arm64():
     if not os.path.exists(CLANGARM64_DIR):
@@ -252,15 +258,7 @@ def build_arm64():
 
 
     # Source Files - Modular build
-    src_files = [
-        "Common.cpp", 
-        "CpuFeatures.cpp", 
-        "Platform.cpp", 
-        "Workloads.cpp", 
-        "Threading.cpp", 
-        "Gui.cpp", 
-        "ShaderStress.cpp"
-    ]
+    src_files = SRC_FILES_WINDOWS
 
 
 
@@ -297,6 +295,21 @@ def build_arm64():
     log("Running Clang ARM64 (with LTO)...")
     subprocess.check_call(cmd_build)
     log(f"Success: {os.path.join(out_dir, 'ShaderStress.exe')}")
+
+    # 3. Build CLI launcher (.com) - tiny stub that runs .exe
+    cmd_build_cli = [
+        CLANG_EXE,
+        "--target=aarch64-w64-mingw32",
+        f"--sysroot={CLANGARM64_DIR}",
+        "-x", "c",  # Force C mode
+        "-O2", "-s",
+        "-mconsole",  # Console subsystem
+        "-static",
+        "cli_launcher.c",
+        "-o", os.path.join(out_dir, "ShaderStress.com"),
+    ]
+    subprocess.check_call(cmd_build_cli)
+    log(f"Success: {os.path.join(out_dir, 'ShaderStress.com')}")
 
 
 # ============================================================================
@@ -337,6 +350,19 @@ def build_x64_zig():
     log("Running Zig for Windows x64...")
     subprocess.check_call(cmd_build)
     log(f"Success: {os.path.join(out_dir, 'ShaderStress.exe')}")
+    
+    # 3. Build CLI launcher (.com) - tiny stub that runs .exe
+    cmd_build_cli = [
+        ZIG_EXE, "cc",
+        "-target", "x86_64-windows-gnu",
+        "-x", "c",  # Force C mode
+        "-O2", "-s",
+        "-Xlinker", "--subsystem", "-Xlinker", "console",
+        "cli_launcher.c",
+        "-o", os.path.join(out_dir, "ShaderStress.com"),
+    ]
+    subprocess.check_call(cmd_build_cli)
+    log(f"Success: {os.path.join(out_dir, 'ShaderStress.com')}")
     return True
 
 
@@ -378,6 +404,19 @@ def build_arm64_zig():
     log("Running Zig for Windows ARM64...")
     subprocess.check_call(cmd_build)
     log(f"Success: {os.path.join(out_dir, 'ShaderStress.exe')}")
+    
+    # 3. Build CLI launcher (.com) - tiny stub that runs .exe
+    cmd_build_cli = [
+        ZIG_EXE, "cc",
+        "-target", "aarch64-windows-gnu",
+        "-x", "c",  # Force C mode
+        "-O2", "-s",
+        "-Xlinker", "--subsystem", "-Xlinker", "console",
+        "cli_launcher.c",
+        "-o", os.path.join(out_dir, "ShaderStress.com"),
+    ]
+    subprocess.check_call(cmd_build_cli)
+    log(f"Success: {os.path.join(out_dir, 'ShaderStress.com')}")
     return True
 
 
@@ -409,7 +448,6 @@ def build_linux_x64():
     log("Running Zig for Linux x64...")
     subprocess.check_call(cmd_build)
     log(f"Success: {os.path.join(out_dir, 'shaderstress')}")
-    log(f"Success: {os.path.join(out_dir, 'shaderstress')}")
     return True
 
 
@@ -439,7 +477,6 @@ def build_linux_arm64():
     
     log("Running Zig for Linux ARM64...")
     subprocess.check_call(cmd_build)
-    log(f"Success: {os.path.join(out_dir, 'shaderstress')}")
     log(f"Success: {os.path.join(out_dir, 'shaderstress')}")
     return True
 

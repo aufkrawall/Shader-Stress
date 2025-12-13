@@ -56,15 +56,50 @@ RunHyperStress_AVX2(uint64_t seed, int complexity, const StressConfig &config) {
       for (int j = 0; j < 4; ++j)
         n[j]->iRegs[0] = (n[j]->iRegs[0] ^ 0x9E3779B9) * n[j]->iRegs[1];
     }
+    // Optimized: 8 independent YMM chains to saturate both FMA units
+    // With 4-cycle latency and 2 FMA units, need 8 ops in flight to hide
+    // latency
     for (int k = 0; k < config.fma_intensity; ++k) {
-      for (int j = 0; j < 4; ++j) {
-        __m256 fA = _mm256_load_ps(n[j]->fRegs);
-        __m256 fB = _mm256_load_ps(n[j]->fRegs + 8);
-        fA = _mm256_fmadd_ps(fA, vMul, vFMA);
-        fB = _mm256_fmadd_ps(fB, vMul, vFMA);
-        _mm256_store_ps(n[j]->fRegs, fA);
-        _mm256_store_ps(n[j]->fRegs + 8, fB);
-      }
+      // Load all 8 YMM registers (2 per node × 4 nodes)
+      __m256 r0 = _mm256_load_ps(n[0]->fRegs);
+      __m256 r1 = _mm256_load_ps(n[0]->fRegs + 8);
+      __m256 r2 = _mm256_load_ps(n[1]->fRegs);
+      __m256 r3 = _mm256_load_ps(n[1]->fRegs + 8);
+      __m256 r4 = _mm256_load_ps(n[2]->fRegs);
+      __m256 r5 = _mm256_load_ps(n[2]->fRegs + 8);
+      __m256 r6 = _mm256_load_ps(n[3]->fRegs);
+      __m256 r7 = _mm256_load_ps(n[3]->fRegs + 8);
+
+      // Round 1: All 8 FMAs independent - scheduler can issue 2/cycle
+      r0 = _mm256_fmadd_ps(r0, vMul, vFMA);
+      r1 = _mm256_fmadd_ps(r1, vMul, vFMA);
+      r2 = _mm256_fmadd_ps(r2, vMul, vFMA);
+      r3 = _mm256_fmadd_ps(r3, vMul, vFMA);
+      r4 = _mm256_fmadd_ps(r4, vMul, vFMA);
+      r5 = _mm256_fmadd_ps(r5, vMul, vFMA);
+      r6 = _mm256_fmadd_ps(r6, vMul, vFMA);
+      r7 = _mm256_fmadd_ps(r7, vMul, vFMA);
+
+      // Round 2: Per-register dependency (r0_in -> r0_out), 8 chains mask
+      // latency
+      r0 = _mm256_fmadd_ps(r0, vFMA, vMul);
+      r1 = _mm256_fmadd_ps(r1, vFMA, vMul);
+      r2 = _mm256_fmadd_ps(r2, vFMA, vMul);
+      r3 = _mm256_fmadd_ps(r3, vFMA, vMul);
+      r4 = _mm256_fmadd_ps(r4, vFMA, vMul);
+      r5 = _mm256_fmadd_ps(r5, vFMA, vMul);
+      r6 = _mm256_fmadd_ps(r6, vFMA, vMul);
+      r7 = _mm256_fmadd_ps(r7, vFMA, vMul);
+
+      // Store all results
+      _mm256_store_ps(n[0]->fRegs, r0);
+      _mm256_store_ps(n[0]->fRegs + 8, r1);
+      _mm256_store_ps(n[1]->fRegs, r2);
+      _mm256_store_ps(n[1]->fRegs + 8, r3);
+      _mm256_store_ps(n[2]->fRegs, r4);
+      _mm256_store_ps(n[2]->fRegs + 8, r5);
+      _mm256_store_ps(n[3]->fRegs, r6);
+      _mm256_store_ps(n[3]->fRegs + 8, r7);
     }
     if (config.mem_pressure > 0 && coldPtr) {
       for (int m = 0; m < config.mem_pressure; ++m) {
@@ -104,17 +139,39 @@ RunHyperStress_AVX512(uint64_t seed, int complexity,
       for (int j = 0; j < 4; ++j)
         n[j]->iRegs[0] = (n[j]->iRegs[0] ^ 0x9E3779B9) * n[j]->iRegs[1];
     }
-    // Enhanced: 2x ZMM registers per node for maximum vector unit saturation
+    // Optimized: 4 independent ZMM chains with 3 FMA rounds each
+    // Works on Rocket Lake (1×512 FMA) and Zen 4 (2×256 = 1×512 effective)
+    // 4 chains hide 4-cycle latency; 3 rounds maximize work per iteration
     for (int k = 0; k < config.fma_intensity; ++k) {
-      for (int j = 0; j < 4; ++j) {
-        __m512 f0 = _mm512_load_ps(n[j]->fRegs);
-        __m512 f1 =
-            _mm512_load_ps(n[j]->fRegs); // Re-use same data, stress units
-        f0 = _mm512_fmadd_ps(f0, vMul, vFMA);
-        f1 = _mm512_fmadd_ps(f1, vFMA, vMul); // Different operand order
-        f0 = _mm512_fmadd_ps(f0, f1, vFMA);   // Chain for dependency
-        _mm512_store_ps(n[j]->fRegs, f0);
-      }
+      // Load 4 ZMM registers (1 per node)
+      __m512 z0 = _mm512_load_ps(n[0]->fRegs);
+      __m512 z1 = _mm512_load_ps(n[1]->fRegs);
+      __m512 z2 = _mm512_load_ps(n[2]->fRegs);
+      __m512 z3 = _mm512_load_ps(n[3]->fRegs);
+
+      // Round 1: All 4 FMAs independent
+      z0 = _mm512_fmadd_ps(z0, vMul, vFMA);
+      z1 = _mm512_fmadd_ps(z1, vMul, vFMA);
+      z2 = _mm512_fmadd_ps(z2, vMul, vFMA);
+      z3 = _mm512_fmadd_ps(z3, vMul, vFMA);
+
+      // Round 2: Per-register dependency chains continue
+      z0 = _mm512_fmadd_ps(z0, vFMA, vMul);
+      z1 = _mm512_fmadd_ps(z1, vFMA, vMul);
+      z2 = _mm512_fmadd_ps(z2, vFMA, vMul);
+      z3 = _mm512_fmadd_ps(z3, vFMA, vMul);
+
+      // Round 3: More sustained FMA work
+      z0 = _mm512_fmadd_ps(z0, vMul, vFMA);
+      z1 = _mm512_fmadd_ps(z1, vMul, vFMA);
+      z2 = _mm512_fmadd_ps(z2, vMul, vFMA);
+      z3 = _mm512_fmadd_ps(z3, vMul, vFMA);
+
+      // Store results
+      _mm512_store_ps(n[0]->fRegs, z0);
+      _mm512_store_ps(n[1]->fRegs, z1);
+      _mm512_store_ps(n[2]->fRegs, z2);
+      _mm512_store_ps(n[3]->fRegs, z3);
     }
     if (config.mem_pressure > 0 && coldPtr) {
       for (int m = 0; m < config.mem_pressure; ++m) {

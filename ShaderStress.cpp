@@ -31,8 +31,17 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
 
   int argc = 0;
   LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+
+  // Check for --cli and --verify arguments
+  std::wstring verifyHash;
+  bool cliMode = false;
   if (argv) {
     for (int i = 1; i < argc; ++i) {
+      if (lstrcmpiW(argv[i], L"--cli") == 0)
+        cliMode = true;
+      if (lstrcmpiW(argv[i], L"--verify") == 0 && i + 1 < argc) {
+        verifyHash = argv[i + 1];
+      }
       if (lstrcmpiW(argv[i], L"--repro") == 0 && i + 2 < argc) {
         g_Repro.active = true;
         g_Repro.seed = _wtoi64(argv[i + 1]);
@@ -49,6 +58,290 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     }
     LocalFree(argv);
   }
+
+  // CLI hash verification mode (quick - doesn't need full CLI)
+  if (!verifyHash.empty()) {
+    // Attach to parent console for output
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+      FILE *fp;
+      freopen_s(&fp, "CONOUT$", "w", stdout);
+      freopen_s(&fp, "CONOUT$", "w", stderr);
+
+      std::cout << std::endl; // Separate from shell prompt
+
+      HashResult vr = ValidateBenchmarkHash(verifyHash);
+      if (vr.valid) {
+        std::cout << "=== VALID HASH ===" << std::endl;
+        std::cout << "Version: ShaderStress " << (int)vr.versionMajor << "."
+                  << (int)vr.versionMinor << std::endl;
+        std::wcout << L"OS: " << GetOsName(vr.os) << std::endl;
+        std::wcout << L"Arch: " << GetArchNameFromCode(vr.arch) << std::endl;
+        std::cout << "CPU Hash: " << (int)vr.cpuHash << std::endl;
+        std::cout << "R0: " << vr.r0 << " jobs/s" << std::endl;
+        std::cout << "R1: " << vr.r1 << " jobs/s" << std::endl;
+        std::cout << "R2: " << vr.r2 << " jobs/s" << std::endl;
+      } else {
+        std::cout << "=== INVALID HASH ===" << std::endl;
+        std::wcout << L"Hash: " << verifyHash << std::endl;
+      }
+      std::cout << std::endl;
+      FreeConsole();
+    }
+    return 0;
+  }
+
+  // Full CLI mode (pseudo-GUI like Linux/macOS)
+  if (cliMode) {
+    // Attach to parent console
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+      FILE *fp;
+      freopen_s(&fp, "CONOUT$", "w", stdout);
+      freopen_s(&fp, "CONOUT$", "w", stderr);
+      freopen_s(&fp, "CONIN$", "r", stdin);
+    } else {
+      AllocConsole();
+      FILE *fp;
+      freopen_s(&fp, "CONOUT$", "w", stdout);
+      freopen_s(&fp, "CONOUT$", "w", stderr);
+      freopen_s(&fp, "CONIN$", "r", stdin);
+    }
+
+    // Enable ANSI escape sequences
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD dwMode = 0;
+    GetConsoleMode(hOut, &dwMode);
+    SetConsoleMode(hOut, dwMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+
+    std::cout << std::endl;
+    std::cout << "ShaderStress " << "3.4" << std::endl;
+    std::wcout << L"CPU: " << g_Cpu.brand << std::endl;
+
+    // Helper for input
+    auto AskInput = [](const char *prompt, int def, int min, int max) {
+      std::cout << prompt << " [" << def << "]: ";
+      std::string line;
+      std::getline(std::cin, line);
+      if (line.empty())
+        return def;
+      try {
+        int v = std::stoi(line);
+        if (v >= min && v <= max)
+          return v;
+      } catch (...) {
+      }
+      return def;
+    };
+
+    std::cout << "\nSelect Mode:\n"
+              << "1. Dynamic\n"
+              << "2. Steady\n"
+              << "3. Benchmark\n"
+              << "4. Verify Hash\n";
+    int modeSel = AskInput("Mode", 1, 1, 4);
+
+    if (modeSel == 4) { // Verify Hash
+      std::cout << "\nEnter hash (SS3-XXXXXXXXXXXXXXXX): ";
+      std::string hashInput;
+      std::cin >> hashInput;
+      std::wstring whash(hashInput.begin(), hashInput.end());
+      HashResult vr = ValidateBenchmarkHash(whash);
+      if (vr.valid) {
+        std::cout << "\n=== VALID HASH ===\n";
+        std::cout << "Version: ShaderStress " << (int)vr.versionMajor << "."
+                  << (int)vr.versionMinor << "\n";
+        std::wcout << L"OS: " << GetOsName(vr.os) << L"\n";
+        std::wcout << L"Arch: " << GetArchNameFromCode(vr.arch) << L"\n";
+        std::cout << "CPU Hash: " << (int)vr.cpuHash << "\n";
+        std::cout << "R0: " << vr.r0 << " jobs/s\n";
+        std::cout << "R1: " << vr.r1 << " jobs/s\n";
+        std::cout << "R2: " << vr.r2 << " jobs/s\n";
+      } else {
+        std::cout << "\n=== INVALID HASH ===\n";
+      }
+      std::cout << "\nPress Enter to exit...";
+      std::cin.ignore();
+      std::cin.get();
+      FreeConsole();
+      return 0;
+    }
+
+    if (modeSel == 3) { // Benchmark
+      g_App.mode = 0;
+      g_App.maxDuration = 180;
+    } else {
+      g_App.mode = (modeSel == 1) ? 2 : 1;
+    }
+
+    // ISA selection - default differs by mode
+    int isaDef = (g_App.mode == 0)
+                     ? 5
+                     : 1; // Benchmark=5 (Scalar realistic), else=1 (Auto)
+    std::cout << "\nSelect ISA:\n"
+              << "1. Auto\n"
+              << "2. AVX-512\n"
+              << "3. AVX2\n"
+              << "4. Scalar (synthetic)\n"
+              << "5. Scalar (realistic)\n";
+    int isaSel = AskInput("ISA", isaDef, 1, 5);
+    g_App.selectedWorkload = (isaSel - 1);
+
+    DetectBestConfig();
+
+    int cpu = std::thread::hardware_concurrency();
+    if (cpu == 0)
+      cpu = 4;
+    for (int i = 0; i < cpu; ++i)
+      g_Workers.push_back(std::make_unique<Worker>());
+
+    std::cout << "\nStarting stress test with " << cpu << " threads..."
+              << std::endl;
+    std::cout << "Press Ctrl+C to abort." << std::endl;
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    g_WdThread = std::make_unique<ThreadWrapper>();
+    g_WdThread->t = std::thread(Watchdog);
+
+    g_App.running = true;
+    if (g_App.mode == 0) { // Benchmark
+      SetWork(cpu, 0, false, false);
+    } else if (g_App.mode == 2) { // Dynamic
+      g_DynThread = std::make_unique<ThreadWrapper>();
+      g_DynThread->t = std::thread(DynamicLoop);
+    } else { // Steady
+      int d = std::min(4, std::max(1, cpu / 2));
+      int c = std::max(0, cpu - d);
+      SetWork(c, d, true, true);
+    }
+
+    // Dashboard - print static content once, then update only values
+    std::cout << "\033[2J\033[H" << std::flush; // Clear screen once
+    std::cout << "\033[?25l";                   // Hide cursor
+
+    std::wstring modeName =
+        (g_App.mode == 2 ? L"Dynamic"
+                         : (g_App.mode == 1 ? L"Steady" : L"Benchmark"));
+    std::wstring activeISA = GetResolvedISAName(g_App.selectedWorkload);
+
+    // Line 1-4: Static header
+    std::wcout << L"Shader Stress " << APP_VERSION << L"\n";
+    std::wcout << L"OS: Windows (" << GetArchName() << L")\n";
+    std::wcout << L"Mode: " << modeName << L"\n";
+    std::wcout << L"Active ISA: " << activeISA << L"\n";
+    // Line 5: Jobs Done (value at col 12)
+    std::wcout << L"Jobs Done: \n\n";
+    // Line 7: Performance header
+    std::wcout << L"--- Performance ---\n";
+    // Line 8: Rate (value at col 16)
+    std::wcout << L"Rate (Jobs/s): \n";
+    // Line 9: Time (value at col 7)
+    std::wcout << L"Time: \n";
+
+    if (g_App.mode == 0) {
+      // Lines 10-15: Benchmark section
+      std::wcout << L"\n--- Benchmark Rounds ---\n";
+      std::wcout << L"1st Minute: \n";
+      std::wcout << L"2nd Minute: \n";
+      std::wcout << L"3rd Minute: \n";
+      std::wcout << L"Hash: \n";
+    }
+
+    // Workers line (dynamic position based on mode)
+    int statusLine = (g_App.mode == 0) ? 17 : 11;
+    std::cout << "\033[" << statusLine << ";1H";
+    std::wcout << L"\n--- Stress Status ---\n";
+    std::wcout << L"Workers: \n";
+    std::cout << std::flush;
+
+    // Main loop - update only values
+    while (!g_App.quit) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+      // Line 5: Jobs Done value
+      std::cout << "\033[5;12H" << std::flush;
+      std::wcout << FmtNum(g_App.shaders) << L"          ";
+
+      // Line 8: Rate value
+      std::cout << "\033[8;16H" << std::flush;
+      std::wcout << FmtNum(g_App.currentRate) << L"          ";
+
+      // Line 9: Time value
+      std::cout << "\033[9;7H" << std::flush;
+      std::wcout << FmtTime(g_App.elapsed) << L"          ";
+
+      if (g_App.mode == 0) { // Benchmark
+        // Line 12-14: Benchmark round values
+        std::cout << "\033[12;13H" << std::flush;
+        std::wcout << (g_App.benchRates[0] > 0 ? FmtNum(g_App.benchRates[0])
+                                               : L"-")
+                   << L"          ";
+        std::cout << "\033[13;13H" << std::flush;
+        std::wcout << (g_App.benchRates[1] > 0 ? FmtNum(g_App.benchRates[1])
+                                               : L"-")
+                   << L"          ";
+        std::cout << "\033[14;13H" << std::flush;
+        std::wcout << (g_App.benchRates[2] > 0 ? FmtNum(g_App.benchRates[2])
+                                               : L"-")
+                   << L"          ";
+
+        // Line 15: Hash
+        if (!g_App.benchHash.empty()) {
+          std::cout << "\033[15;7H" << std::flush;
+          std::wcout << g_App.benchHash << L" (v" << APP_VERSION << L")";
+        }
+
+        if (g_App.benchComplete) {
+          std::cout << "\033[16;1H" << std::flush;
+          std::wcout << L"\nWINNER: Interval " << (g_App.benchWinner + 1)
+                     << L"\n";
+          break;
+        }
+
+        // Benchmark workers at line 19
+        std::cout << "\033[19;10H" << std::flush;
+        std::wcout << (g_App.activeCompilers + g_App.activeDecomp) << L"    ";
+
+        // Check if time expired
+        if (g_App.maxDuration > 0) {
+          int remaining = g_App.maxDuration - (int)(g_App.elapsed / 1000);
+          if (remaining <= 0)
+            break;
+        }
+      } else {
+        // Non-benchmark worker line
+        std::cout << "\033[" << (statusLine + 2) << ";10H" << std::flush;
+        std::wcout << (g_App.activeCompilers + g_App.activeDecomp) << L"    ";
+      }
+
+      std::wcout << std::flush;
+    }
+    std::cout << "\033[?25h"; // Show cursor
+
+    // Cleanup
+    g_App.quit = true;
+    for (auto &w : g_Workers)
+      w->terminate = true;
+    for (auto &w : g_IOThreads)
+      w->terminate = true;
+    g_RAM.terminate = true;
+    g_DynThread.reset();
+    g_WdThread.reset();
+    g_Threads.clear();
+
+    std::cout << "\n=== Final Results ===\n";
+    std::cout << "Total Jobs: " << (long long)g_App.shaders << "\n";
+    std::cout << "Avg Rate: " << (int)g_App.currentRate << " jobs/s\n";
+
+    if (g_App.mode == 0 && !g_App.benchHash.empty()) {
+      std::wcout << L"\nBenchmark Hash: " << g_App.benchHash << L"\n";
+    }
+
+    std::cout << "\nPress Enter to exit...";
+    std::cin.ignore();
+    std::cin.get();
+    FreeConsole();
+    return 0;
+  }
+
   DetectBestConfig();
 
   int cpu = std::thread::hardware_concurrency();
@@ -93,9 +386,9 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
                                  (GetSystemMetrics(SM_CYSCREEN) - wH) / 2, wW,
                                  wH, 0, 0, inst, 0);
 
-    BOOL useDark = TRUE;
-    DwmSetWindowAttribute(g_MainWindow, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDark,
-                          sizeof(useDark));
+    BOOL dark = TRUE;
+    DwmSetWindowAttribute(g_MainWindow, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark,
+                          sizeof(dark));
     SetTimer(g_MainWindow, 1, 500, nullptr); // UI Update Timer (500ms)
     MSG msg;
     while (GetMessage(&msg, 0, 0, 0)) {
@@ -106,6 +399,7 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
   }
 
 cleanup:
+  // Cleanup for GUI mode
   g_App.quit = true;
   for (auto &w : g_Workers)
     w->terminate = true;
@@ -156,6 +450,10 @@ int main(int argc, char *argv[]) {
   } catch (...) {
     std::setlocale(LC_ALL, ""); // Fallback
   }
+  // Log actual locale for debugging
+  const char *activeLocale = std::setlocale(LC_ALL, nullptr);
+  std::cout << "Active Locale: " << (activeLocale ? activeLocale : "Unknown")
+            << std::endl;
 
   std::cout << "Working Directory: " << std::filesystem::current_path()
             << std::endl;
@@ -244,8 +542,10 @@ int main(int argc, char *argv[]) {
         std::cout << "\n=== VALID HASH ===\n";
         std::cout << "Version: ShaderStress " << (int)vr.versionMajor << "."
                   << (int)vr.versionMinor << "\n";
+        std::wcout << L"OS: " << GetOsName(vr.os) << L"\n";
+        std::wcout << L"Arch: " << GetArchNameFromCode(vr.arch) << L"\n";
         std::cout << "CPU Hash: " << (int)vr.cpuHash << "\n";
-        std::cout << "Algorithm: Base62 + FNV1a Checksum (Strict)\n\n";
+        std::cout << "Algorithm: Base62 + FNV1a Checksum\n\n";
 
         std::cout << "--- Benchmark Scores ---\n";
         std::cout << "1st Minute: " << vr.r0 << " jobs/s\n";

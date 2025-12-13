@@ -52,8 +52,6 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     RECT rc;
     GetClientRect(h, &rc);
 
-    GetClientRect(h, &rc);
-
     if (rc.right != s_width || rc.bottom != s_height || !s_memDC) {
       if (s_memDC) {
         DeleteDC(s_memDC);
@@ -496,9 +494,12 @@ LRESULT CALLBACK HashDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
           g_HashResult += L"Version: ShaderStress " +
                           std::to_wstring(g_DecodedHash.versionMajor) + L"." +
                           std::to_wstring(g_DecodedHash.versionMinor) + L"\n";
+          g_HashResult += L"OS: " + GetOsName(g_DecodedHash.os) + L"\n";
+          g_HashResult +=
+              L"Arch: " + GetArchNameFromCode(g_DecodedHash.arch) + L"\n";
           g_HashResult +=
               L"CPU Hash: " + std::to_wstring(g_DecodedHash.cpuHash) + L"\n";
-          g_HashResult += L"Algorithm: Base62 + FNV1a Checksum (Strict)\n\n";
+          g_HashResult += L"Algorithm: Base62 + FNV1a Checksum\n\n";
 
           g_HashResult += L"Rates:\n";
           g_HashResult +=

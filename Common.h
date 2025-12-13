@@ -1,13 +1,7 @@
 // Common.h - Shared types
 #pragma once
 
-#include <atomic>
 #include <cstdint>
-#include <fstream>
-#include <iostream>
-#include <mutex>
-#include <string>
-#include <vector>
 
 #if defined(__linux__) || defined(__linux) || defined(linux)
 #define PLATFORM_LINUX 1
@@ -132,7 +126,7 @@ using namespace std::chrono_literals;
 extern const std::wstring APP_VERSION;
 // Numeric version for hash encoding
 static const uint8_t APP_VERSION_MAJOR = 3;
-static const uint8_t APP_VERSION_MINOR = 3;
+static const uint8_t APP_VERSION_MINOR = 4;
 
 constexpr uint64_t GOLDEN_RATIO = 0x9E3779B97F4A7C15ull;
 constexpr size_t IO_CHUNK_SIZE = 256 * 1024;
@@ -360,10 +354,12 @@ struct HashResult {
   bool valid = false;
   uint8_t versionMajor = 0;
   uint8_t versionMinor = 0;
-  uint8_t os = 0;
-  uint8_t arch = 0;
+  uint8_t os = 0;   // 0=Windows, 1=Linux, 2=macOS, 3=Other
+  uint8_t arch = 0; // 0=x86/x64, 1=ARM64
   uint8_t cpuHash = 0;
   uint64_t r0 = 0, r1 = 0, r2 = 0;
 };
+std::wstring GetOsName(uint8_t os);
+std::wstring GetArchNameFromCode(uint8_t arch);
 std::wstring GenerateBenchmarkHash(uint64_t r0, uint64_t r1, uint64_t r2);
 HashResult ValidateBenchmarkHash(const std::wstring &hash);
