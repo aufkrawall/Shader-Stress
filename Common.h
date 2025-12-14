@@ -127,6 +127,7 @@ extern const std::wstring APP_VERSION;
 // Numeric version for hash encoding
 static const uint8_t APP_VERSION_MAJOR = 3;
 static const uint8_t APP_VERSION_MINOR = 4;
+static const uint8_t APP_VERSION_PATCH = 1;
 
 constexpr uint64_t GOLDEN_RATIO = 0x9E3779B97F4A7C15ull;
 constexpr size_t IO_CHUNK_SIZE = 256 * 1024;
@@ -264,6 +265,8 @@ struct AppState {
   std::atomic<uint64_t> benchRates[3];
   std::atomic<int> benchWinner{-1};
   std::atomic<bool> benchComplete{false};
+  std::atomic<bool> autoStopBenchmark{
+      true}; // Stop and idle after 3min benchmark
 
   std::atomic<uint64_t> maxDuration{0};
   std::wstring sigStatus;

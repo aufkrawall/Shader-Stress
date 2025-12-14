@@ -137,8 +137,43 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     btn(13, L"Scalar (synthetic)", S(460), y2, sel == WL_SCALAR_MATH);
     btn(14, L"Scalar (realistic)", S(610), y2, sel == WL_SCALAR_SIM);
 
-    // Third row - Verify Hash button
+    // Third row - Checkbox for auto-stop and Verify Hash button
     int y3 = S(90);
+
+    // Checkbox: Stop after 3 minutes
+    {
+      int cbX = S(10), cbY = y3, cbSize = S(16);
+      RECT cbRect = {cbX, cbY, cbX + cbSize, cbY + cbSize};
+      // Draw checkbox border
+      FrameRect(s_memDC, &cbRect, (HBRUSH)GetStockObject(WHITE_BRUSH));
+      // Draw checkmark if enabled
+      if (g_App.autoStopBenchmark) {
+        HPEN oldPen = (HPEN)SelectObject(s_memDC, GetStockObject(WHITE_PEN));
+        MoveToEx(s_memDC, cbX + S(3), cbY + S(8), nullptr);
+        LineTo(s_memDC, cbX + S(6), cbY + S(12));
+        LineTo(s_memDC, cbX + S(13), cbY + S(4));
+        SelectObject(s_memDC, oldPen);
+      }
+      // Label
+      SetTextColor(s_memDC, RGB(200, 200, 200));
+      RECT labelRect = {cbX + cbSize + S(6), cbY - S(2), S(280), cbY + S(20)};
+      DrawTextW(s_memDC, L"Stop benchmark after 3 minutes", -1, &labelRect,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    // Note about AVX workloads - positioned at bottom right
+    {
+      SetTextColor(s_memDC, RGB(120, 120, 120)); // Dimmed text
+      RECT noteRect = {S(380), S(615), S(750), S(700)};
+      DrawTextW(s_memDC,
+                L"Note: AVX workloads have increased computational\n"
+                L"complexities, hence Jobs/s is not an indicator for\n"
+                L"actual AVX2/AVX-512 acceleration. Scalar (synthetic)\n"
+                L"on ARM actually uses NEON.",
+                -1, &noteRect, DT_LEFT | DT_WORDBREAK);
+      SetTextColor(s_memDC, RGB(200, 200, 200)); // Restore color
+    }
+
     btn(20, L"Verify Hash", S(610), y3, false);
 
     std::wstring modeName =
@@ -349,8 +384,13 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         InvalidateRect(h, nullptr, FALSE);
       }
     }
-    // Third row - Verify Hash button
+    // Third row - Checkbox and Verify Hash button
     if (y > S(90) && y < S(120)) {
+      // Checkbox click area (checkbox + label)
+      if (x > S(10) && x < S(280)) {
+        g_App.autoStopBenchmark = !g_App.autoStopBenchmark;
+        InvalidateRect(h, nullptr, FALSE);
+      }
       if (x > S(610) && x < S(750)) {
         ShowVerifyDialog(h);
       }
@@ -519,7 +559,6 @@ LRESULT CALLBACK HashDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
           g_HashResult += L"\"" + hashInput + L"\"\n\n";
           g_HashResult += L"Possible reasons:\n";
           g_HashResult += L"- Hash is corrupted\n";
-          g_HashResult += L"- Not from ShaderStress 3.3\n";
           g_HashResult += L"- Hash was modified";
         }
       }

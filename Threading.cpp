@@ -751,7 +751,8 @@ void Watchdog() {
           report << L"OS: macOS | Arch: " << GetArchName() << L"\n";
 #endif
           report << L"CPU: " << g_Cpu.brand << L"\n";
-          report << L"Workload: Scalar real.\n";
+          report << L"Workload: "
+                 << GetResolvedISAName(g_App.selectedWorkload.load()) << L"\n";
           report << L"----------------------------------------\n";
           report << L"Minute 1: " << FmtNum(r0) << L" Jobs/s\n";
           report << L"Minute 2: " << FmtNum(r1) << L" Jobs/s\n";
@@ -765,6 +766,14 @@ void Watchdog() {
 
           g_App.LogRaw(report.str());
           g_App.Log(L"Benchmark Finished. Hash: " + g_App.benchHash);
+
+          // Auto-stop workers if checkbox is enabled
+          if (g_App.autoStopBenchmark) {
+            SetWork(0, 0, false, false);
+            g_App.running = false;
+            g_App.Log(L"Auto-stopped benchmark to reduce CPU load.");
+          }
+
 #ifdef PLATFORM_WINDOWS
           if (g_MainWindow)
             InvalidateRect(g_MainWindow, nullptr, FALSE);
