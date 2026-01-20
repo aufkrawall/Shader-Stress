@@ -39,8 +39,8 @@ SRC_FILES_WINDOWS = [
     "Workloads.cpp", "Threading.cpp", "Gui.cpp", "ShaderStress.cpp"
 ]
 SRC_FILES_UNIX = [
-    "Common.cpp", "CpuFeatures.cpp", "Platform.cpp", 
-    "Workloads.cpp", "Threading.cpp", "ShaderStress.cpp"
+    "Common.cpp", "CpuFeatures.cpp", "Platform.cpp",
+    "Workloads.cpp", "Threading.cpp", "TerminalUtils.cpp", "ShaderStress.cpp"
 ]
 
 def log(msg):

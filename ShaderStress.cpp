@@ -2,6 +2,7 @@
 // Windows: wWinMain with GDI GUI
 // Linux/macOS: main() with CLI
 #include "Common.h"
+#include "TerminalUtils.h"
 
 #ifdef PLATFORM_WINDOWS
 
@@ -443,6 +444,16 @@ static int AskInput(const std::string &prompt, int def, int min, int max) {
 }
 
 int main(int argc, char *argv[]) {
+#if defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS)
+  if (!IsRunningInTerminal() && !ShouldSkipTerminalSpawn(argc, argv)) {
+    if (TrySpawnTerminal(argc, argv)) {
+      return 0;
+    }
+    ShowTerminalRequiredError();
+    return 1;
+  }
+#endif
+
   // Setup Locale and Logging
   try {
     // Try forcing UTF-8 locale for consistent wide-char handling on macOS
@@ -515,8 +526,9 @@ int main(int argc, char *argv[]) {
     }
     if (strcmp(argv[i], "--help") == 0) {
       std::cout << "Usage: shaderstress [options]" << std::endl;
-      std::cout << "  --duration <sec>  Run for N seconds" << std::endl;
-      std::cout << "  --benchmark       Run 3-minute benchmark" << std::endl;
+      std::cout << "  --duration <sec>   Run for N seconds" << std::endl;
+      std::cout << "  --benchmark        Run 3-minute benchmark" << std::endl;
+      std::cout << "  --force-no-spawn   Skip terminal auto-spawn (for scripts)" << std::endl;
       return 0;
     }
   }

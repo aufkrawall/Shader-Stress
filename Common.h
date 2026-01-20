@@ -127,7 +127,7 @@ extern const std::wstring APP_VERSION;
 // Numeric version for hash encoding
 static const uint8_t APP_VERSION_MAJOR = 3;
 static const uint8_t APP_VERSION_MINOR = 4;
-static const uint8_t APP_VERSION_PATCH = 1;
+static const uint8_t APP_VERSION_PATCH = 2;
 
 constexpr uint64_t GOLDEN_RATIO = 0x9E3779B97F4A7C15ull;
 constexpr size_t IO_CHUNK_SIZE = 256 * 1024;
