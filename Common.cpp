@@ -1,7 +1,7 @@
 // Common.cpp - Global variable definitions and utility function implementations
 #include "Common.h"
 
-const std::wstring APP_VERSION = L"3.4.2";
+const std::wstring APP_VERSION = L"3.5.0";
 
 // --- Global Variables ---
 CpuFeatures g_Cpu;
@@ -69,28 +69,28 @@ std::wstring GetArchName() {
 }
 
 std::wstring GetResolvedISAName(int workloadSel) {
-#if defined(_M_ARM64) || defined(__aarch64__)
-  bool can512 = false;
-  bool canAVX2 = false;
-#else
-  bool can512 = g_Cpu.hasAVX512F && !g_ForceNoAVX512;
-  bool canAVX2 = g_Cpu.hasAVX2 && g_Cpu.hasFMA && !g_ForceNoAVX2;
-#endif
+  WorkloadType type = (WorkloadType)workloadSel;
+  if (type == WL_AUTO) {
+    if (g_Cpu.hasAVX512F && !g_ForceNoAVX512)
+      type = WL_AVX512;
+    else if (g_Cpu.hasAVX2 && !g_ForceNoAVX2)
+      type = WL_AVX2;
+    else
+      type = WL_SCALAR; // Default to Synthetic Scalar for max power
+  }
 
-  if (workloadSel == WL_AVX512)
-    return L"AVX-512 (Forced)";
-  if (workloadSel == WL_AVX2)
-    return L"AVX2 (Forced)";
-  if (workloadSel == WL_SCALAR_MATH)
-    return L"Scalar Synthetic (Forced)";
-  if (workloadSel == WL_SCALAR_SIM)
-    return L"Scalar Realistic (Forced)";
-
-  if (can512)
-    return L"AVX-512 (Auto)";
-  if (canAVX2)
-    return L"AVX2 (Auto)";
-  return L"Scalar Realistic (Auto)";
+  switch (type) {
+  case WL_SCALAR:
+    return L"Scalar (Synthetic)";
+  case WL_AVX2:
+    return L"AVX2";
+  case WL_AVX512:
+    return L"AVX-512";
+  case WL_SCALAR_SIM:
+    return L"Realistic Compiler Sim";
+  default:
+    return L"Unknown";
+  }
 }
 
 // Helper for logging
@@ -105,15 +105,22 @@ static std::string ToLogStr(const std::wstring &w) {
                       nullptr);
   return s;
 #else
-  // Simple rough conversion for Linux/macOS logging ease (flawed for non-ASCII
-  // if locale bad, but robust against crash) std::wcstombs relies on locale. If
-  // locale is C, it might fail. Fallback: manual cast (ASCII only safe) + '?'
-  // replacement
+  // Use std::wcstombs with locale for proper UTF-8 conversion
+  // Fallback to lossy ASCII-only if locale doesn't support it
+  std::setlocale(LC_CTYPE, "");  // Use system locale
+  const wchar_t* wstr = w.c_str();
+  size_t len = std::wcstombs(nullptr, wstr, 0);
+  if (len != static_cast<size_t>(-1) && len > 0) {
+    std::string s(len, 0);
+    std::wcstombs(&s[0], wstr, len);
+    return s;
+  }
+  // Fallback: lossy ASCII-only conversion
   std::string s;
   s.reserve(w.size());
   for (wchar_t c : w) {
     if (c < 128)
-      s.push_back((char)c);
+      s.push_back(static_cast<char>(c));
     else
       s.push_back('?');
   }
@@ -142,12 +149,12 @@ void AppState::Log(const std::wstring &msg) {
 
   std::wstring fullMsg = ss.str();
 
-  // Send to history (for clipboard)
+  // Send to history (for clipboard) - uses deque for O(1) push/pop
   {
     std::lock_guard<std::mutex> lk(historyMtx);
     logHistory.push_back(fullMsg);
-    if (logHistory.size() > 1000)
-      logHistory.erase(logHistory.begin());
+    while (logHistory.size() > MAX_LOG_HISTORY)
+      logHistory.pop_front();
   }
 
   // Send to file/console
@@ -163,8 +170,8 @@ void AppState::LogRaw(const std::wstring &msg) {
   {
     std::lock_guard<std::mutex> lk(historyMtx);
     logHistory.push_back(msg);
-    if (logHistory.size() > 1000)
-      logHistory.erase(logHistory.begin());
+    while (logHistory.size() > MAX_LOG_HISTORY)
+      logHistory.pop_front();
   }
   std::lock_guard<std::mutex> lk(logMtx);
   if (log.is_open()) {
@@ -172,9 +179,23 @@ void AppState::LogRaw(const std::wstring &msg) {
   }
 }
 
+std::vector<std::wstring> AppState::GetLogHistorySnapshot() const {
+  std::lock_guard<std::mutex> lk(historyMtx);
+  return std::vector<std::wstring>(logHistory.begin(), logHistory.end());
+}
+
 void DetectBestConfig() {
   StressConfig heavyCfg;
-  heavyCfg = {8, 2, 0, 0, L"Math Heavy (AVX2/512)"};
+  heavyCfg.fma_intensity = 8;
+  heavyCfg.int_intensity = 2;
+  heavyCfg.div_intensity = 1;
+  heavyCfg.bit_intensity = 0;
+  heavyCfg.branch_intensity = 0;
+  heavyCfg.int_simd_intensity = 0;
+  heavyCfg.mem_pressure = 0;
+  heavyCfg.shuffle_freq = 8;
+  heavyCfg.cache_stride = 32768;
+  heavyCfg.name = L"Math Heavy (AVX2/512)";
   std::lock_guard<std::mutex> lk(g_ConfigMtx);
   g_ActiveConfig = heavyCfg;
 

@@ -56,6 +56,8 @@ CpuFeatures GetCpuInfo() {
   f.hasAVX2 = false;
   f.hasAVX512F = false;
   f.hasFMA = false;
+  f.family = 0;
+  f.model = 0;
   f.name = L"Scalar";
 
 #if defined(_M_ARM64) || defined(__aarch64__)
@@ -70,8 +72,24 @@ CpuFeatures GetCpuInfo() {
 
   unsigned int maxFunc = eax;
 
+  // Detect CPU family and model for tuning
+  // Intel signature: ebx = vendor (GenuineIntel=0x756E6547)
+  // AMD signature: ebx = vendor (AuthenticAMD=0x68747541)
   if (maxFunc >= 1) {
     __get_cpuid(1, &eax, &ebx, &ecx, &edx);
+    f.family = (eax >> 8) & 0xF;
+    f.model = ((eax >> 12) & 0xF0) | ((eax >> 4) & 0xF);
+    
+    // Extended family for AMD
+    if (ebx == 0x68747541 || ebx == 0x69746E65 || ebx == 0x746E6541) {
+      // AMD signature detected
+      unsigned int eax_ext;
+      if (__get_cpuid(0x80000000, &eax_ext, &ebx, &ecx, &edx) && eax_ext >= 0x80000001) {
+        unsigned int extFamily = (eax_ext >> 20) & 0xFF;
+        f.family += extFamily;  // Extended family
+      }
+    }
+    
     f.hasFMA = (ecx & (1 << 12)) != 0;
     bool osxsave = (ecx & (1 << 27)) != 0;
     bool cpuAVX = (ecx & (1 << 28)) != 0;

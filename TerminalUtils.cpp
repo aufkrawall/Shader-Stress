@@ -7,8 +7,15 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <errno.h>
+
+// Maximum time to wait for terminal spawn (milliseconds)
+constexpr int SPAWN_TIMEOUT_MS = 5000;
+constexpr int POLL_INTERVAL_US = 50000; // 50ms
 
 static bool TrySpawnInTerminalEmulator(int argc, char* argv[]) {
     const char* selfPath = argv[0];
@@ -33,23 +40,56 @@ static bool TrySpawnInTerminalEmulator(int argc, char* argv[]) {
     };
 
     for (const auto& term : terminals) {
-        for (int i = 0; i < 3; ++i) {
-            pid_t pid = fork();
-            if (pid == 0) {
-                if (term.needsHoldArg) {
-                    execlp(term.cmd, term.cmd, "--hold", "-e", selfPath, (char*)NULL);
+        pid_t pid = fork();
+        if (pid == 0) {
+            // Child process: try to spawn terminal
+            // Redirect stdout/stderr to avoid polluting parent's output
+            int devNull = open("/dev/null", O_WRONLY);
+            if (devNull >= 0) {
+                dup2(devNull, STDOUT_FILENO);
+                dup2(devNull, STDERR_FILENO);
+                close(devNull);
+            }
+            
+            if (term.needsHoldArg) {
+                execlp(term.cmd, term.cmd, "--hold", "-e", selfPath, (char*)NULL);
+            } else {
+                execlp(term.cmd, term.cmd, "--", selfPath, (char*)NULL);
+            }
+            // If we get here, execlp failed
+            _exit(127);
+        } else if (pid > 0) {
+            // Parent: wait for child with timeout using polling
+            int status;
+            int waitedMs = 0;
+            pid_t result;
+            
+            while (waitedMs < SPAWN_TIMEOUT_MS) {
+                result = waitpid(pid, &status, WNOHANG);
+                if (result == pid) {
+                    // Child exited
+                    if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
+                        // execlp failed, try next terminal
+                        break;
+                    }
+                    // Child exited with other status - assume terminal spawned
+                    return true;
+                } else if (result == 0) {
+                    // Child still running - terminal likely spawned successfully
+                    // Give it a bit more time to stabilize
+                    usleep(POLL_INTERVAL_US);
+                    waitedMs += POLL_INTERVAL_US / 1000;
                 } else {
-                    execlp(term.cmd, term.cmd, "--", selfPath, (char*)NULL);
+                    // Error
+                    break;
                 }
-                _exit(127);
-            } else if (pid > 0) {
-                int status;
-                waitpid(pid, &status, WNOHANG);
-                if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
-                    continue;
-                }
+            }
+            
+            if (result == 0) {
+                // Still running after timeout - assume success
                 return true;
             }
+            // Otherwise try next terminal
         }
     }
 
@@ -62,16 +102,34 @@ static bool TrySpawnInVirtualTerminal(int argc, char* argv[]) {
     for (int vt = 1; vt <= 12; ++vt) {
         pid_t pid = fork();
         if (pid == 0) {
+            // Child
             setsid();
             execlp("openvt", "openvt", "-s", "-w", "--", selfPath, (char*)NULL);
             _exit(127);
         } else if (pid > 0) {
+            // Parent: wait with timeout
             int status;
-            waitpid(pid, &status, WNOHANG);
-            if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
-                continue;
+            int waitedMs = 0;
+            pid_t result;
+            
+            while (waitedMs < SPAWN_TIMEOUT_MS) {
+                result = waitpid(pid, &status, WNOHANG);
+                if (result == pid) {
+                    if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
+                        break; // Try next VT
+                    }
+                    return true;
+                } else if (result == 0) {
+                    usleep(POLL_INTERVAL_US);
+                    waitedMs += POLL_INTERVAL_US / 1000;
+                } else {
+                    break;
+                }
             }
-            return true;
+            
+            if (result == 0) {
+                return true; // Still running, assume success
+            }
         }
     }
 

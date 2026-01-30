@@ -422,10 +422,13 @@ cleanup:
 
 // ... signalHandler ...
 
+// Async-signal-safe flag for signal handling
+static volatile sig_atomic_t g_SignalReceived = 0;
+
 static void signalHandler(int sig) {
   (void)sig;
-  g_App.quit = true;
-  g_App.running = false;
+  // Only set flag - actual handling happens in main loop
+  g_SignalReceived = 1;
 }
 
 static int AskInput(const std::string &prompt, int def, int min, int max) {
@@ -435,10 +438,20 @@ static int AskInput(const std::string &prompt, int def, int min, int max) {
   if (line.empty())
     return def;
   try {
-    int v = std::stoi(line);
+    size_t pos = 0;
+    int v = std::stoi(line, &pos);
+    // Ensure entire string was consumed (no trailing garbage)
+    if (pos != line.length()) {
+      std::cout << "Invalid input: trailing characters. Using default." << std::endl;
+      return def;
+    }
     if (v >= min && v <= max)
       return v;
-  } catch (...) {
+    std::cout << "Value out of range [" << min << "-" << max << "]. Using default." << std::endl;
+  } catch (const std::invalid_argument&) {
+    std::cout << "Invalid number. Using default." << std::endl;
+  } catch (const std::out_of_range&) {
+    std::cout << "Number too large. Using default." << std::endl;
   }
   return def;
 }
@@ -520,7 +533,7 @@ int main(int argc, char *argv[]) {
     if (strcmp(argv[i], "--benchmark") == 0) {
       g_App.mode = 0;
       g_App.selectedWorkload =
-          WL_SCALAR_SIM; // Force realistic scalar for benchmark
+          WL_SCALAR; // Force scalar MAX POWER for benchmark
       duration = 180;
       batchMode = true;
     }
@@ -656,7 +669,7 @@ int main(int argc, char *argv[]) {
 
   // Dashboard Loop
   std::cout << "\033[?25l"; // Hide cursor
-  while (!g_App.quit) {
+  while (!g_App.quit && !g_SignalReceived) {
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     // Clear screen (using cout/narrow for raw ANSI bytes to avoid wide-char
@@ -747,9 +760,11 @@ int main(int argc, char *argv[]) {
   std::cout << "\033[?25h"; // Show cursor
   std::cout << "\nStopping...\n";
 
-  // Cleanup
-  g_App.quit = true;
-  g_App.running = false;
+  // Cleanup - signal handler may have set quit already
+  if (g_SignalReceived) {
+    g_App.quit = true;
+    g_App.running = false;
+  }
   for (auto &w : g_Workers)
     w->terminate = true;
   for (auto &w : g_IOThreads)

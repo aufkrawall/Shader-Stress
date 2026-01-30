@@ -1,13 +1,29 @@
-// Workloads.cpp - CPU stress test kernels (AVX2, AVX512, Scalar, Realistic)
+// Workloads.cpp - CPU stress test kernels
 #include "Common.h"
 
-// Forward declaration for crash dump (Windows only)
+// SSE2 intrinsics for x86/x64 only
+#if defined(_M_IX86) || defined(_M_X64) || defined(__i386__) || defined(__x86_64__)
+  #if defined(_MSC_VER)
+    #include <intrin.h>
+  #else
+    #include <emmintrin.h>
+  #endif
+#endif
+
+// ARM NEON intrinsics for ARM64
+#if defined(_M_ARM64) || defined(__aarch64__)
+  #if defined(_MSC_VER)
+    #include <arm64_neon.h>
+  #else
+    #include <arm_neon.h>
+  #endif
+#endif
+
 #ifdef _WIN32
 LONG WINAPI WriteCrashDump(PEXCEPTION_POINTERS pExceptionInfo, uint64_t seed,
                            int complexity, int threadIdx);
 #endif
 
-// --- Helper Functions ---
 ALWAYS_INLINE uint64_t RunGraphColoringMicro(uint64_t val) {
   uint64_t x = val;
   x ^= x << 13;
@@ -26,274 +42,6 @@ ALWAYS_INLINE void InterlockedXorCold(uint64_t *ptr, uint64_t val) {
 }
 #endif
 
-// --- X86 SPECIFIC KERNELS ---
-#if !defined(_M_ARM64) && !defined(__aarch64__)
-
-__attribute__((target("avx2,fma"))) void
-RunHyperStress_AVX2(uint64_t seed, int complexity, const StressConfig &config) {
-  const int BLOCK_SIZE = 512;
-  alignas(64) HotNode nodes[BLOCK_SIZE];
-  for (int i = 0; i < BLOCK_SIZE; ++i) {
-    uint64_t s = seed + i * GOLDEN_RATIO;
-    for (int j = 0; j < 16; ++j)
-      nodes[i].fRegs[j] = (float)((s >> (j * 4)) & 0xFF) * 1.1f;
-    for (int j = 0; j < 8; ++j)
-      nodes[i].iRegs[j] = s ^ ((uint64_t)j << 32);
-  }
-
-  size_t coldMask = g_ColdStorage.size() ? (g_ColdStorage.size() - 1) : 0;
-  uint64_t *coldPtr = g_ColdStorage.empty() ? nullptr : g_ColdStorage.data();
-  __m256 vFMA = _mm256_set1_ps(1.0001f);
-  __m256 vMul = _mm256_set1_ps(0.9999f);
-
-  for (int i = 0; i < complexity; i += 4) {
-    if (g_App.quit)
-      break;
-    HotNode *n[4] = {&nodes[i % BLOCK_SIZE], &nodes[(i + 1) % BLOCK_SIZE],
-                     &nodes[(i + 2) % BLOCK_SIZE],
-                     &nodes[(i + 3) % BLOCK_SIZE]};
-    for (int k = 0; k < config.int_intensity; ++k) {
-      for (int j = 0; j < 4; ++j)
-        n[j]->iRegs[0] = (n[j]->iRegs[0] ^ 0x9E3779B9) * n[j]->iRegs[1];
-    }
-    // Optimized: 8 independent YMM chains to saturate both FMA units
-    // With 4-cycle latency and 2 FMA units, need 8 ops in flight to hide
-    // latency
-    for (int k = 0; k < config.fma_intensity; ++k) {
-      // Load all 8 YMM registers (2 per node × 4 nodes)
-      __m256 r0 = _mm256_load_ps(n[0]->fRegs);
-      __m256 r1 = _mm256_load_ps(n[0]->fRegs + 8);
-      __m256 r2 = _mm256_load_ps(n[1]->fRegs);
-      __m256 r3 = _mm256_load_ps(n[1]->fRegs + 8);
-      __m256 r4 = _mm256_load_ps(n[2]->fRegs);
-      __m256 r5 = _mm256_load_ps(n[2]->fRegs + 8);
-      __m256 r6 = _mm256_load_ps(n[3]->fRegs);
-      __m256 r7 = _mm256_load_ps(n[3]->fRegs + 8);
-
-      // Round 1: All 8 FMAs independent - scheduler can issue 2/cycle
-      r0 = _mm256_fmadd_ps(r0, vMul, vFMA);
-      r1 = _mm256_fmadd_ps(r1, vMul, vFMA);
-      r2 = _mm256_fmadd_ps(r2, vMul, vFMA);
-      r3 = _mm256_fmadd_ps(r3, vMul, vFMA);
-      r4 = _mm256_fmadd_ps(r4, vMul, vFMA);
-      r5 = _mm256_fmadd_ps(r5, vMul, vFMA);
-      r6 = _mm256_fmadd_ps(r6, vMul, vFMA);
-      r7 = _mm256_fmadd_ps(r7, vMul, vFMA);
-
-      // Round 2: Per-register dependency (r0_in -> r0_out), 8 chains mask
-      // latency
-      r0 = _mm256_fmadd_ps(r0, vFMA, vMul);
-      r1 = _mm256_fmadd_ps(r1, vFMA, vMul);
-      r2 = _mm256_fmadd_ps(r2, vFMA, vMul);
-      r3 = _mm256_fmadd_ps(r3, vFMA, vMul);
-      r4 = _mm256_fmadd_ps(r4, vFMA, vMul);
-      r5 = _mm256_fmadd_ps(r5, vFMA, vMul);
-      r6 = _mm256_fmadd_ps(r6, vFMA, vMul);
-      r7 = _mm256_fmadd_ps(r7, vFMA, vMul);
-
-      // Store all results
-      _mm256_store_ps(n[0]->fRegs, r0);
-      _mm256_store_ps(n[0]->fRegs + 8, r1);
-      _mm256_store_ps(n[1]->fRegs, r2);
-      _mm256_store_ps(n[1]->fRegs + 8, r3);
-      _mm256_store_ps(n[2]->fRegs, r4);
-      _mm256_store_ps(n[2]->fRegs + 8, r5);
-      _mm256_store_ps(n[3]->fRegs, r6);
-      _mm256_store_ps(n[3]->fRegs + 8, r7);
-    }
-    if (config.mem_pressure > 0 && coldPtr) {
-      for (int m = 0; m < config.mem_pressure; ++m) {
-        for (int j = 0; j < 4; ++j)
-          InterlockedXorCold(&coldPtr[n[j]->iRegs[0] & coldMask],
-                             n[j]->iRegs[1]);
-      }
-    }
-  }
-}
-
-__attribute__((
-    target("avx512f,avx512vl,avx512bw,avx512dq,avx512cd,evex512"))) void
-RunHyperStress_AVX512(uint64_t seed, int complexity,
-                      const StressConfig &config) {
-  const int BLOCK_SIZE = 512;
-  alignas(64) HotNode nodes[BLOCK_SIZE];
-  for (int i = 0; i < BLOCK_SIZE; ++i) {
-    uint64_t s = seed + i * GOLDEN_RATIO;
-    for (int j = 0; j < 16; ++j)
-      nodes[i].fRegs[j] = (float)((s >> (j * 4)) & 0xFF) * 1.1f;
-    for (int j = 0; j < 8; ++j)
-      nodes[i].iRegs[j] = s ^ ((uint64_t)j << 32);
-  }
-  size_t coldMask = g_ColdStorage.size() ? (g_ColdStorage.size() - 1) : 0;
-  uint64_t *coldPtr = g_ColdStorage.empty() ? nullptr : g_ColdStorage.data();
-  __m512 vFMA = _mm512_set1_ps(1.0001f);
-  __m512 vMul = _mm512_set1_ps(0.9999f);
-
-  for (int i = 0; i < complexity; i += 4) {
-    if (g_App.quit)
-      break;
-    HotNode *n[4] = {&nodes[i % BLOCK_SIZE], &nodes[(i + 1) % BLOCK_SIZE],
-                     &nodes[(i + 2) % BLOCK_SIZE],
-                     &nodes[(i + 3) % BLOCK_SIZE]};
-    for (int k = 0; k < config.int_intensity; ++k) {
-      for (int j = 0; j < 4; ++j)
-        n[j]->iRegs[0] = (n[j]->iRegs[0] ^ 0x9E3779B9) * n[j]->iRegs[1];
-    }
-    // Optimized: 4 independent ZMM chains with 3 FMA rounds each
-    // Works on Rocket Lake (1×512 FMA) and Zen 4 (2×256 = 1×512 effective)
-    // 4 chains hide 4-cycle latency; 3 rounds maximize work per iteration
-    for (int k = 0; k < config.fma_intensity; ++k) {
-      // Load 4 ZMM registers (1 per node)
-      __m512 z0 = _mm512_load_ps(n[0]->fRegs);
-      __m512 z1 = _mm512_load_ps(n[1]->fRegs);
-      __m512 z2 = _mm512_load_ps(n[2]->fRegs);
-      __m512 z3 = _mm512_load_ps(n[3]->fRegs);
-
-      // Round 1: All 4 FMAs independent
-      z0 = _mm512_fmadd_ps(z0, vMul, vFMA);
-      z1 = _mm512_fmadd_ps(z1, vMul, vFMA);
-      z2 = _mm512_fmadd_ps(z2, vMul, vFMA);
-      z3 = _mm512_fmadd_ps(z3, vMul, vFMA);
-
-      // Round 2: Per-register dependency chains continue
-      z0 = _mm512_fmadd_ps(z0, vFMA, vMul);
-      z1 = _mm512_fmadd_ps(z1, vFMA, vMul);
-      z2 = _mm512_fmadd_ps(z2, vFMA, vMul);
-      z3 = _mm512_fmadd_ps(z3, vFMA, vMul);
-
-      // Round 3: More sustained FMA work
-      z0 = _mm512_fmadd_ps(z0, vMul, vFMA);
-      z1 = _mm512_fmadd_ps(z1, vMul, vFMA);
-      z2 = _mm512_fmadd_ps(z2, vMul, vFMA);
-      z3 = _mm512_fmadd_ps(z3, vMul, vFMA);
-
-      // Store results
-      _mm512_store_ps(n[0]->fRegs, z0);
-      _mm512_store_ps(n[1]->fRegs, z1);
-      _mm512_store_ps(n[2]->fRegs, z2);
-      _mm512_store_ps(n[3]->fRegs, z3);
-    }
-    if (config.mem_pressure > 0 && coldPtr) {
-      for (int m = 0; m < config.mem_pressure; ++m) {
-        for (int j = 0; j < 4; ++j)
-          InterlockedXorCold(&coldPtr[n[j]->iRegs[0] & coldMask],
-                             n[j]->iRegs[1]);
-      }
-    }
-  }
-}
-
-#endif // !defined(_M_ARM64) && !defined(__aarch64__)
-
-// --- ARM NEON KERNEL ---
-#if defined(_M_ARM64) || defined(__aarch64__)
-#include <arm_neon.h>
-
-void RunHyperStress_NEON(uint64_t seed, int complexity,
-                         const StressConfig &config) {
-  const int BLOCK_SIZE = 512;
-  alignas(64) HotNode nodes[BLOCK_SIZE];
-  for (int i = 0; i < BLOCK_SIZE; ++i) {
-    uint64_t s = seed + i * GOLDEN_RATIO;
-    for (int j = 0; j < 16; ++j)
-      nodes[i].fRegs[j] = (float)((s >> (j * 4)) & 0xFF) * 1.1f;
-    for (int j = 0; j < 8; ++j)
-      nodes[i].iRegs[j] = s ^ ((uint64_t)j << 32);
-  }
-  size_t coldMask = g_ColdStorage.size() ? (g_ColdStorage.size() - 1) : 0;
-  uint64_t *coldPtr = g_ColdStorage.empty() ? nullptr : g_ColdStorage.data();
-
-  // NEON vectors
-  float32x4_t vFMA = vdupq_n_f32(1.0001f);
-  float32x4_t vMul = vdupq_n_f32(0.9999f);
-
-  for (int i = 0; i < complexity; i += 4) {
-    if (g_App.quit)
-      break;
-    HotNode *n[4] = {&nodes[i % BLOCK_SIZE], &nodes[(i + 1) % BLOCK_SIZE],
-                     &nodes[(i + 2) % BLOCK_SIZE],
-                     &nodes[(i + 3) % BLOCK_SIZE]};
-    // Integer work
-    for (int k = 0; k < config.int_intensity; ++k) {
-      for (int j = 0; j < 4; ++j)
-        n[j]->iRegs[0] = (n[j]->iRegs[0] ^ 0x9E3779B9) * n[j]->iRegs[1];
-    }
-    // NEON FMA: 4 vectors x 4 floats = 16 floats per node
-    for (int k = 0; k < config.fma_intensity; ++k) {
-      for (int j = 0; j < 4; ++j) {
-        float32x4_t f0 = vld1q_f32(n[j]->fRegs);
-        float32x4_t f1 = vld1q_f32(n[j]->fRegs + 4);
-        float32x4_t f2 = vld1q_f32(n[j]->fRegs + 8);
-        float32x4_t f3 = vld1q_f32(n[j]->fRegs + 12);
-        // FMA: result = a + b*c -> vfmaq_f32(a, b, c)
-        f0 = vfmaq_f32(vFMA, f0, vMul);
-        f1 = vfmaq_f32(vFMA, f1, vMul);
-        f2 = vfmaq_f32(vFMA, f2, vMul);
-        f3 = vfmaq_f32(vFMA, f3, vMul);
-        vst1q_f32(n[j]->fRegs, f0);
-        vst1q_f32(n[j]->fRegs + 4, f1);
-        vst1q_f32(n[j]->fRegs + 8, f2);
-        vst1q_f32(n[j]->fRegs + 12, f3);
-      }
-    }
-    // Memory pressure
-    if (config.mem_pressure > 0 && coldPtr) {
-      for (int m = 0; m < config.mem_pressure; ++m) {
-        for (int j = 0; j < 4; ++j)
-          InterlockedXorCold(&coldPtr[n[j]->iRegs[0] & coldMask],
-                             n[j]->iRegs[1]);
-      }
-    }
-  }
-}
-
-#endif // ARM64
-
-// --- SCALAR KERNELS (Universal) ---
-void RunHyperStress_Scalar(uint64_t seed, int complexity,
-                           const StressConfig &config) {
-  const int BLOCK_SIZE = 512;
-  alignas(64) HotNode nodes[BLOCK_SIZE];
-  for (int i = 0; i < BLOCK_SIZE; ++i) {
-    uint64_t s = seed + i * GOLDEN_RATIO;
-    for (int j = 0; j < 16; ++j)
-      nodes[i].fRegs[j] = (float)((s >> (j * 4)) & 0xFF) * 1.1f;
-    for (int j = 0; j < 8; ++j)
-      nodes[i].iRegs[j] = s ^ ((uint64_t)j << 32);
-  }
-  size_t coldMask = g_ColdStorage.size() ? (g_ColdStorage.size() - 1) : 0;
-  uint64_t *coldPtr = g_ColdStorage.empty() ? nullptr : g_ColdStorage.data();
-  float vFMA = 1.0001f;
-  float vMul = 0.9999f;
-
-  for (int i = 0; i < complexity; i += 4) {
-    if (g_App.quit)
-      break;
-    HotNode *n[4] = {&nodes[i % BLOCK_SIZE], &nodes[(i + 1) % BLOCK_SIZE],
-                     &nodes[(i + 2) % BLOCK_SIZE],
-                     &nodes[(i + 3) % BLOCK_SIZE]};
-    for (int k = 0; k < config.int_intensity; ++k) {
-      for (int j = 0; j < 4; ++j)
-        n[j]->iRegs[0] = (n[j]->iRegs[0] ^ 0x9E3779B9) * n[j]->iRegs[1];
-    }
-    for (int k = 0; k < config.fma_intensity; ++k) {
-      for (int j = 0; j < 4; ++j) {
-        for (int f = 0; f < 16; ++f) {
-          n[j]->fRegs[f] = (n[j]->fRegs[f] * vMul) + vFMA;
-        }
-      }
-    }
-    if (config.mem_pressure > 0 && coldPtr) {
-      for (int m = 0; m < config.mem_pressure; ++m) {
-        for (int j = 0; j < 4; ++j)
-          InterlockedXorCold(&coldPtr[n[j]->iRegs[0] & coldMask],
-                             n[j]->iRegs[1]);
-      }
-    }
-  }
-}
-
-// --- Case Block Macros for switch optimization ---
 #define CASE_BLOCK_32(start, code)                                             \
   case start:                                                                  \
   case start + 1:                                                              \
@@ -350,9 +98,10 @@ void RunHyperStress_Scalar(uint64_t seed, int complexity,
     code;                                                                      \
   } break;
 
-// --- Realistic Compiler Simulation ---
+// --- Realistic Compiler Simulation (UNCHANGED) ---
 void RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
                                 const StressConfig &config) {
+  (void)config;
   constexpr size_t TREE_NODES = 16384;
   constexpr size_t HASH_BUCKETS = 4096;
   constexpr size_t STRING_POOL_SIZE = 64 * 1024;
@@ -366,24 +115,12 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
     uint32_t nodeRef;
   };
 
-  // Thread-local storage to avoid repeated large allocations
-  static thread_local std::unique_ptr<FakeAstNode[]> tree =
-      std::make_unique<FakeAstNode[]>(TREE_NODES);
-  // unused hashTable removed
-  static thread_local std::unique_ptr<HashEntry[]> tableEntries =
-      std::make_unique<HashEntry[]>(HASH_BUCKETS);
-  static thread_local std::unique_ptr<char[]> stringPool =
-      std::make_unique<char[]>(STRING_POOL_SIZE);
-  static thread_local std::unique_ptr<uint64_t[]> liveInArr =
-      std::make_unique<uint64_t[]>(BITVEC_WORDS);
-  static thread_local std::unique_ptr<uint64_t[]> liveOutArr =
-      std::make_unique<uint64_t[]>(BITVEC_WORDS);
-  static thread_local std::unique_ptr<uint64_t[]> liveKillArr =
-      std::make_unique<uint64_t[]>(BITVEC_WORDS);
-
-  uint64_t *liveIn = liveInArr.get();
-  uint64_t *liveOut = liveOutArr.get();
-  uint64_t *liveKill = liveKillArr.get();
+  alignas(64) static thread_local FakeAstNode tree[TREE_NODES];
+  alignas(64) static thread_local HashEntry tableEntries[HASH_BUCKETS];
+  alignas(64) static thread_local char stringPool[STRING_POOL_SIZE];
+  alignas(64) static thread_local uint64_t liveIn[BITVEC_WORDS];
+  alignas(64) static thread_local uint64_t liveOut[BITVEC_WORDS];
+  alignas(64) static thread_local uint64_t liveKill[BITVEC_WORDS];
 
   for (size_t i = 0; i < STRING_POOL_SIZE; ++i)
     stringPool[i] = (char)((seed + i * 13) % 255);
@@ -414,7 +151,6 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
     if (g_App.quit)
       break;
 
-    // Phase 1: Symbol Lookup (FNV-1a hashing, hash table probing)
     {
       uint32_t strStart = (uint32_t)(acc0 & (STRING_POOL_SIZE - 256));
       uint32_t strLen = 4 + (uint32_t)(acc1 & 0x1F);
@@ -445,7 +181,6 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
       }
     }
 
-    // Phase 2: Pointer Chasing (DOM Tree traversal)
     {
       uint32_t nodeIdx = (uint32_t)(acc0 & (TREE_NODES - 1));
       for (int depth = 0; depth < 12; ++depth) {
@@ -461,7 +196,6 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
       }
     }
 
-    // Phase 3: Register Pressure & ALU
     {
       uint64_t vr[16];
       for (int i = 0; i < 16; ++i)
@@ -495,7 +229,6 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
       acc0 = vr[0] ^ vr[15];
     }
 
-    // Phase 4: BitVector dataflow (compiler liveness analysis)
     {
       for (size_t w = 0; w < BITVEC_WORDS; ++w) {
         uint64_t gen = tree[w & (TREE_NODES - 1)].payload;
@@ -515,56 +248,568 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
   (void)sink;
 }
 
+#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
+#define TARGET_AVX2 __attribute__((target("avx2,fma")))
+#define TARGET_AVX512 __attribute__((target("avx512f,evex512")))
+#else
+#define TARGET_AVX2
+#define TARGET_AVX512
+#endif
+
+// ============================================================================
+// SCALAR MAX POWER - Explicit SIMD with full register file
+// x86/x64: Uses 16 SSE2 XMM registers (128-bit)
+// ARM64:   Uses 16 NEON registers (128-bit)
+// 2x throughput over pure scalar on both architectures
+// ============================================================================
+
+void RunHyperStress_Scalar(uint64_t seed, int complexity,
+                           const StressConfig &config) {
+  (void)config;
+  
+  // Shared 512KB buffer
+  alignas(64) static thread_local double mem[65536];
+
+#if defined(_M_ARM64) || defined(__aarch64__)
+  // ARM64: Use NEON for 2x throughput (16 × 128-bit registers)
+  for (int i = 0; i < 65536; i += 2) {
+    mem[i] = (double)(seed + i) * 0.00001;
+    mem[i+1] = (double)(seed + i + 1) * 0.00001;
+  }
+  
+  // Initialize 16 NEON registers (128-bit = 2 doubles each)
+  float64x2_t r0 = vdupq_n_f64((double)seed * 1.00001);
+  float64x2_t r1 = vdupq_n_f64((double)seed * 1.00002);
+  float64x2_t r2 = vdupq_n_f64((double)seed * 1.00003);
+  float64x2_t r3 = vdupq_n_f64((double)seed * 1.00004);
+  float64x2_t r4 = vdupq_n_f64((double)seed * 1.00005);
+  float64x2_t r5 = vdupq_n_f64((double)seed * 1.00006);
+  float64x2_t r6 = vdupq_n_f64((double)seed * 1.00007);
+  float64x2_t r7 = vdupq_n_f64((double)seed * 1.00008);
+  float64x2_t r8 = vdupq_n_f64((double)seed * 1.00009);
+  float64x2_t r9 = vdupq_n_f64((double)seed * 1.00010);
+  float64x2_t r10 = vdupq_n_f64((double)seed * 1.00011);
+  float64x2_t r11 = vdupq_n_f64((double)seed * 1.00012);
+  float64x2_t r12 = vdupq_n_f64((double)seed * 1.00013);
+  float64x2_t r13 = vdupq_n_f64((double)seed * 1.00014);
+  float64x2_t r14 = vdupq_n_f64((double)seed * 1.00015);
+  float64x2_t r15 = vdupq_n_f64((double)seed * 1.00016);
+  
+  // Constants
+  float64x2_t mul = vdupq_n_f64(1.000001);
+  
+  // 16 GPRs with integer division
+  uint64_t g0 = seed, g1 = seed + 1, g2 = seed + 2, g3 = seed + 3;
+  uint64_t g4 = seed + 4, g5 = seed + 5, g6 = seed + 6, g7 = seed + 7;
+  uint64_t g8 = seed + 8, g9 = seed + 9, g10 = seed + 10, g11 = seed + 11;
+  uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
+  
+  int idx = 0;
+  const int MASK = 65535;
+  int iters = complexity * 280;
+  
+  for (int i = 0; i < iters; ++i) {
+    if (g_App.quit) break;
+    
+    // NEON: 2-wide RMW operations
+    #define NEON_WORK(r, off) \
+      r = vmulq_f64(r, mul); \
+      r = vaddq_f64(r, vld1q_f64(&mem[(idx + off) & MASK])); \
+      vst1q_f64(&mem[(idx + off + 512) & MASK], r)
+    
+    NEON_WORK(r0, 0);   NEON_WORK(r1, 2);   NEON_WORK(r2, 4);   NEON_WORK(r3, 6);
+    g0 = g0 / ((g8 & 0xFFFFFFFF) | 1);
+    g1 = g1 / ((g9 & 0xFFFFFFFF) | 1);
+    
+    NEON_WORK(r4, 8);   NEON_WORK(r5, 10);  NEON_WORK(r6, 12);  NEON_WORK(r7, 14);
+    g2 = g2 / ((g10 & 0xFFFFFFFF) | 1);
+    g3 = g3 / ((g11 & 0xFFFFFFFF) | 1);
+    
+    NEON_WORK(r8, 16);  NEON_WORK(r9, 18);  NEON_WORK(r10, 20); NEON_WORK(r11, 22);
+    g4 = g4 / ((g12 & 0xFFFFFFFF) | 1);
+    g5 = g5 / ((g13 & 0xFFFFFFFF) | 1);
+    
+    NEON_WORK(r12, 24); NEON_WORK(r13, 26); NEON_WORK(r14, 28); NEON_WORK(r15, 30);
+    g6 = g6 / ((g14 & 0xFFFFFFFF) | 1);
+    g7 = g7 / ((g15 & 0xFFFFFFFF) | 1);
+    
+    NEON_WORK(r0, 32);  NEON_WORK(r1, 34);  NEON_WORK(r2, 36);  NEON_WORK(r3, 38);
+    NEON_WORK(r4, 40);  NEON_WORK(r5, 42);  NEON_WORK(r6, 44);  NEON_WORK(r7, 46);
+    NEON_WORK(r8, 48);  NEON_WORK(r9, 50);  NEON_WORK(r10, 52); NEON_WORK(r11, 54);
+    NEON_WORK(r12, 56); NEON_WORK(r13, 58); NEON_WORK(r14, 60); NEON_WORK(r15, 62);
+    
+    g14 = g14 / ((g6 & 0xFFFFFFFF) | 1);
+    g15 = g15 / ((g7 & 0xFFFFFFFF) | 1);
+    
+    NEON_WORK(r0, 64);  NEON_WORK(r1, 66);  NEON_WORK(r2, 68);  NEON_WORK(r3, 70);
+    NEON_WORK(r4, 72);  NEON_WORK(r5, 74);  NEON_WORK(r6, 76);  NEON_WORK(r7, 78);
+    NEON_WORK(r8, 80);  NEON_WORK(r9, 82);  NEON_WORK(r10, 84); NEON_WORK(r11, 86);
+    NEON_WORK(r12, 88); NEON_WORK(r13, 90); NEON_WORK(r14, 92); NEON_WORK(r15, 94);
+    
+    g0 ^= g8; g1 ^= g9; g2 ^= g10; g3 ^= g11;
+    g4 ^= g12; g5 ^= g13; g6 ^= g14; g7 ^= g15;
+    
+    #undef NEON_WORK
+    
+    idx = (idx + 96) & MASK;
+  }
+  
+  // Reduce NEON registers
+  float64x2_t sum = vaddq_f64(r0, r1);
+  sum = vaddq_f64(sum, r2);
+  sum = vaddq_f64(sum, r3);
+  sum = vaddq_f64(sum, r4);
+  sum = vaddq_f64(sum, r5);
+  sum = vaddq_f64(sum, r6);
+  sum = vaddq_f64(sum, r7);
+  sum = vaddq_f64(sum, r8);
+  sum = vaddq_f64(sum, r9);
+  sum = vaddq_f64(sum, r10);
+  sum = vaddq_f64(sum, r11);
+  sum = vaddq_f64(sum, r12);
+  sum = vaddq_f64(sum, r13);
+  sum = vaddq_f64(sum, r14);
+  sum = vaddq_f64(sum, r15);
+  
+  double out[2];
+  vst1q_f64(out, sum);
+  uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7 ^
+                  g8 ^ g9 ^ g10 ^ g11 ^ g12 ^ g13 ^ g14 ^ g15;
+  volatile double sink = out[0] + out[1] + (double)gint;
+  (void)sink;
+  return;
+#elif defined(_M_IX86) || defined(_M_X64) || defined(__i386__) || defined(__x86_64__)
+  // x86/x64: Use SSE2 for 2x throughput
+  for (int i = 0; i < 65536; i += 2) {
+    mem[i] = (double)(seed + i) * 0.00001;
+    mem[i+1] = (double)(seed + i + 1) * 0.00001;
+  }
+  
+  // Initialize 16 XMM registers (128-bit = 2 doubles each)
+  __m128d r0 = _mm_set1_pd((double)seed * 1.00001);
+  __m128d r1 = _mm_set1_pd((double)seed * 1.00002);
+  __m128d r2 = _mm_set1_pd((double)seed * 1.00003);
+  __m128d r3 = _mm_set1_pd((double)seed * 1.00004);
+  __m128d r4 = _mm_set1_pd((double)seed * 1.00005);
+  __m128d r5 = _mm_set1_pd((double)seed * 1.00006);
+  __m128d r6 = _mm_set1_pd((double)seed * 1.00007);
+  __m128d r7 = _mm_set1_pd((double)seed * 1.00008);
+  __m128d r8 = _mm_set1_pd((double)seed * 1.00009);
+  __m128d r9 = _mm_set1_pd((double)seed * 1.00010);
+  __m128d r10 = _mm_set1_pd((double)seed * 1.00011);
+  __m128d r11 = _mm_set1_pd((double)seed * 1.00012);
+  __m128d r12 = _mm_set1_pd((double)seed * 1.00013);
+  __m128d r13 = _mm_set1_pd((double)seed * 1.00014);
+  __m128d r14 = _mm_set1_pd((double)seed * 1.00015);
+  __m128d r15 = _mm_set1_pd((double)seed * 1.00016);
+  
+  // Constants
+  __m128d mul = _mm_set1_pd(1.000001);
+
+  // 16 GPRs with heavy integer ops
+  uint64_t g0 = seed, g1 = seed + 1, g2 = seed + 2, g3 = seed + 3;
+  uint64_t g4 = seed + 4, g5 = seed + 5, g6 = seed + 6, g7 = seed + 7;
+  uint64_t g8 = seed + 8, g9 = seed + 9, g10 = seed + 10, g11 = seed + 11;
+  uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
+
+  int idx = 0;
+  const int MASK = 65535;
+  
+  int iters = complexity * 280;
+
+  for (int i = 0; i < iters; ++i) {
+    if (g_App.quit) break;
+    
+    // SSE2: 2-wide operations (128-bit)
+    // Load-Multiply-Add-Store pattern
+    #define SSE2_WORK(r, off) \
+      r = _mm_mul_pd(r, mul); \
+      r = _mm_add_pd(r, _mm_load_pd(&mem[(idx + off) & MASK])); \
+      _mm_store_pd(&mem[(idx + off + 512) & MASK], r)
+    
+    SSE2_WORK(r0, 0);   SSE2_WORK(r1, 2);   SSE2_WORK(r2, 4);   SSE2_WORK(r3, 6);
+    
+    g0 = g0 / ((g8 & 0xFFFFFFFF) | 1);
+    g1 = g1 / ((g9 & 0xFFFFFFFF) | 1);
+    
+    SSE2_WORK(r4, 8);   SSE2_WORK(r5, 10);  SSE2_WORK(r6, 12);  SSE2_WORK(r7, 14);
+    
+    g2 = g2 / ((g10 & 0xFFFFFFFF) | 1);
+    g3 = g3 / ((g11 & 0xFFFFFFFF) | 1);
+    
+    SSE2_WORK(r8, 16);  SSE2_WORK(r9, 18);  SSE2_WORK(r10, 20); SSE2_WORK(r11, 22);
+    
+    g4 = g4 / ((g12 & 0xFFFFFFFF) | 1);
+    g5 = g5 / ((g13 & 0xFFFFFFFF) | 1);
+    
+    SSE2_WORK(r12, 24); SSE2_WORK(r13, 26); SSE2_WORK(r14, 28); SSE2_WORK(r15, 30);
+    
+    g6 = g6 / ((g14 & 0xFFFFFFFF) | 1);
+    g7 = g7 / ((g15 & 0xFFFFFFFF) | 1);
+    
+    // Second pass - more compute
+    SSE2_WORK(r0, 32);  SSE2_WORK(r1, 34);  SSE2_WORK(r2, 36);  SSE2_WORK(r3, 38);
+    
+    g8 = g8 / ((g0 & 0xFFFFFFFF) | 1);
+    g9 = g9 / ((g1 & 0xFFFFFFFF) | 1);
+    
+    SSE2_WORK(r4, 40);  SSE2_WORK(r5, 42);  SSE2_WORK(r6, 44);  SSE2_WORK(r7, 46);
+    
+    g10 = g10 / ((g2 & 0xFFFFFFFF) | 1);
+    g11 = g11 / ((g3 & 0xFFFFFFFF) | 1);
+    
+    SSE2_WORK(r8, 48);  SSE2_WORK(r9, 50);  SSE2_WORK(r10, 52); SSE2_WORK(r11, 54);
+    
+    g12 = g12 / ((g4 & 0xFFFFFFFF) | 1);
+    g13 = g13 / ((g5 & 0xFFFFFFFF) | 1);
+    
+    SSE2_WORK(r12, 56); SSE2_WORK(r13, 58); SSE2_WORK(r14, 60); SSE2_WORK(r15, 62);
+    
+    g14 = g14 / ((g6 & 0xFFFFFFFF) | 1);
+    g15 = g15 / ((g7 & 0xFFFFFFFF) | 1);
+    
+    // More SSE2 work instead of scalar - saturate load/store ports
+    SSE2_WORK(r0, 64);  SSE2_WORK(r1, 66);  SSE2_WORK(r2, 68);  SSE2_WORK(r3, 70);
+    SSE2_WORK(r4, 72);  SSE2_WORK(r5, 74);  SSE2_WORK(r6, 76);  SSE2_WORK(r7, 78);
+    SSE2_WORK(r8, 80);  SSE2_WORK(r9, 82);  SSE2_WORK(r10, 84); SSE2_WORK(r11, 86);
+    SSE2_WORK(r12, 88); SSE2_WORK(r13, 90); SSE2_WORK(r14, 92); SSE2_WORK(r15, 94);
+    
+    // Light integer to break dependencies
+    g0 ^= g8; g1 ^= g9; g2 ^= g10; g3 ^= g11;
+    g4 ^= g12; g5 ^= g13; g6 ^= g14; g7 ^= g15;
+    
+    #undef SSE2_WORK
+    
+    idx = (idx + 96) & MASK;
+  }
+
+  __m128d sum = _mm_add_pd(r0, r1);
+  sum = _mm_add_pd(sum, r2);
+  sum = _mm_add_pd(sum, r3);
+  sum = _mm_add_pd(sum, r4);
+  sum = _mm_add_pd(sum, r5);
+  sum = _mm_add_pd(sum, r6);
+  sum = _mm_add_pd(sum, r7);
+  sum = _mm_add_pd(sum, r8);
+  sum = _mm_add_pd(sum, r9);
+  sum = _mm_add_pd(sum, r10);
+  sum = _mm_add_pd(sum, r11);
+  sum = _mm_add_pd(sum, r12);
+  sum = _mm_add_pd(sum, r13);
+  sum = _mm_add_pd(sum, r14);
+  sum = _mm_add_pd(sum, r15);
+  
+  double out[2];
+  _mm_storeu_pd(out, sum);
+  uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7 ^
+                  g8 ^ g9 ^ g10 ^ g11 ^ g12 ^ g13 ^ g14 ^ g15;
+  volatile double sink = out[0] + out[1] + (double)gint;
+  (void)sink;
+#else
+  // Generic fallback: pure scalar for non-x86, non-ARM64 architectures
+  for (int i = 0; i < 65536; i++) {
+    mem[i] = (double)(seed + i) * 0.00001;
+  }
+  double r0 = (double)seed * 1.0001, r1 = r0 + 0.01, r2 = r0 + 0.02, r3 = r0 + 0.03;
+  double r4 = r0 + 0.04, r5 = r0 + 0.05, r6 = r0 + 0.06, r7 = r0 + 0.07;
+  double r8 = r0 + 0.08, r9 = r0 + 0.09, r10 = r0 + 0.10, r11 = r0 + 0.11;
+  double r12 = r0 + 0.12, r13 = r0 + 0.13, r14 = r0 + 0.14, r15 = r0 + 0.15;
+  uint64_t g0 = seed, g1 = seed + 1, g2 = seed + 2, g3 = seed + 3;
+  uint64_t g4 = seed + 4, g5 = seed + 5, g6 = seed + 6, g7 = seed + 7;
+  uint64_t g8 = seed + 8, g9 = seed + 9, g10 = seed + 10, g11 = seed + 11;
+  uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
+  int idx = 0;
+  const int MASK = 65535;
+  for (int i = 0; i < complexity * 280; ++i) {
+    if (g_App.quit) break;
+    r0 = r0 * 1.000001 + mem[(idx + 0) & MASK];
+    r1 = r1 * 1.000001 + mem[(idx + 1) & MASK];
+    r2 = r2 * 1.000001 + mem[(idx + 2) & MASK];
+    r3 = r3 * 1.000001 + mem[(idx + 3) & MASK];
+    r4 = r4 * 1.000001 + mem[(idx + 4) & MASK];
+    r5 = r5 * 1.000001 + mem[(idx + 5) & MASK];
+    r6 = r6 * 1.000001 + mem[(idx + 6) & MASK];
+    r7 = r7 * 1.000001 + mem[(idx + 7) & MASK];
+    r8 = r8 * 1.000001 + mem[(idx + 8) & MASK];
+    r9 = r9 * 1.000001 + mem[(idx + 9) & MASK];
+    r10 = r10 * 1.000001 + mem[(idx + 10) & MASK];
+    r11 = r11 * 1.000001 + mem[(idx + 11) & MASK];
+    r12 = r12 * 1.000001 + mem[(idx + 12) & MASK];
+    r13 = r13 * 1.000001 + mem[(idx + 13) & MASK];
+    r14 = r14 * 1.000001 + mem[(idx + 14) & MASK];
+    r15 = r15 * 1.000001 + mem[(idx + 15) & MASK];
+    g0 = g0 / ((g1 & 0xFFFFFFFF) | 1);
+    g2 = g2 / ((g3 & 0xFFFFFFFF) | 1);
+    g4 = g4 / ((g5 & 0xFFFFFFFF) | 1);
+    g6 = g6 / ((g7 & 0xFFFFFFFF) | 1);
+    idx = (idx + 16) & MASK;
+  }
+  volatile double sink = r0 + r1 + r2 + r3 + r4 + r5 + r6 + r7 +
+                         r8 + r9 + r10 + r11 + r12 + r13 + r14 + r15 +
+                         (double)(g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7 ^
+                                  g8 ^ g9 ^ g10 ^ g11 ^ g12 ^ g13 ^ g14 ^ g15);
+  (void)sink;
+#endif  // ARM64 vs x86/x64 vs generic
+}
+
+// ============================================================================
+// AVX2 MAX POWER - 16 YMM registers
+// ============================================================================
+TARGET_AVX2
+void RunHyperStress_AVX2(uint64_t seed, int complexity,
+                         const StressConfig &config) {
+  (void)config;
+#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__AVX2__) || defined(__clang__) || defined(__GNUC__))
+  alignas(64) static thread_local double mem[65536];
+  for (int i = 0; i < 65536; i += 4) {
+    _mm256_store_pd(&mem[i], _mm256_set1_pd((double)(seed + i) * 0.00001));
+  }
+  
+  __m256d r0 = _mm256_set1_pd((double)seed * 1.00001);
+  __m256d r1 = _mm256_set1_pd((double)seed * 1.00002);
+  __m256d r2 = _mm256_set1_pd((double)seed * 1.00003);
+  __m256d r3 = _mm256_set1_pd((double)seed * 1.00004);
+  __m256d r4 = _mm256_set1_pd((double)seed * 1.00005);
+  __m256d r5 = _mm256_set1_pd((double)seed * 1.00006);
+  __m256d r6 = _mm256_set1_pd((double)seed * 1.00007);
+  __m256d r7 = _mm256_set1_pd((double)seed * 1.00008);
+  __m256d r8 = _mm256_set1_pd((double)seed * 1.00009);
+  __m256d r9 = _mm256_set1_pd((double)seed * 1.00010);
+  __m256d r10 = _mm256_set1_pd((double)seed * 1.00011);
+  __m256d r11 = _mm256_set1_pd((double)seed * 1.00012);
+  __m256d r12 = _mm256_set1_pd((double)seed * 1.00013);
+  __m256d r13 = _mm256_set1_pd((double)seed * 1.00014);
+  __m256d r14 = _mm256_set1_pd((double)seed * 1.00015);
+  __m256d r15 = _mm256_set1_pd((double)seed * 1.00016);
+  
+  __m256d mul = _mm256_set1_pd(1.000001);
+
+  uint64_t g0 = seed, g1 = seed + 1, g2 = seed + 2, g3 = seed + 3;
+  uint64_t g4 = seed + 4, g5 = seed + 5, g6 = seed + 6, g7 = seed + 7;
+
+  int idx = 0;
+  const int MASK = 65535;
+  
+  int iters = complexity * 180;
+
+  for (int i = 0; i < iters; ++i) {
+    if (g_App.quit) break;
+    
+    #define WORK(r, off) \
+      r = _mm256_fmadd_pd(r, mul, _mm256_load_pd(&mem[(idx + off) & MASK])); \
+      _mm256_store_pd(&mem[(idx + off + 512) & MASK], r)
+    
+    WORK(r0, 0);   WORK(r1, 4);   WORK(r2, 8);   WORK(r3, 12);
+    
+    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
+    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
+    
+    WORK(r4, 16);  WORK(r5, 20);  WORK(r6, 24);  WORK(r7, 28);
+    
+    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
+    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
+    
+    WORK(r8, 32);  WORK(r9, 36);  WORK(r10, 40); WORK(r11, 44);
+    
+    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
+    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
+    
+    WORK(r12, 48); WORK(r13, 52); WORK(r14, 56); WORK(r15, 60);
+    
+    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
+    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
+    
+    #undef WORK
+    
+    idx = (idx + 64) & MASK;
+  }
+
+  __m256d sum = _mm256_add_pd(r0, r1);
+  sum = _mm256_add_pd(sum, r2);
+  sum = _mm256_add_pd(sum, r3);
+  sum = _mm256_add_pd(sum, r4);
+  sum = _mm256_add_pd(sum, r5);
+  sum = _mm256_add_pd(sum, r6);
+  sum = _mm256_add_pd(sum, r7);
+  sum = _mm256_add_pd(sum, r8);
+  sum = _mm256_add_pd(sum, r9);
+  sum = _mm256_add_pd(sum, r10);
+  sum = _mm256_add_pd(sum, r11);
+  sum = _mm256_add_pd(sum, r12);
+  sum = _mm256_add_pd(sum, r13);
+  sum = _mm256_add_pd(sum, r14);
+  sum = _mm256_add_pd(sum, r15);
+  
+  double out[4];
+  _mm256_storeu_pd(out, sum);
+  uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7;
+  volatile double sink = out[0] + out[1] + out[2] + out[3] + (double)gint;
+  (void)sink;
+#else
+  RunHyperStress_Scalar(seed, complexity, config);
+#endif
+}
+
+// ============================================================================
+// AVX-512 MAX POWER - ALL 32 ZMM REGISTERS + Aggressive Memory
+// 512-bit vectors = 2x throughput of AVX2
+// ============================================================================
+TARGET_AVX512
+void RunHyperStress_AVX512(uint64_t seed, int complexity,
+                           const StressConfig &config) {
+  (void)config;
+#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__AVX512F__) || defined(__clang__) || defined(__GNUC__)) && !defined(PLATFORM_MACOS)
+  // Same 512KB buffer
+  alignas(64) static thread_local double mem[65536];
+  for (int i = 0; i < 65536; i += 8) {
+    _mm512_store_pd(&mem[i], _mm512_set1_pd((double)(seed + i) * 0.00001));
+  }
+  
+  // ALL 32 ZMM REGISTERS - maximum register pressure!
+  __m512d r0  = _mm512_set1_pd((double)seed * 1.00001);
+  __m512d r1  = _mm512_set1_pd((double)seed * 1.00002);
+  __m512d r2  = _mm512_set1_pd((double)seed * 1.00003);
+  __m512d r3  = _mm512_set1_pd((double)seed * 1.00004);
+  __m512d r4  = _mm512_set1_pd((double)seed * 1.00005);
+  __m512d r5  = _mm512_set1_pd((double)seed * 1.00006);
+  __m512d r6  = _mm512_set1_pd((double)seed * 1.00007);
+  __m512d r7  = _mm512_set1_pd((double)seed * 1.00008);
+  __m512d r8  = _mm512_set1_pd((double)seed * 1.00009);
+  __m512d r9  = _mm512_set1_pd((double)seed * 1.00010);
+  __m512d r10 = _mm512_set1_pd((double)seed * 1.00011);
+  __m512d r11 = _mm512_set1_pd((double)seed * 1.00012);
+  __m512d r12 = _mm512_set1_pd((double)seed * 1.00013);
+  __m512d r13 = _mm512_set1_pd((double)seed * 1.00014);
+  __m512d r14 = _mm512_set1_pd((double)seed * 1.00015);
+  __m512d r15 = _mm512_set1_pd((double)seed * 1.00016);
+  __m512d r16 = _mm512_set1_pd((double)seed * 1.00017);
+  __m512d r17 = _mm512_set1_pd((double)seed * 1.00018);
+  __m512d r18 = _mm512_set1_pd((double)seed * 1.00019);
+  __m512d r19 = _mm512_set1_pd((double)seed * 1.00020);
+  __m512d r20 = _mm512_set1_pd((double)seed * 1.00021);
+  __m512d r21 = _mm512_set1_pd((double)seed * 1.00022);
+  __m512d r22 = _mm512_set1_pd((double)seed * 1.00023);
+  __m512d r23 = _mm512_set1_pd((double)seed * 1.00024);
+  __m512d r24 = _mm512_set1_pd((double)seed * 1.00025);
+  __m512d r25 = _mm512_set1_pd((double)seed * 1.00026);
+  __m512d r26 = _mm512_set1_pd((double)seed * 1.00027);
+  __m512d r27 = _mm512_set1_pd((double)seed * 1.00028);
+  __m512d r28 = _mm512_set1_pd((double)seed * 1.00029);
+  __m512d r29 = _mm512_set1_pd((double)seed * 1.00030);
+  __m512d r30 = _mm512_set1_pd((double)seed * 1.00031);
+  __m512d r31 = _mm512_set1_pd((double)seed * 1.00032);
+  
+  __m512d mul = _mm512_set1_pd(1.000001);
+
+  // 8 GPRs
+  uint64_t g0 = seed, g1 = seed + 1, g2 = seed + 2, g3 = seed + 3;
+  uint64_t g4 = seed + 4, g5 = seed + 5, g6 = seed + 6, g7 = seed + 7;
+
+  int idx = 0;
+  const int MASK = 65535;
+  
+  // Higher iteration count for 512-bit throughput
+  int iters = complexity * 150;
+
+  for (int i = 0; i < iters; ++i) {
+    if (g_App.quit) break;
+    
+    // 32 ZMM registers doing RMW - massive power!
+    #define WORK(r, off) \
+      r = _mm512_fmadd_pd(r, mul, _mm512_load_pd(&mem[(idx + off) & MASK])); \
+      _mm512_store_pd(&mem[(idx + off + 512) & MASK], r)
+    
+    WORK(r0, 0);   WORK(r1, 8);   WORK(r2, 16);  WORK(r3, 24);
+    
+    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
+    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
+    
+    WORK(r4, 32);  WORK(r5, 40);  WORK(r6, 48);  WORK(r7, 56);
+    
+    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
+    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
+    
+    WORK(r8, 64);  WORK(r9, 72);  WORK(r10, 80); WORK(r11, 88);
+    
+    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
+    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
+    
+    WORK(r12, 96);  WORK(r13, 104); WORK(r14, 112); WORK(r15, 120);
+    
+    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
+    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
+    
+    // Second half of 32 ZMM registers
+    WORK(r16, 128); WORK(r17, 136); WORK(r18, 144); WORK(r19, 152);
+    WORK(r20, 160); WORK(r21, 168); WORK(r22, 176); WORK(r23, 184);
+    WORK(r24, 192); WORK(r25, 200); WORK(r26, 208); WORK(r27, 216);
+    WORK(r28, 224); WORK(r29, 232); WORK(r30, 240); WORK(r31, 248);
+    
+    #undef WORK
+    
+    idx = (idx + 256) & MASK;
+  }
+
+  // Reduce all 32 ZMM registers
+  __m512d sum = _mm512_add_pd(r0, r1);
+  sum = _mm512_add_pd(sum, r2);   sum = _mm512_add_pd(sum, r3);
+  sum = _mm512_add_pd(sum, r4);   sum = _mm512_add_pd(sum, r5);
+  sum = _mm512_add_pd(sum, r6);   sum = _mm512_add_pd(sum, r7);
+  sum = _mm512_add_pd(sum, r8);   sum = _mm512_add_pd(sum, r9);
+  sum = _mm512_add_pd(sum, r10);  sum = _mm512_add_pd(sum, r11);
+  sum = _mm512_add_pd(sum, r12);  sum = _mm512_add_pd(sum, r13);
+  sum = _mm512_add_pd(sum, r14);  sum = _mm512_add_pd(sum, r15);
+  sum = _mm512_add_pd(sum, r16);  sum = _mm512_add_pd(sum, r17);
+  sum = _mm512_add_pd(sum, r18);  sum = _mm512_add_pd(sum, r19);
+  sum = _mm512_add_pd(sum, r20);  sum = _mm512_add_pd(sum, r21);
+  sum = _mm512_add_pd(sum, r22);  sum = _mm512_add_pd(sum, r23);
+  sum = _mm512_add_pd(sum, r24);  sum = _mm512_add_pd(sum, r25);
+  sum = _mm512_add_pd(sum, r26);  sum = _mm512_add_pd(sum, r27);
+  sum = _mm512_add_pd(sum, r28);  sum = _mm512_add_pd(sum, r29);
+  sum = _mm512_add_pd(sum, r30);  sum = _mm512_add_pd(sum, r31);
+  
+  double out[8];
+  _mm512_storeu_pd(out, sum);
+  uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7;
+  volatile double sink = out[0] + out[1] + out[2] + out[3] + 
+                         out[4] + out[5] + out[6] + out[7] + (double)gint;
+  (void)sink;
+#else
+  RunHyperStress_AVX2(seed, complexity, config);
+#endif
+}
+
 // --- Workload Dispatcher ---
 void UnsafeRunWorkload(uint64_t seed, int complexity,
                        const StressConfig &config) {
   if (g_App.quit)
     return;
 
-  // Benchmark Mode used to enforce Scalar Realistic, but user requested
-  // freedom.
-  int sel = g_App.selectedWorkload.load();
-
-#if defined(_M_ARM64) || defined(__aarch64__)
-  bool can512 = false;
-  bool canAVX2 = false;
-#else
-  bool can512 = g_Cpu.hasAVX512F && !g_ForceNoAVX512;
-  bool canAVX2 = g_Cpu.hasAVX2 && g_Cpu.hasFMA && !g_ForceNoAVX2;
-#endif
-
-#if !defined(_M_ARM64) && !defined(__aarch64__)
-  if (sel == WL_AVX512 && can512) {
-    RunHyperStress_AVX512(seed, complexity, config);
-    return;
-  }
-  if (sel == WL_AVX2 && canAVX2) {
-    RunHyperStress_AVX2(seed, complexity, config);
-    return;
-  }
-#endif
-
-  if (sel == WL_SCALAR_MATH) {
-#if defined(_M_ARM64) || defined(__aarch64__)
-    RunHyperStress_NEON(seed, complexity, config); // Use NEON on ARM
-#else
-    RunHyperStress_Scalar(seed, complexity, config);
-#endif
-    return;
-  }
-  if (sel == WL_SCALAR_SIM) {
-    RunRealisticCompilerSim_V3(seed, complexity, config);
-    return;
+  WorkloadType type = (WorkloadType)g_App.selectedWorkload.load();
+  
+  if (type == WL_AUTO) {
+      if (g_Cpu.hasAVX512F && !g_ForceNoAVX512) type = WL_AVX512;
+      else if (g_Cpu.hasAVX2 && !g_ForceNoAVX2) type = WL_AVX2;
+      else type = WL_SCALAR;
   }
 
-#if !defined(_M_ARM64) && !defined(__aarch64__)
-  if (can512)
-    RunHyperStress_AVX512(seed, complexity, config);
-  else if (canAVX2)
-    RunHyperStress_AVX2(seed, complexity, config);
-  else
-#endif
-    RunRealisticCompilerSim_V3(seed, complexity, config);
+  switch (type) {
+    case WL_SCALAR:
+        RunHyperStress_Scalar(seed, complexity, config);
+        break;
+    case WL_AVX2:
+        RunHyperStress_AVX2(seed, complexity, config);
+        break;
+    case WL_AVX512:
+        RunHyperStress_AVX512(seed, complexity, config);
+        break;
+    case WL_SCALAR_SIM:
+        RunRealisticCompilerSim_V3(seed, complexity, config);
+        break;
+    default:
+        RunRealisticCompilerSim_V3(seed, complexity, config);
+        break;
+  }
 }
 
 void SafeRunWorkload(uint64_t seed, int complexity, const StressConfig &config,
@@ -577,7 +822,7 @@ void SafeRunWorkload(uint64_t seed, int complexity, const StressConfig &config,
     ExitProcess(-1);
   }
 #else
-  (void)threadIdx; // Unused when SEH disabled
+  (void)threadIdx;
   UnsafeRunWorkload(seed, complexity, config);
 #endif
 }

@@ -33,8 +33,24 @@ int main(void) {
     args++;
 
   // Build new command line: "exe_path" --cli original_args
+  // Use StringCchPrintfW for safe string formatting (buffer size limited)
   wchar_t newCmdLine[32768];
-  wsprintfW(newCmdLine, L"\"%s\" --cli %s", path, args);
+  
+  // Calculate total length first to check for overflow
+  size_t pathLen = wcslen(path);
+  size_t argsLen = wcslen(args);
+  // Format: "path" --cli args\0
+  // Need: 2 quotes + 6 for " --cli " + 1 null + path + args
+  if (pathLen + argsLen + 10 > 32767) {
+    return 1;  // Command line too long
+  }
+  
+  // Build command line manually (safe against overflow)
+  newCmdLine[0] = L'"';
+  wcscpy(newCmdLine + 1, path);
+  newCmdLine[1 + pathLen] = L'"';
+  wcscpy(newCmdLine + 1 + pathLen + 1, L" --cli ");
+  wcscpy(newCmdLine + 1 + pathLen + 1 + 7, args);
 
   // Start the exe with inherited console handles
   STARTUPINFOW si = {sizeof(si)};

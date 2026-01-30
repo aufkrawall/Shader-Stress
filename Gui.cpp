@@ -71,14 +71,10 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       s_lastHash = g_App.benchHash;
 
       std::wstringstream ss;
-      {
-        std::lock_guard<std::mutex> lk(g_App.historyMtx);
-        for (const auto &line : g_App.logHistory) {
-          ss << line
-             << L"\n"; // LogRaw lines don't have newlines stored usually? NO,
-                       // LogRaw adds newline to stream but stores msg.
-          // Wait, LogRaw pushes 'msg'. 'msg' usually doesn't end in newline.
-        }
+      // Use thread-safe snapshot to avoid race conditions
+      auto historySnapshot = g_App.GetLogHistorySnapshot();
+      for (const auto &line : historySnapshot) {
+        ss << line << L"\n";
       }
       std::wstring fullText = ss.str();
 
@@ -131,13 +127,14 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     bool hasAVX2 = g_Cpu.hasAVX2 && !g_ForceNoAVX2;
 #endif
 
+    // Workload selection - MAX POWER variants + Realistic
     btn(10, L"Auto", S(10), y2, sel == WL_AUTO);
-    btn(11, L"AVX-512 (synthetic)", S(160), y2, sel == WL_AVX512, has512);
-    btn(12, L"AVX2 (synthetic)", S(310), y2, sel == WL_AVX2, hasAVX2);
-    btn(13, L"Scalar (synthetic)", S(460), y2, sel == WL_SCALAR_MATH);
-    btn(14, L"Scalar (realistic)", S(610), y2, sel == WL_SCALAR_SIM);
+    btn(11, L"Scalar (AVX-512)", S(160), y2, sel == WL_AVX512, has512);
+    btn(12, L"Scalar (AVX2)", S(310), y2, sel == WL_AVX2, hasAVX2);
+    btn(13, L"Scalar (Synthetic)", S(460), y2, sel == WL_SCALAR);
+    btn(14, L"Scalar (Realistic)", S(610), y2, sel == WL_SCALAR_SIM);
 
-    // Third row - Checkbox for auto-stop and Verify Hash button
+    // Second row - Checkbox for auto-stop and Verify Hash button
     int y3 = S(90);
 
     // Checkbox: Stop after 3 minutes
@@ -161,14 +158,14 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
-    // Note about AVX workloads - positioned at bottom right
+    // Note about workloads - positioned at bottom right
     {
       SetTextColor(s_memDC, RGB(120, 120, 120)); // Dimmed text
       RECT noteRect = {S(380), S(615), S(750), S(700)};
       DrawTextW(s_memDC,
                 L"Note: AVX workloads have increased computational\n"
                 L"complexities, hence Jobs/s is not an indicator for\n"
-                L"actual AVX2/AVX-512 acceleration. Scalar (synthetic)\n"
+                L"actual AVX2/AVX-512 acceleration. Scalar (Synthetic)\n"
                 L"on ARM actually uses NEON.",
                 -1, &noteRect, DT_LEFT | DT_WORDBREAK);
       SetTextColor(s_memDC, RGB(200, 200, 200)); // Restore color
@@ -288,6 +285,9 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       std::lock_guard<std::mutex> lock(g_StateMtx);
 
       auto StartWorkload = []() {
+        // Apply the appropriate config for the selected workload
+        ApplyWorkloadConfig(g_App.selectedWorkload.load());
+        
         if (g_DynThread && g_DynThread->t.joinable())
           g_DynThread->t.join();
         if (g_App.mode == 2) {
@@ -336,11 +336,13 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                           : (newMode == 1 ? L"Steady" : L"Benchmark"));
         g_App.Log(L"Mode changed to: " + modeName);
 
-        if (newMode == 0) {
+        // When switching to Benchmark, default to Realistic if currently on Auto
+        // But allow user to manually select other workloads
+        if (newMode == 0 && g_App.selectedWorkload == WL_AUTO) {
           g_App.selectedWorkload = WL_SCALAR_SIM;
-          g_App.Log(L"Benchmark enforcement: Workload set to " +
-                    GetResolvedISAName(WL_SCALAR_SIM));
-        } else {
+          g_App.Log(L"Benchmark: Defaulting to " +
+                    GetResolvedISAName(WL_SCALAR_SIM) + L" (can be changed)");
+        } else if (newMode != 0 && g_App.selectedWorkload == WL_AUTO) {
           g_App.selectedWorkload = WL_AUTO;
           g_App.Log(L"Workload reset to: " + GetResolvedISAName(WL_AUTO));
         }
@@ -370,7 +372,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       else if (x > S(310) && x < S(450) && hasAVX2)
         newSel = WL_AVX2;
       else if (x > S(460) && x < S(600))
-        newSel = WL_SCALAR_MATH;
+        newSel = WL_SCALAR;
       else if (x > S(610) && x < S(750))
         newSel = WL_SCALAR_SIM;
 
@@ -384,7 +386,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         InvalidateRect(h, nullptr, FALSE);
       }
     }
-    // Third row - Checkbox and Verify Hash button
+    // Second row - Checkbox and Verify Hash button
     if (y > S(90) && y < S(120)) {
       // Checkbox click area (checkbox + label)
       if (x > S(10) && x < S(280)) {

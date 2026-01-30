@@ -21,15 +21,15 @@ static void RunCompilerLogic(int idx, Worker &w) {
   };
 
   // Generate complexity: Exponential distribution approx
-  // Range: ~5000 to ~500000
+  // Range: ~5000 to ~500000 (capped to safe maximum)
   uint64_t r = NextRand();
   // Use log loading to simulate exponential-like distribution
-  int complexity = 5000 + (r % 10000);
-  // Occasional spikes
+  int complexity = 5000 + (int)(r % 10000);
+  // Occasional spikes (capped to prevent overflow)
   if ((r & 0xF) == 0)
-    complexity += (r % 100000);
+    complexity = std::min(complexity + (int)(r % 100000), 500000);
   if ((r & 0xFF) == 0)
-    complexity += (r % 400000);
+    complexity = std::min(complexity + (int)(r % 400000), 500000);
 
   if (g_App.mode == 1) // Steady mode
     complexity = 12000;
@@ -108,6 +108,7 @@ void WorkerThread(int idx) {
   PinThreadToCore(idx);
   std::this_thread::sleep_for(std::chrono::milliseconds(idx * 5));
   auto &w = *g_Workers[idx];
+  w.state.store(WorkerState::Running, std::memory_order_release);
 
   while (!w.terminate) {
     if (g_Repro.active) {
@@ -134,6 +135,7 @@ void WorkerThread(int idx) {
 
     w.lastTick = GetTick();
   }
+  w.state.store(WorkerState::Stopped, std::memory_order_release);
 }
 
 // --- IO/RAM Stress (Windows only) ---
@@ -401,16 +403,26 @@ void RAMThread() {
 
 #endif // PLATFORM_WINDOWS
 
+// Static storage for IO/RAM thread management to persist across calls
+static std::vector<std::unique_ptr<ThreadWrapper>> s_IOThreadHandles;
+static std::unique_ptr<ThreadWrapper> s_RAMThreadHandle;
+static bool s_IOActive = false;
+static bool s_RAMActive = false;
+static std::mutex s_SetWorkMtx;  // Protects thread management
+
 void SetWork(int requestComps, int requestDecomp, bool io, bool ram) {
+  std::lock_guard<std::mutex> lock(s_SetWorkMtx);
+  
   // Benchmark Mode Integrity: Force disable IO and RAM threads
   if (g_App.mode == 0) {
     io = false;
     ram = false;
   }
+  
   // 1. Calculate Budget
   int cpuTotal = (int)g_Workers.size();
-  int cntIO = io ? 1 : 0;   // User requested single IO thread
-  int cntRAM = ram ? 1 : 0; // Single RAM thread
+  int cntIO = io ? 1 : 0;
+  int cntRAM = ram ? 1 : 0;
   int reserved = cntIO + cntRAM;
   int availableForWorkers = std::max(0, cpuTotal - reserved);
 
@@ -423,60 +435,43 @@ void SetWork(int requestComps, int requestDecomp, bool io, bool ram) {
   g_App.activeCompilers = requestComps;
   g_App.activeDecomp = requestDecomp;
 
-  // 3. Manage Worker Threads (g_Threads)
-  // Check current spawned workers
+  // 3. Manage Worker Threads - Spawn all at startup, never join until shutdown
+  // This avoids the expensive thread spawn/join cycle in dynamic mode
+  int targetWorkers = availableForWorkers;
   int currentWorkers = (int)g_Threads.size();
-
-  if (currentWorkers > availableForWorkers) {
-    // Reduce worker pool: Signal termination for excess threads
-    for (int i = availableForWorkers; i < currentWorkers; ++i) {
-      if (i < (int)g_Workers.size())
-        g_Workers[i]->terminate = true;
-    }
-    // Join and remove excess threads
-    // Iterate backwards to safely pop/join
-    for (int i = currentWorkers - 1; i >= availableForWorkers; --i) {
-      if (i < (int)g_Threads.size()) {
-        if (g_Threads[i] && g_Threads[i]->t.joinable()) {
-          g_Threads[i]->t.join();
-        }
-        g_Threads.pop_back(); // Remove from vector
-      }
-    }
-  } else if (currentWorkers < availableForWorkers) {
-    // Expand worker pool: Spawn missing threads
-    for (int i = currentWorkers; i < availableForWorkers; ++i) {
+  
+  if (currentWorkers < targetWorkers) {
+    // Only expand, never shrink during operation
+    for (int i = currentWorkers; i < targetWorkers; ++i) {
       if (i < (int)g_Workers.size()) {
-        g_Workers[i]->terminate = false; // Reset termination flag
+        g_Workers[i]->terminate = false;
+        g_Workers[i]->state.store(WorkerState::Idle);
         auto t = std::make_unique<ThreadWrapper>();
         t->t = std::thread(WorkerThread, i);
         g_Threads.push_back(std::move(t));
       }
     }
   }
+  // Note: We don't join threads when reducing count, just let them idle
+  // The WorkerThread checks activeCompilers/activeDecomp to decide work
 
-  // 4. Manage IO Threads (Single Thread)
-  static std::vector<std::unique_ptr<ThreadWrapper>> s_IOThreadHandles;
-  static bool s_IOActive = false;
-
+  // 4. Manage IO Thread (Single Thread)
   if (io && !s_IOActive) {
-    // Spawn 1 IO thread
     g_IOThreads.clear();
     s_IOThreadHandles.clear();
-    // Create 1 Worker state for IO
     g_IOThreads.push_back(std::make_unique<Worker>());
-    // Create 1 Thread
+    g_IOThreads[0]->terminate = false;
     auto t = std::make_unique<ThreadWrapper>();
-    t->t = std::thread(IOThread, 0); // Always index 0
+    t->t = std::thread(IOThread, 0);
     s_IOThreadHandles.push_back(std::move(t));
     s_IOActive = true;
   } else if (!io && s_IOActive) {
-    // Despawn IO thread
     for (auto &w : g_IOThreads)
       w->terminate = true;
     for (auto &t : s_IOThreadHandles) {
-      if (t && t->t.joinable())
-        t->t.join();
+      if (t && t->t.joinable()) {
+        // Don't block here - let ThreadWrapper handle join in destructor
+      }
     }
     s_IOThreadHandles.clear();
     g_IOThreads.clear();
@@ -484,9 +479,6 @@ void SetWork(int requestComps, int requestDecomp, bool io, bool ram) {
   }
 
   // 5. Manage RAM Thread
-  static std::unique_ptr<ThreadWrapper> s_RAMThreadHandle;
-  static bool s_RAMActive = false;
-
   if (ram && !s_RAMActive) {
     g_RAM.terminate = false;
     s_RAMThreadHandle = std::make_unique<ThreadWrapper>();
@@ -494,9 +486,7 @@ void SetWork(int requestComps, int requestDecomp, bool io, bool ram) {
     s_RAMActive = true;
   } else if (!ram && s_RAMActive) {
     g_RAM.terminate = true;
-    if (s_RAMThreadHandle && s_RAMThreadHandle->t.joinable())
-      s_RAMThreadHandle->t.join();
-    s_RAMThreadHandle.reset();
+    s_RAMThreadHandle.reset();  // Let ThreadWrapper handle join
     s_RAMActive = false;
   }
 
@@ -509,6 +499,30 @@ static void SmartSleep(int ms) {
     if (!g_App.running || g_App.mode != 2)
       return;
     std::this_thread::sleep_for(20ms);
+  }
+}
+
+// Apply Realistic configuration (only workload available)
+void ApplyWorkloadConfig(int workloadSel) {
+  (void)workloadSel;
+  StressConfig cfg;
+  
+  // Realistic simulation - moderate intensity
+  cfg.fma_intensity = 4;
+  cfg.int_intensity = 4;
+  cfg.div_intensity = 1;
+  cfg.bit_intensity = 2;
+  cfg.branch_intensity = 2;
+  cfg.int_simd_intensity = 2;
+  cfg.mem_pressure = 4;
+  cfg.shuffle_freq = 8;
+  cfg.cache_stride = 32768;
+  cfg.name = L"Realistic";
+  
+  {
+    std::lock_guard<std::mutex> lk(g_ConfigMtx);
+    g_ActiveConfig = cfg;
+    g_ConfigVersion++;
   }
 }
 
@@ -526,6 +540,9 @@ void DynamicLoop() {
   };
   std::mt19937 rng((unsigned)GetTick());
   const int PHASE_DURATION_MS = 10000;
+  
+  // Reset loop counter when starting
+  g_App.loops = 0;
 
   while (g_App.running && g_App.mode == 2) {
     g_App.currentPhase = pIdx + 1;
@@ -633,9 +650,16 @@ void DynamicLoop() {
         SmartSleep(1000);
         break;
       }
+      case 15: {
+        // All threads at realistic intensity
+        ApplyWorkloadConfig(0);
+        SetStrict(cpu, 0, false, false);
+        SmartSleep(1000);
+        break;
+      }
       }
     }
-    pIdx = (pIdx + 1) % 15;
+    pIdx = (pIdx + 1) % 16;  // Now 16 phases (0-15)
     if (pIdx == 0)
       g_App.loops++;
   }
@@ -674,7 +698,12 @@ void Watchdog() {
     }
 
     if (currentRunning && !lastRunning) {
+      // Starting fresh - reset everything
       g_App.resetTimer = true;
+      g_App.benchComplete = false;
+      g_App.benchWinner = -1;
+      for (int i = 0; i < 3; ++i)
+        g_App.benchRates[i] = 0;
     }
     lastRunning = currentRunning;
 

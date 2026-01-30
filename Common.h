@@ -104,6 +104,7 @@ static inline uint64_t SafeTZCNT(uint64_t x) {
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <optional>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -126,8 +127,8 @@ using namespace std::chrono_literals;
 extern const std::wstring APP_VERSION;
 // Numeric version for hash encoding
 static const uint8_t APP_VERSION_MAJOR = 3;
-static const uint8_t APP_VERSION_MINOR = 4;
-static const uint8_t APP_VERSION_PATCH = 2;
+static const uint8_t APP_VERSION_MINOR = 5;
+static const uint8_t APP_VERSION_PATCH = 0;
 
 constexpr uint64_t GOLDEN_RATIO = 0x9E3779B97F4A7C15ull;
 constexpr size_t IO_CHUNK_SIZE = 256 * 1024;
@@ -157,32 +158,50 @@ struct ScopedHandle {
 struct ScopedMem {
   void *ptr;
   size_t sz;
-  ScopedMem(size_t size) : sz(size) {
+  bool valid;
+  
+  explicit ScopedMem(size_t size) : sz(size), valid(false) {
+    if (size == 0) {
+      ptr = nullptr;
+      return;
+    }
 #ifdef PLATFORM_WINDOWS
-    if (size > 0)
-      ptr = VirtualAlloc(nullptr, size, MEM_COMMIT, PAGE_READWRITE);
-    else
-      ptr = nullptr;
+    ptr = VirtualAlloc(nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    valid = (ptr != nullptr);
 #else
-    if (size > 0)
-      ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE,
-                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    else
-      ptr = nullptr;
-    if (ptr == MAP_FAILED)
-      ptr = nullptr;
+    ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE,
+               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    valid = (ptr != MAP_FAILED);
+    if (!valid) ptr = nullptr;
 #endif
   }
+  
   ~ScopedMem() {
+    if (ptr) {
 #ifdef PLATFORM_WINDOWS
-    if (ptr)
       VirtualFree(ptr, 0, MEM_RELEASE);
 #else
-    if (ptr)
       munmap(ptr, sz);
 #endif
+    }
   }
-  template <typename T> T *As() { return static_cast<T *>(ptr); }
+  
+  // Disable copy
+  ScopedMem(const ScopedMem&) = delete;
+  ScopedMem& operator=(const ScopedMem&) = delete;
+  
+  // Enable move
+  ScopedMem(ScopedMem&& other) noexcept : ptr(other.ptr), sz(other.sz), valid(other.valid) {
+    other.ptr = nullptr;
+    other.valid = false;
+  }
+  
+  explicit operator bool() const { return valid; }
+  bool operator!() const { return !valid; }
+  
+  template <typename T> T *As() { 
+    return valid ? static_cast<T *>(ptr) : nullptr; 
+  }
 };
 
 inline uint64_t Rotl64(uint64_t v, unsigned r) {
@@ -199,6 +218,9 @@ inline uint64_t GetTick() {
 #endif
 }
 
+// Minimum time slice for Ultra stress workloads (milliseconds)
+constexpr int MIN_SLICE_MS = 50;
+
 std::wstring FmtNum(uint64_t v);
 std::wstring FmtTime(uint64_t s);
 std::wstring GetArchName();
@@ -207,6 +229,8 @@ struct CpuFeatures {
   bool hasAVX2 = false;
   bool hasAVX512F = false;
   bool hasFMA = false;
+  int family = 0;       // CPU family (for tuning)
+  int model = 0;        // CPU model (for tuning)
   std::wstring name;
   std::wstring brand;
 };
@@ -228,8 +252,13 @@ extern ReproSettings g_Repro;
 struct StressConfig {
   int fma_intensity = 1;
   int int_intensity = 1;
+  int div_intensity = 0;      // 64-bit division intensity (new)
+  int bit_intensity = 0;      // bit manipulation intensity (new)
+  int branch_intensity = 0;   // branch stress intensity (new)
+  int int_simd_intensity = 0; // integer SIMD intensity (new)
   int mem_pressure = 0;
-  int branch_freq = 0;
+  int shuffle_freq = 8;       // shuffles per N FMAs (new)
+  size_t cache_stride = 32768; // cache thrashing stride (new)
   std::wstring name = L"Default";
 };
 
@@ -240,26 +269,37 @@ extern std::vector<uint64_t> g_ColdStorage;
 extern std::mutex g_StateMtx;
 
 enum WorkloadType {
-  WL_AUTO = 0,
-  WL_AVX512 = 1,
-  WL_AVX2 = 2,
-  WL_SCALAR_MATH = 3,
-  WL_SCALAR_SIM = 4
+  WL_AUTO = 0,          // Auto-select best available
+  WL_SCALAR = 1,        // Maximum power scalar (register pressure + ALU)
+  WL_AVX2 = 2,          // Maximum power AVX2 with parallel FMA chains
+  WL_AVX512 = 3,        // Maximum power AVX-512 with parallel FMA chains
+  WL_SCALAR_SIM = 4,    // Realistic compiler simulation (original)
 };
 
 std::wstring GetResolvedISAName(int workloadSel);
 
+// Apply configuration based on selected workload (for MAX POWER modes)
+void ApplyWorkloadConfig(int workloadSel);
+
 struct AppState {
-  std::atomic<bool> running{false}, quit{false};
-  std::atomic<int> mode{2}, activeCompilers{0}, activeDecomp{0}, loops{0};
-  std::atomic<bool> ioActive{false}, ramActive{false};
+  // Control flags use seq_cst for proper synchronization between threads
+  std::atomic<bool> running{false};
+  std::atomic<bool> quit{false};
+  std::atomic<int> mode{2};
+  std::atomic<int> activeCompilers{0};
+  std::atomic<int> activeDecomp{0};
+  std::atomic<int> loops{0};
+  std::atomic<bool> ioActive{false};
+  std::atomic<bool> ramActive{false};
   std::atomic<bool> resetTimer{false};
   std::atomic<int> currentPhase{0};
   std::atomic<int> selectedWorkload{WL_AUTO};
 
+  // Statistics counters
   std::atomic<uint64_t> shaders{0};
   std::atomic<uint64_t> totalNodes{0};
-  std::atomic<uint64_t> errors{0}, elapsed{0};
+  std::atomic<uint64_t> errors{0};
+  std::atomic<uint64_t> elapsed{0};
   std::atomic<uint64_t> currentRate{0};
 
   std::atomic<uint64_t> benchRates[3];
@@ -271,8 +311,9 @@ struct AppState {
   std::atomic<uint64_t> maxDuration{0};
   std::wstring sigStatus;
   std::wstring benchHash; // Generated hash for benchmark validation
-  std::vector<std::wstring> logHistory;
-  std::mutex historyMtx;
+  static constexpr size_t MAX_LOG_HISTORY = 1000;
+  std::deque<std::wstring> logHistory;
+  mutable std::mutex historyMtx;
 
   // Platform-Specific
   void *windowHandle = nullptr;
@@ -281,6 +322,9 @@ struct AppState {
 
   void Log(const std::wstring &msg);
   void LogRaw(const std::wstring &msg);
+  
+  // Thread-safe access to log history for reading
+  std::vector<std::wstring> GetLogHistorySnapshot() const;
 };
 
 extern AppState g_App;
@@ -318,17 +362,29 @@ void SafeRunWorkload(uint64_t seed, int complexity, const StressConfig &config,
 
 struct ThreadWrapper {
   std::thread t;
+  
   ~ThreadWrapper() {
-    if (t.joinable())
+    if (t.joinable()) {
+      // Threads should exit quickly when terminate flag is set
+      // Just join directly - don't poll with timeout
       t.join();
+    }
   }
+};
+
+enum class WorkerState {
+  Idle = 0,
+  Running = 1,
+  Terminating = 2,
+  Stopped = 3
 };
 
 struct alignas(64) Worker {
   std::atomic<bool> terminate{false};
   std::atomic<uint64_t> localShaders{0};
   std::atomic<uint64_t> lastTick{0};
-  uint8_t pad[64];
+  std::atomic<WorkerState> state{WorkerState::Idle};
+  uint8_t pad[64 - sizeof(std::atomic<WorkerState>)];
 };
 
 extern std::vector<std::unique_ptr<Worker>> g_Workers;
