@@ -77,10 +77,12 @@ static void RunCompilerLogic(int idx, Worker &w) {
 
 static void RunDecompressLogic(int idx, Worker &w) {
   const size_t BUF_SIZE = 512 * 1024;
-  static thread_local std::vector<uint8_t> data(BUF_SIZE);
+  // Lazy heap allocation to avoid TLS bloat
+  static thread_local std::vector<uint8_t> data;
   static thread_local std::mt19937 rng(idx * 777);
   static thread_local bool init = false;
 
+  if (data.empty()) data.resize(BUF_SIZE);
   if (!init) {
     std::uniform_int_distribution<uint16_t> dist(0, 255);
     for (auto &b : data)

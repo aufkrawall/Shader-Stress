@@ -1,5 +1,17 @@
 // Workloads.cpp - CPU stress test kernels
 #include "Common.h"
+#include <vector>
+
+// Thread-local work buffer - 8 bytes TLS, 512KB+ heap, manually aligned
+inline double* GetWorkBuffer() {
+    static thread_local char* raw = nullptr;
+    static thread_local double* aligned_buf = nullptr;
+    if (aligned_buf == nullptr) {
+        raw = new char[65536 * sizeof(double) + 64];
+        aligned_buf = (double*)(((uintptr_t)raw + 63) & ~(uintptr_t)63);
+    }
+    return aligned_buf;
+}
 
 // SSE2 intrinsics for x86/x64 only
 #if defined(_M_IX86) || defined(_M_X64) || defined(__i386__) || defined(__x86_64__)
@@ -115,12 +127,17 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
     uint32_t nodeRef;
   };
 
-  alignas(64) static thread_local FakeAstNode tree[TREE_NODES];
-  alignas(64) static thread_local HashEntry tableEntries[HASH_BUCKETS];
-  alignas(64) static thread_local char stringPool[STRING_POOL_SIZE];
+  // Lazy heap allocation to avoid TLS bloat (saves ~650KB per thread in binary)
+  static thread_local std::vector<FakeAstNode> tree;
+  static thread_local std::vector<HashEntry> tableEntries;
+  static thread_local std::vector<char> stringPool;
   alignas(64) static thread_local uint64_t liveIn[BITVEC_WORDS];
   alignas(64) static thread_local uint64_t liveOut[BITVEC_WORDS];
   alignas(64) static thread_local uint64_t liveKill[BITVEC_WORDS];
+  
+  if (tree.empty()) tree.resize(TREE_NODES);
+  if (tableEntries.empty()) tableEntries.resize(HASH_BUCKETS);
+  if (stringPool.empty()) stringPool.resize(STRING_POOL_SIZE);
 
   for (size_t i = 0; i < STRING_POOL_SIZE; ++i)
     stringPool[i] = (char)((seed + i * 13) % 255);
@@ -267,14 +284,14 @@ void RunHyperStress_Scalar(uint64_t seed, int complexity,
                            const StressConfig &config) {
   (void)config;
   
-  // Shared 512KB buffer
-  alignas(64) static thread_local double mem[65536];
+  // Lazy heap allocation with proper 64-byte alignment, no TLS bloat
+  double* memPtr = GetWorkBuffer();
 
 #if defined(_M_ARM64) || defined(__aarch64__)
   // ARM64: Use NEON for 2x throughput (16 × 128-bit registers)
   for (int i = 0; i < 65536; i += 2) {
-    mem[i] = (double)(seed + i) * 0.00001;
-    mem[i+1] = (double)(seed + i + 1) * 0.00001;
+    memPtr[i] = (double)(seed + i) * 0.00001;
+    memPtr[i+1] = (double)(seed + i + 1) * 0.00001;
   }
   
   // Initialize 16 NEON registers (128-bit = 2 doubles each)
@@ -314,8 +331,8 @@ void RunHyperStress_Scalar(uint64_t seed, int complexity,
     // NEON: 2-wide RMW operations
     #define NEON_WORK(r, off) \
       r = vmulq_f64(r, mul); \
-      r = vaddq_f64(r, vld1q_f64(&mem[(idx + off) & MASK])); \
-      vst1q_f64(&mem[(idx + off + 512) & MASK], r)
+      r = vaddq_f64(r, vld1q_f64(&memPtr[(idx + off) & MASK])); \
+      vst1q_f64(&memPtr[(idx + off + 512) & MASK], r)
     
     NEON_WORK(r0, 0);   NEON_WORK(r1, 2);   NEON_WORK(r2, 4);   NEON_WORK(r3, 6);
     g0 = g0 / ((g8 & 0xFFFFFFFF) | 1);
@@ -381,8 +398,8 @@ void RunHyperStress_Scalar(uint64_t seed, int complexity,
 #elif defined(_M_IX86) || defined(_M_X64) || defined(__i386__) || defined(__x86_64__)
   // x86/x64: Use SSE2 for 2x throughput
   for (int i = 0; i < 65536; i += 2) {
-    mem[i] = (double)(seed + i) * 0.00001;
-    mem[i+1] = (double)(seed + i + 1) * 0.00001;
+    memPtr[i] = (double)(seed + i) * 0.00001;
+    memPtr[i+1] = (double)(seed + i + 1) * 0.00001;
   }
   
   // Initialize 16 XMM registers (128-bit = 2 doubles each)
@@ -424,8 +441,8 @@ void RunHyperStress_Scalar(uint64_t seed, int complexity,
     // Load-Multiply-Add-Store pattern
     #define SSE2_WORK(r, off) \
       r = _mm_mul_pd(r, mul); \
-      r = _mm_add_pd(r, _mm_load_pd(&mem[(idx + off) & MASK])); \
-      _mm_store_pd(&mem[(idx + off + 512) & MASK], r)
+      r = _mm_add_pd(r, _mm_load_pd(&memPtr[(idx + off) & MASK])); \
+      _mm_store_pd(&memPtr[(idx + off + 512) & MASK], r)
     
     SSE2_WORK(r0, 0);   SSE2_WORK(r1, 2);   SSE2_WORK(r2, 4);   SSE2_WORK(r3, 6);
     
@@ -508,7 +525,7 @@ void RunHyperStress_Scalar(uint64_t seed, int complexity,
 #else
   // Generic fallback: pure scalar for non-x86, non-ARM64 architectures
   for (int i = 0; i < 65536; i++) {
-    mem[i] = (double)(seed + i) * 0.00001;
+    memPtr[i] = (double)(seed + i) * 0.00001;
   }
   double r0 = (double)seed * 1.0001, r1 = r0 + 0.01, r2 = r0 + 0.02, r3 = r0 + 0.03;
   double r4 = r0 + 0.04, r5 = r0 + 0.05, r6 = r0 + 0.06, r7 = r0 + 0.07;
@@ -522,22 +539,22 @@ void RunHyperStress_Scalar(uint64_t seed, int complexity,
   const int MASK = 65535;
   for (int i = 0; i < complexity * 280; ++i) {
     if (g_App.quit) break;
-    r0 = r0 * 1.000001 + mem[(idx + 0) & MASK];
-    r1 = r1 * 1.000001 + mem[(idx + 1) & MASK];
-    r2 = r2 * 1.000001 + mem[(idx + 2) & MASK];
-    r3 = r3 * 1.000001 + mem[(idx + 3) & MASK];
-    r4 = r4 * 1.000001 + mem[(idx + 4) & MASK];
-    r5 = r5 * 1.000001 + mem[(idx + 5) & MASK];
-    r6 = r6 * 1.000001 + mem[(idx + 6) & MASK];
-    r7 = r7 * 1.000001 + mem[(idx + 7) & MASK];
-    r8 = r8 * 1.000001 + mem[(idx + 8) & MASK];
-    r9 = r9 * 1.000001 + mem[(idx + 9) & MASK];
-    r10 = r10 * 1.000001 + mem[(idx + 10) & MASK];
-    r11 = r11 * 1.000001 + mem[(idx + 11) & MASK];
-    r12 = r12 * 1.000001 + mem[(idx + 12) & MASK];
-    r13 = r13 * 1.000001 + mem[(idx + 13) & MASK];
-    r14 = r14 * 1.000001 + mem[(idx + 14) & MASK];
-    r15 = r15 * 1.000001 + mem[(idx + 15) & MASK];
+    r0 = r0 * 1.000001 + memPtr[(idx + 0) & MASK];
+    r1 = r1 * 1.000001 + memPtr[(idx + 1) & MASK];
+    r2 = r2 * 1.000001 + memPtr[(idx + 2) & MASK];
+    r3 = r3 * 1.000001 + memPtr[(idx + 3) & MASK];
+    r4 = r4 * 1.000001 + memPtr[(idx + 4) & MASK];
+    r5 = r5 * 1.000001 + memPtr[(idx + 5) & MASK];
+    r6 = r6 * 1.000001 + memPtr[(idx + 6) & MASK];
+    r7 = r7 * 1.000001 + memPtr[(idx + 7) & MASK];
+    r8 = r8 * 1.000001 + memPtr[(idx + 8) & MASK];
+    r9 = r9 * 1.000001 + memPtr[(idx + 9) & MASK];
+    r10 = r10 * 1.000001 + memPtr[(idx + 10) & MASK];
+    r11 = r11 * 1.000001 + memPtr[(idx + 11) & MASK];
+    r12 = r12 * 1.000001 + memPtr[(idx + 12) & MASK];
+    r13 = r13 * 1.000001 + memPtr[(idx + 13) & MASK];
+    r14 = r14 * 1.000001 + memPtr[(idx + 14) & MASK];
+    r15 = r15 * 1.000001 + memPtr[(idx + 15) & MASK];
     g0 = g0 / ((g1 & 0xFFFFFFFF) | 1);
     g2 = g2 / ((g3 & 0xFFFFFFFF) | 1);
     g4 = g4 / ((g5 & 0xFFFFFFFF) | 1);
@@ -560,9 +577,10 @@ void RunHyperStress_AVX2(uint64_t seed, int complexity,
                          const StressConfig &config) {
   (void)config;
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__AVX2__) || defined(__clang__) || defined(__GNUC__))
-  alignas(64) static thread_local double mem[65536];
+  // Lazy heap allocation to avoid TLS bloat (saves 512KB per thread in binary)
+  double* memPtr = GetWorkBuffer();
   for (int i = 0; i < 65536; i += 4) {
-    _mm256_store_pd(&mem[i], _mm256_set1_pd((double)(seed + i) * 0.00001));
+    _mm256_store_pd(&memPtr[i], _mm256_set1_pd((double)(seed + i) * 0.00001));
   }
   
   __m256d r0 = _mm256_set1_pd((double)seed * 1.00001);
@@ -596,8 +614,8 @@ void RunHyperStress_AVX2(uint64_t seed, int complexity,
     if (g_App.quit) break;
     
     #define WORK(r, off) \
-      r = _mm256_fmadd_pd(r, mul, _mm256_load_pd(&mem[(idx + off) & MASK])); \
-      _mm256_store_pd(&mem[(idx + off + 512) & MASK], r)
+      r = _mm256_fmadd_pd(r, mul, _mm256_load_pd(&memPtr[(idx + off) & MASK])); \
+      _mm256_store_pd(&memPtr[(idx + off + 512) & MASK], r)
     
     WORK(r0, 0);   WORK(r1, 4);   WORK(r2, 8);   WORK(r3, 12);
     
@@ -659,10 +677,10 @@ void RunHyperStress_AVX512(uint64_t seed, int complexity,
                            const StressConfig &config) {
   (void)config;
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__AVX512F__) || defined(__clang__) || defined(__GNUC__)) && !defined(PLATFORM_MACOS)
-  // Same 512KB buffer
-  alignas(64) static thread_local double mem[65536];
+  // Lazy heap allocation with proper 64-byte alignment, no TLS bloat
+  double* memPtr = GetWorkBuffer();
   for (int i = 0; i < 65536; i += 8) {
-    _mm512_store_pd(&mem[i], _mm512_set1_pd((double)(seed + i) * 0.00001));
+    _mm512_store_pd(&memPtr[i], _mm512_set1_pd((double)(seed + i) * 0.00001));
   }
   
   // ALL 32 ZMM REGISTERS - maximum register pressure!
@@ -716,8 +734,8 @@ void RunHyperStress_AVX512(uint64_t seed, int complexity,
     
     // 32 ZMM registers doing RMW - massive power!
     #define WORK(r, off) \
-      r = _mm512_fmadd_pd(r, mul, _mm512_load_pd(&mem[(idx + off) & MASK])); \
-      _mm512_store_pd(&mem[(idx + off + 512) & MASK], r)
+      r = _mm512_fmadd_pd(r, mul, _mm512_load_pd(&memPtr[(idx + off) & MASK])); \
+      _mm512_store_pd(&memPtr[(idx + off + 512) & MASK], r)
     
     WORK(r0, 0);   WORK(r1, 8);   WORK(r2, 16);  WORK(r3, 24);
     

@@ -33,6 +33,7 @@ BUILD_CONFIGS = [
     ("x86_64-windows-gnu", "bin/x64-zig-v3", "x86_64_v3", True, "ShaderStress-Windows-x64-v3.7z"),
     ("aarch64-windows-gnu", "bin/arm64-zig", "generic", True, "ShaderStress-Windows-ARM64-Zig.7z"),
     ("x86_64-linux-gnu", "bin/linux-x64", "x86_64", False, "ShaderStress-Linux-x64.7z"),
+    ("x86_64-linux-gnu", "bin/linux-x64-v3", "x86_64_v3", False, "ShaderStress-Linux-x64-v3.7z"),
     ("aarch64-linux-gnu", "bin/linux-arm64", "generic", False, "ShaderStress-Linux-ARM64.7z"),
     ("x86_64-macos", "bin/macos-x64", "x86_64", False, "ShaderStress-macOS-x64.7z"),
     ("aarch64-macos", "bin/macos-arm64", "generic", False, "ShaderStress-macOS-ARM64.7z"),
@@ -95,6 +96,12 @@ def build_target(config):
             "-target", target,
             "-std=c++20", "-O3",
             "-ffast-math",
+            # Size optimizations - remove unused code/data
+            "-ffunction-sections", "-fdata-sections",
+            # Remove exception handling overhead (not used)
+            "-fno-asynchronous-unwind-tables",
+            # Remove compiler identification section
+            "-fno-ident",
         ] + (["-flto"] if use_lto else []) + [
             "-s",
             "-Wno-macro-redefined",
@@ -108,6 +115,8 @@ def build_target(config):
         if is_windows:
             cmd.extend([
                 "-Xlinker", "--subsystem", "-Xlinker", "windows",
+                # Remove unused sections (requires -ffunction-sections/-fdata-sections)
+                "-Xlinker", "--gc-sections",
                 "-luser32", "-lgdi32", "-ldwmapi", "-lshcore", 
                 "-lshell32", "-lole32", "-ldbghelp"
             ])
