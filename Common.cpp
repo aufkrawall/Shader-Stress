@@ -1,7 +1,7 @@
 // Common.cpp - Global variable definitions and utility function implementations
 #include "Common.h"
 
-const std::wstring APP_VERSION = L"3.5.0";
+const std::wstring APP_VERSION = L"3.5.1";
 
 // --- Global Variables ---
 CpuFeatures g_Cpu;
@@ -12,8 +12,9 @@ ReproSettings g_Repro;
 StressConfig g_ActiveConfig;
 std::mutex g_ConfigMtx;
 std::atomic<uint64_t> g_ConfigVersion{0};
-std::vector<uint64_t> g_ColdStorage;
 std::mutex g_StateMtx;
+
+GoldenValues g_Golden;
 
 AppState g_App;
 HWND g_MainWindow = nullptr;
@@ -107,7 +108,7 @@ static std::string ToLogStr(const std::wstring &w) {
 #else
   // Use std::wcstombs with locale for proper UTF-8 conversion
   // Fallback to lossy ASCII-only if locale doesn't support it
-  std::setlocale(LC_CTYPE, "");  // Use system locale
+  // Note: setlocale is called once at startup; not repeated here (thread safety)
   const wchar_t* wstr = w.c_str();
   size_t len = std::wcstombs(nullptr, wstr, 0);
   if (len != static_cast<size_t>(-1) && len > 0) {
@@ -144,8 +145,9 @@ void AppState::Log(const std::wstring &msg) {
 #endif
 
   std::wstringstream ss;
-  ss << L"[" << tm_buf.tm_hour << L":" << tm_buf.tm_min << L":" << tm_buf.tm_sec
-     << L"." << ms.count() << L"] " << msg;
+  ss << L"[" << std::setfill(L'0') << std::setw(2) << tm_buf.tm_hour << L":"
+     << std::setw(2) << tm_buf.tm_min << L":" << std::setw(2) << tm_buf.tm_sec
+     << L"." << std::setw(3) << ms.count() << L"] " << msg;
 
   std::wstring fullMsg = ss.str();
 
@@ -179,6 +181,16 @@ void AppState::LogRaw(const std::wstring &msg) {
   }
 }
 
+void AppState::SetBenchHash(const std::wstring &hash) {
+  std::lock_guard<std::mutex> lk(historyMtx);
+  benchHash = hash;
+}
+
+std::wstring AppState::GetBenchHash() const {
+  std::lock_guard<std::mutex> lk(historyMtx);
+  return benchHash;
+}
+
 std::vector<std::wstring> AppState::GetLogHistorySnapshot() const {
   std::lock_guard<std::mutex> lk(historyMtx);
   return std::vector<std::wstring>(logHistory.begin(), logHistory.end());
@@ -205,6 +217,45 @@ void DetectBestConfig() {
                                               : L"Benchmark";
   std::wstring isaName = GetResolvedISAName(g_App.selectedWorkload.load());
   g_App.Log(L"Config auto-selected: " + modeName + L" (" + isaName + L")");
+}
+
+// --- Golden Value Initialization ---
+static WorkloadType ResolveWorkloadType(int sel) {
+  WorkloadType type = (WorkloadType)sel;
+  if (type == WL_AUTO) {
+    if (g_Cpu.hasAVX512F && !g_ForceNoAVX512)
+      type = WL_AVX512;
+    else if (g_Cpu.hasAVX2 && !g_ForceNoAVX2)
+      type = WL_AVX2;
+    else
+      type = WL_SCALAR;
+  }
+  return type;
+}
+
+void InitGoldenValues() {
+  StressConfig defaultCfg;
+  defaultCfg.fma_intensity = 8;
+  defaultCfg.int_intensity = 2;
+  defaultCfg.div_intensity = 1;
+  defaultCfg.bit_intensity = 0;
+  defaultCfg.branch_intensity = 0;
+  defaultCfg.int_simd_intensity = 0;
+  defaultCfg.mem_pressure = 0;
+  defaultCfg.shuffle_freq = 8;
+  defaultCfg.cache_stride = 32768;
+
+  // Compute golden values for each workload type
+  g_Golden.values[WL_SCALAR] = RunHyperStress_Scalar(42, 100, defaultCfg);
+  g_Golden.values[WL_SCALAR_SIM] =
+      RunRealisticCompilerSim_V3(42, 100, defaultCfg);
+
+  if (g_Cpu.hasAVX2 && !g_ForceNoAVX2)
+    g_Golden.values[WL_AVX2] = RunHyperStress_AVX2(42, 100, defaultCfg);
+  if (g_Cpu.hasAVX512F && !g_ForceNoAVX512)
+    g_Golden.values[WL_AVX512] = RunHyperStress_AVX512(42, 100, defaultCfg);
+
+  g_Golden.initialized = true;
 }
 
 // --- Benchmark Hash Validation ---

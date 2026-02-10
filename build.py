@@ -94,22 +94,46 @@ def build_target(config):
         cmd = [
             str(ZIG_EXE), "c++",
             "-target", target,
+        ]
+        
+        # Add CPU target for architecture-specific optimizations BEFORE source files
+        # This is crucial for v3 builds to enable AVX2, BMI, etc.
+        if cpu != "generic":
+            cmd.extend(["-mcpu=" + cpu])
+        
+        # Note: We do NOT add -mpopcnt/-mlzcnt/-mbmi for generic x86_64 builds
+        # to maintain compatibility with older CPUs (pre-Haswell, pre-Nehalem).
+        # The realistic workload may be slower on generic builds, but that's
+        # the trade-off for broader compatibility. v3 builds target modern CPUs
+        # and will automatically use these features via x86_64_v3.
+        
+        cmd.extend([
             "-std=c++20", "-O3",
             "-ffast-math",
+            "-fno-rtti",
             # Size optimizations - remove unused code/data
             "-ffunction-sections", "-fdata-sections",
             # Remove exception handling overhead (not used)
             "-fno-asynchronous-unwind-tables",
             # Remove compiler identification section
             "-fno-ident",
-        ] + (["-flto"] if use_lto else []) + [
-            "-s",
-            "-Wno-macro-redefined",
-        ] + (["-municode"] if is_windows else []) + defines + src_files
+        ])
+        
+        if use_lto:
+            cmd.append("-flto")
         
         cmd.extend([
-            "-o", str(exe_path),
+            "-s",
+            "-Wno-macro-redefined",
         ])
+        
+        if is_windows:
+            cmd.append("-municode")
+        
+        cmd.extend(defines)
+        cmd.extend(src_files)
+        
+        cmd.extend(["-o", str(exe_path)])
         
         # Platform-specific link flags
         if is_windows:

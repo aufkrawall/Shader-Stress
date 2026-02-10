@@ -1,6 +1,74 @@
 // Threading.cpp - Worker threads, IO stress, RAM stress, Dynamic mode, Watchdog
 #include "Common.h"
 
+#if !defined(PLATFORM_WINDOWS)
+#include <signal.h>
+
+thread_local int t_threadIdx = -1;
+thread_local uint64_t t_lastSeed = 0;
+thread_local int t_lastComplexity = 0;
+
+static void crashHandler(int sig) {
+  const char *name = "UNKNOWN";
+  switch (sig) {
+  case SIGSEGV: name = "SIGSEGV"; break;
+  case SIGFPE:  name = "SIGFPE";  break;
+  case SIGBUS:  name = "SIGBUS";  break;
+  case SIGILL:  name = "SIGILL";  break;
+  }
+
+  // Async-signal-safe: only use write() and _exit()
+  char buf[256];
+  int len = 0;
+  // Manual formatting (snprintf is NOT async-signal-safe)
+  auto appendStr = [&](const char *s) {
+    while (*s && len < 255) buf[len++] = *s++;
+  };
+  auto appendNum = [&](int64_t v) {
+    if (v < 0) { buf[len++] = '-'; v = -v; }
+    char tmp[20]; int tl = 0;
+    if (v == 0) tmp[tl++] = '0';
+    else while (v > 0) { tmp[tl++] = '0' + (v % 10); v /= 10; }
+    for (int i = tl - 1; i >= 0 && len < 255; --i) buf[len++] = tmp[i];
+  };
+  auto appendU64 = [&](uint64_t v) {
+    char tmp[20]; int tl = 0;
+    if (v == 0) tmp[tl++] = '0';
+    else while (v > 0) { tmp[tl++] = '0' + (v % 10); v /= 10; }
+    for (int i = tl - 1; i >= 0 && len < 255; --i) buf[len++] = tmp[i];
+  };
+
+  appendStr("\n[CRASH] Signal: ");
+  appendStr(name);
+  appendStr(" | Thread: ");
+  appendNum(t_threadIdx);
+  appendStr(" | Seed: ");
+  appendU64(t_lastSeed);
+  appendStr(" | Complexity: ");
+  appendNum(t_lastComplexity);
+  appendStr("\nUse --repro ");
+  appendU64(t_lastSeed);
+  appendStr(" ");
+  appendNum(t_lastComplexity);
+  appendStr(" to reproduce.\n");
+  buf[len] = '\0';
+
+  write(STDERR_FILENO, buf, len);
+  _exit(128 + sig);
+}
+
+void InstallCrashHandlers() {
+  struct sigaction sa;
+  sa.sa_handler = crashHandler;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = SA_RESETHAND; // One-shot to avoid infinite loops
+  sigaction(SIGSEGV, &sa, nullptr);
+  sigaction(SIGFPE, &sa, nullptr);
+  sigaction(SIGBUS, &sa, nullptr);
+  sigaction(SIGILL, &sa, nullptr);
+}
+#endif // !PLATFORM_WINDOWS
+
 // --- Worker Logic ---
 static void RunCompilerLogic(int idx, Worker &w) {
   // Lightweight PRNG (XorShift64*) state per thread
@@ -42,7 +110,7 @@ static void RunCompilerLogic(int idx, Worker &w) {
   // "de-correlated" load
   StressConfig jobCfg;
 
-  if (lastVer != g_ConfigVersion.load(std::memory_order_relaxed)) {
+  if (lastVer != g_ConfigVersion.load(std::memory_order_acquire)) {
     std::lock_guard<std::mutex> lk(g_ConfigMtx);
     cachedCfg = g_ActiveConfig;
     lastVer = g_ConfigVersion.load(std::memory_order_relaxed);
@@ -70,9 +138,38 @@ static void RunCompilerLogic(int idx, Worker &w) {
       (uint64_t)GetTick() ^ ((uint64_t)idx << 32) ^
       (w.localShaders.load(std::memory_order_relaxed) * GOLDEN_RATIO);
 
+#if !defined(PLATFORM_WINDOWS)
+  t_lastSeed = seed;
+  t_lastComplexity = complexity;
+#endif
   SafeRunWorkload(seed, complexity, jobCfg, idx);
-  w.localShaders.fetch_add(1, std::memory_order_relaxed);
+  uint64_t localCount = w.localShaders.fetch_add(1, std::memory_order_relaxed);
   g_App.totalNodes.fetch_add(complexity, std::memory_order_relaxed);
+
+  // Periodic golden-value verification for CPU error detection
+  if (g_Golden.initialized && (localCount % 200) == 0) {
+    StressConfig verifyCfg;
+    verifyCfg.fma_intensity = 8;
+    verifyCfg.int_intensity = 2;
+    verifyCfg.div_intensity = 1;
+    WorkloadType type = (WorkloadType)g_App.selectedWorkload.load();
+    if (type == WL_AUTO) {
+      if (g_Cpu.hasAVX512F && !g_ForceNoAVX512)
+        type = WL_AVX512;
+      else if (g_Cpu.hasAVX2 && !g_ForceNoAVX2)
+        type = WL_AVX2;
+      else
+        type = WL_SCALAR;
+    }
+    uint64_t got = UnsafeRunWorkload(42, 100, verifyCfg);
+    uint64_t expected = g_Golden.values[type];
+    if (got != expected) {
+      g_App.errors.fetch_add(1, std::memory_order_relaxed);
+      g_App.Log(L"CPU ERROR detected on thread " + std::to_wstring(idx) +
+                L" (expected " + std::to_wstring(expected) + L", got " +
+                std::to_wstring(got) + L")");
+    }
+  }
 }
 
 static void RunDecompressLogic(int idx, Worker &w) {
@@ -108,6 +205,12 @@ static void RunDecompressLogic(int idx, Worker &w) {
 void WorkerThread(int idx) {
   DisablePowerThrottling();
   PinThreadToCore(idx);
+#if !defined(PLATFORM_WINDOWS) && (defined(__x86_64__) || defined(_M_X64))
+  _mm_setcsr(_mm_getcsr() | 0x8040); // FTZ (bit 15) + DAZ (bit 6)
+#endif
+#if !defined(PLATFORM_WINDOWS)
+  t_threadIdx = idx;
+#endif
   std::this_thread::sleep_for(std::chrono::milliseconds(idx * 5));
   auto &w = *g_Workers[idx];
   w.state.store(WorkerState::Running, std::memory_order_release);
@@ -140,12 +243,14 @@ void WorkerThread(int idx) {
   w.state.store(WorkerState::Stopped, std::memory_order_release);
 }
 
-// --- IO/RAM Stress (Windows only) ---
 // --- IO/RAM Stress (Cross-Platform) ---
 #ifdef PLATFORM_WINDOWS
 
 void IOThread(int ioIdx) {
   DisablePowerThrottling();
+#if !defined(PLATFORM_WINDOWS) && (defined(__x86_64__) || defined(_M_X64))
+  _mm_setcsr(_mm_getcsr() | 0x8040); // FTZ (bit 15) + DAZ (bit 6)
+#endif
   auto &w = *g_IOThreads[ioIdx];
 
   wchar_t path[MAX_PATH];
@@ -206,6 +311,9 @@ void IOThread(int ioIdx) {
 
 void RAMThread() {
   DisablePowerThrottling();
+#if !defined(PLATFORM_WINDOWS) && (defined(__x86_64__) || defined(_M_X64))
+  _mm_setcsr(_mm_getcsr() | 0x8040); // FTZ (bit 15) + DAZ (bit 6)
+#endif
   auto &w = g_RAM;
   std::mt19937_64 rng(GetTick());
 
@@ -264,6 +372,9 @@ void RAMThread() {
 #include <unistd.h>
 
 void IOThread(int ioIdx) {
+#if !defined(PLATFORM_WINDOWS) && (defined(__x86_64__) || defined(_M_X64))
+  _mm_setcsr(_mm_getcsr() | 0x8040); // FTZ (bit 15) + DAZ (bit 6)
+#endif
   auto &w = *g_IOThreads[ioIdx];
 
   std::string fpath = "/tmp/stress_" + std::to_string(ioIdx) + ".tmp";
@@ -326,6 +437,9 @@ void IOThread(int ioIdx) {
 }
 
 void RAMThread() {
+#if !defined(PLATFORM_WINDOWS) && (defined(__x86_64__) || defined(_M_X64))
+  _mm_setcsr(_mm_getcsr() | 0x8040); // FTZ (bit 15) + DAZ (bit 6)
+#endif
   auto &w = g_RAM;
   std::mt19937_64 rng(GetTick());
 
@@ -524,7 +638,7 @@ void ApplyWorkloadConfig(int workloadSel) {
   {
     std::lock_guard<std::mutex> lk(g_ConfigMtx);
     g_ActiveConfig = cfg;
-    g_ConfigVersion++;
+    g_ConfigVersion.fetch_add(1, std::memory_order_release);
   }
 }
 
@@ -745,12 +859,13 @@ void Watchdog() {
             uint64_t r0 = g_App.benchRates[0];
             uint64_t r1 = g_App.benchRates[1];
             uint64_t r2 = g_App.benchRates[2];
-            g_App.benchHash = GenerateBenchmarkHash(r0, r1, r2);
+            std::wstring hash = GenerateBenchmarkHash(r0, r1, r2);
+            g_App.SetBenchHash(hash);
 
             g_App.Log(L"Benchmark Minute " +
                       std::to_wstring(lastBenchIntervalIndex + 1) + L": " +
                       FmtNum(g_App.benchRates[lastBenchIntervalIndex]) +
-                      L" Jobs/s | Hash: " + g_App.benchHash + L" (v" +
+                      L" Jobs/s | Hash: " + hash + L" (v" +
                       std::wstring(APP_VERSION) + L")");
           }
           lastBenchIntervalIndex = currentIntervalIdx;
@@ -769,7 +884,8 @@ void Watchdog() {
             g_App.benchWinner = 2;
 
           // Generate validation hash
-          g_App.benchHash = GenerateBenchmarkHash(r0, r1, r2);
+          std::wstring finalHash = GenerateBenchmarkHash(r0, r1, r2);
+          g_App.SetBenchHash(finalHash);
 
           std::wstringstream report;
           report << L"\n========================================\n";
@@ -792,11 +908,11 @@ void Watchdog() {
           report << L"WINNER: Interval " << (g_App.benchWinner + 1) << L" ("
                  << FmtNum(g_App.benchRates[g_App.benchWinner])
                  << L" Jobs/s)\n";
-          report << L"HASH: " << g_App.benchHash << L"\n";
+          report << L"HASH: " << finalHash << L"\n";
           report << L"========================================";
 
           g_App.LogRaw(report.str());
-          g_App.Log(L"Benchmark Finished. Hash: " + g_App.benchHash);
+          g_App.Log(L"Benchmark Finished. Hash: " + finalHash);
 
           // Auto-stop workers if checkbox is enabled
           if (g_App.autoStopBenchmark) {

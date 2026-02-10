@@ -4,6 +4,15 @@
 #include "Common.h"
 #include "TerminalUtils.h"
 
+// Map ISA menu selection (1-5) to WorkloadType enum
+// Menu:  1=Auto, 2=AVX-512, 3=AVX2, 4=Scalar(synthetic), 5=Scalar(realistic)
+// Enum:  WL_AUTO=0, WL_SCALAR=1, WL_AVX2=2, WL_AVX512=3, WL_SCALAR_SIM=4
+static int MapISASelection(int menuChoice) {
+  constexpr int map[] = {WL_AUTO, WL_AUTO, WL_AVX512, WL_AVX2, WL_SCALAR, WL_SCALAR_SIM};
+  if (menuChoice >= 1 && menuChoice <= 5) return map[menuChoice];
+  return WL_AUTO;
+}
+
 #ifdef PLATFORM_WINDOWS
 
 #pragma comment(lib, "user32")
@@ -24,11 +33,6 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
 
   g_Cpu = GetCpuInfo();
   g_App.sigStatus = g_Cpu.name;
-
-  g_ColdStorage.resize(32 * 1024 * 1024 / 8);
-  std::mt19937_64 r(123);
-  for (auto &v : g_ColdStorage)
-    v = r();
 
   int argc = 0;
   LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -90,6 +94,8 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     }
     return 0;
   }
+
+  InitGoldenValues();
 
   // Full CLI mode (pseudo-GUI like Linux/macOS)
   if (cliMode) {
@@ -184,7 +190,7 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
               << "4. Scalar (synthetic)\n"
               << "5. Scalar (realistic)\n";
     int isaSel = AskInput("ISA", isaDef, 1, 5);
-    g_App.selectedWorkload = (isaSel - 1);
+    g_App.selectedWorkload = MapISASelection(isaSel);
 
     DetectBestConfig();
 
@@ -285,9 +291,12 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
                    << L"          ";
 
         // Line 15: Hash
-        if (!g_App.benchHash.empty()) {
-          std::cout << "\033[15;7H" << std::flush;
-          std::wcout << g_App.benchHash << L" (v" << APP_VERSION << L")";
+        {
+          std::wstring cliHash = g_App.GetBenchHash();
+          if (!cliHash.empty()) {
+            std::cout << "\033[15;7H" << std::flush;
+            std::wcout << cliHash << L" (v" << APP_VERSION << L")";
+          }
         }
 
         if (g_App.benchComplete) {
@@ -332,8 +341,11 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     std::cout << "Total Jobs: " << (long long)g_App.shaders << "\n";
     std::cout << "Avg Rate: " << (int)g_App.currentRate << " jobs/s\n";
 
-    if (g_App.mode == 0 && !g_App.benchHash.empty()) {
-      std::wcout << L"\nBenchmark Hash: " << g_App.benchHash << L"\n";
+    {
+      std::wstring finalHash = g_App.GetBenchHash();
+      if (g_App.mode == 0 && !finalHash.empty()) {
+        std::wcout << L"\nBenchmark Hash: " << finalHash << L"\n";
+      }
     }
 
     std::cout << "\nPress Enter to exit...";
@@ -505,6 +517,8 @@ int main(int argc, char *argv[]) {
   sigaction(SIGINT, &sa, NULL);
   sigaction(SIGTERM, &sa, NULL);
 
+  InstallCrashHandlers();
+
   g_Cpu = GetCpuInfo();
   g_App.sigStatus = g_Cpu.name;
   g_App.LogRaw(L"CPU: " + g_Cpu.brand);
@@ -512,12 +526,6 @@ int main(int argc, char *argv[]) {
   // Print startup info to console
   std::wcout << L"ShaderStress " << APP_VERSION << std::endl;
   std::wcout << L"CPU: " << g_Cpu.brand << std::endl;
-
-  // Cold Storage Init
-  g_ColdStorage.resize(32 * 1024 * 1024 / 8);
-  std::mt19937_64 r(123);
-  for (auto &v : g_ColdStorage)
-    v = r();
 
   bool batchMode = false;
   int duration = -1;
@@ -545,6 +553,8 @@ int main(int argc, char *argv[]) {
       return 0;
     }
   }
+
+  InitGoldenValues();
 
   // Interactive Menu (if not in batch mode via args)
   if (!batchMode) {
@@ -607,7 +617,7 @@ int main(int argc, char *argv[]) {
                 << "4. Scalar (synthetic)\n"
                 << "5. Scalar (realistic)\n";
       int isaSel = AskInput("ISA", isaDef, 1, 5);
-      g_App.selectedWorkload = (isaSel - 1);
+      g_App.selectedWorkload = MapISASelection(isaSel);
     } else {
       g_App.mode = (modeSel == 1) ? 2 : 1; // 1->Dynamic(2), 2->Steady(1)
 
@@ -620,8 +630,7 @@ int main(int argc, char *argv[]) {
       int isaDef = 1;
       int isaSel = AskInput("ISA", isaDef, 1, 5);
 
-      // Map 1..5 to Enums (Auto=0, 512=1, AVX2=2, ScaMath=3, ScaSim=4)
-      g_App.selectedWorkload = (isaSel - 1);
+      g_App.selectedWorkload = MapISASelection(isaSel);
     }
   }
 
@@ -715,10 +724,11 @@ int main(int argc, char *argv[]) {
                                              : L"-")
                  << L"\n";
 
-      if (!g_App.benchHash.empty()) {
-        std::wcout << L"Hash: " << g_App.benchHash << L" (v" << APP_VERSION
+      { std::wstring dashHash = g_App.GetBenchHash();
+      if (!dashHash.empty()) {
+        std::wcout << L"Hash: " << dashHash << L" (v" << APP_VERSION
                    << L")\n";
-      }
+      } }
 
       if (g_App.benchComplete) {
         std::wcout << L"\nWINNER: Interval " << (g_App.benchWinner + 1)

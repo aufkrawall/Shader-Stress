@@ -49,7 +49,6 @@ typedef int BOOL;
 #endif
 
 // Architecture-specific intrinsics
-// Architecture-specific intrinsics
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) ||             \
     defined(_M_IX86)
 #include <cpuid.h>
@@ -128,7 +127,7 @@ extern const std::wstring APP_VERSION;
 // Numeric version for hash encoding
 static const uint8_t APP_VERSION_MAJOR = 3;
 static const uint8_t APP_VERSION_MINOR = 5;
-static const uint8_t APP_VERSION_PATCH = 0;
+static const uint8_t APP_VERSION_PATCH = 1;
 
 constexpr uint64_t GOLDEN_RATIO = 0x9E3779B97F4A7C15ull;
 constexpr size_t IO_CHUNK_SIZE = 256 * 1024;
@@ -252,20 +251,19 @@ extern ReproSettings g_Repro;
 struct StressConfig {
   int fma_intensity = 1;
   int int_intensity = 1;
-  int div_intensity = 0;      // 64-bit division intensity (new)
-  int bit_intensity = 0;      // bit manipulation intensity (new)
-  int branch_intensity = 0;   // branch stress intensity (new)
-  int int_simd_intensity = 0; // integer SIMD intensity (new)
+  int div_intensity = 0;
+  int bit_intensity = 0;
+  int branch_intensity = 0;
+  int int_simd_intensity = 0;
   int mem_pressure = 0;
-  int shuffle_freq = 8;       // shuffles per N FMAs (new)
-  size_t cache_stride = 32768; // cache thrashing stride (new)
+  int shuffle_freq = 8;
+  size_t cache_stride = 32768;
   std::wstring name = L"Default";
 };
 
 extern StressConfig g_ActiveConfig;
 extern std::mutex g_ConfigMtx;
 extern std::atomic<uint64_t> g_ConfigVersion;
-extern std::vector<uint64_t> g_ColdStorage;
 extern std::mutex g_StateMtx;
 
 enum WorkloadType {
@@ -322,7 +320,11 @@ struct AppState {
 
   void Log(const std::wstring &msg);
   void LogRaw(const std::wstring &msg);
-  
+
+  // Thread-safe access to benchHash
+  void SetBenchHash(const std::wstring &hash);
+  std::wstring GetBenchHash() const;
+
   // Thread-safe access to log history for reading
   std::vector<std::wstring> GetLogHistorySnapshot() const;
 };
@@ -347,18 +349,25 @@ struct FakeAstNode {
   uint64_t payload;
 };
 
-void RunHyperStress_AVX2(uint64_t seed, int complexity,
-                         const StressConfig &config);
-void RunHyperStress_AVX512(uint64_t seed, int complexity,
+uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
+                             const StressConfig &config);
+uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
+                               const StressConfig &config);
+uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
+                               const StressConfig &config);
+uint64_t RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
+                                    const StressConfig &config);
+uint64_t UnsafeRunWorkload(uint64_t seed, int complexity,
                            const StressConfig &config);
-void RunHyperStress_Scalar(uint64_t seed, int complexity,
-                           const StressConfig &config);
-void RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
-                                const StressConfig &config);
-void UnsafeRunWorkload(uint64_t seed, int complexity,
-                       const StressConfig &config);
-void SafeRunWorkload(uint64_t seed, int complexity, const StressConfig &config,
-                     int threadIdx);
+uint64_t SafeRunWorkload(uint64_t seed, int complexity,
+                         const StressConfig &config, int threadIdx);
+
+struct GoldenValues {
+  uint64_t values[5] = {}; // indexed by WorkloadType (0=auto unused, 1-4)
+  bool initialized = false;
+};
+extern GoldenValues g_Golden;
+void InitGoldenValues();
 
 struct ThreadWrapper {
   std::thread t;
@@ -407,6 +416,10 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l);
 #endif
 void DetectBestConfig();
 void PrintHelp();
+
+#if !defined(PLATFORM_WINDOWS)
+void InstallCrashHandlers();
+#endif
 
 // Benchmark hash validation
 struct HashResult {

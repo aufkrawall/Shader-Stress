@@ -1,5 +1,6 @@
 // Workloads.cpp - CPU stress test kernels
 #include "Common.h"
+#include <cstring>
 #include <vector>
 
 // Thread-local work buffer - 8 bytes TLS, 512KB+ heap, manually aligned
@@ -43,16 +44,6 @@ ALWAYS_INLINE uint64_t RunGraphColoringMicro(uint64_t val) {
   x ^= x << 17;
   return x * 0x2545F4914F6CDD1Dull;
 }
-
-#ifdef _WIN32
-ALWAYS_INLINE void InterlockedXorCold(uint64_t *ptr, uint64_t val) {
-  _InterlockedXor64((volatile __int64 *)ptr, (long long)val);
-}
-#else
-ALWAYS_INLINE void InterlockedXorCold(uint64_t *ptr, uint64_t val) {
-  __atomic_fetch_xor(ptr, val, __ATOMIC_RELAXED);
-}
-#endif
 
 #define CASE_BLOCK_32(start, code)                                             \
   case start:                                                                  \
@@ -110,9 +101,18 @@ ALWAYS_INLINE void InterlockedXorCold(uint64_t *ptr, uint64_t val) {
     code;                                                                      \
   } break;
 
+#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
+#define TARGET_AVX2 __attribute__((target("avx2,fma"), noinline))
+#define TARGET_AVX512 __attribute__((target("avx512f,evex512"), noinline))
+#else
+#define TARGET_AVX2
+#define TARGET_AVX512
+#endif
+
 // --- Realistic Compiler Simulation (UNCHANGED) ---
-void RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
-                                const StressConfig &config) {
+uint64_t RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
+                                    const StressConfig &config) {
+#pragma clang fp contract(off)
   (void)config;
   constexpr size_t TREE_NODES = 16384;
   constexpr size_t HASH_BUCKETS = 4096;
@@ -127,17 +127,44 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
     uint32_t nodeRef;
   };
 
-  // Lazy heap allocation to avoid TLS bloat (saves ~650KB per thread in binary)
-  static thread_local std::vector<FakeAstNode> tree;
-  static thread_local std::vector<HashEntry> tableEntries;
-  static thread_local std::vector<char> stringPool;
-  alignas(64) static thread_local uint64_t liveIn[BITVEC_WORDS];
-  alignas(64) static thread_local uint64_t liveOut[BITVEC_WORDS];
-  alignas(64) static thread_local uint64_t liveKill[BITVEC_WORDS];
-  
-  if (tree.empty()) tree.resize(TREE_NODES);
-  if (tableEntries.empty()) tableEntries.resize(HASH_BUCKETS);
-  if (stringPool.empty()) stringPool.resize(STRING_POOL_SIZE);
+  // All buffers heap-allocated with manual 64-byte alignment.
+  // Windows PE TLS ignores alignas() beyond 16 bytes, causing vmovdqa crashes
+  // when the v3 build auto-vectorizes init loops with 256-bit aligned stores.
+  struct RealisticBufs {
+    char* treeRaw;    FakeAstNode* tree;
+    char* tableRaw;   HashEntry* tableEntries;
+    char* poolRaw;    char* stringPool;
+    char* liveRaw;    uint64_t* liveIn; uint64_t* liveOut; uint64_t* liveKill;
+  };
+  static thread_local RealisticBufs bufs = {};
+
+  auto& tree = bufs.tree;
+  auto& tableEntries = bufs.tableEntries;
+  auto& stringPool = bufs.stringPool;
+  auto& liveIn = bufs.liveIn;
+  auto& liveOut = bufs.liveOut;
+  auto& liveKill = bufs.liveKill;
+
+  if (!tree) {
+    bufs.treeRaw = new char[TREE_NODES * sizeof(FakeAstNode) + 64];
+    tree = (FakeAstNode*)(((uintptr_t)bufs.treeRaw + 63) & ~(uintptr_t)63);
+  }
+  if (!tableEntries) {
+    bufs.tableRaw = new char[HASH_BUCKETS * sizeof(HashEntry) + 64];
+    tableEntries = (HashEntry*)(((uintptr_t)bufs.tableRaw + 63) & ~(uintptr_t)63);
+  }
+  if (!stringPool) {
+    bufs.poolRaw = new char[STRING_POOL_SIZE + 64];
+    stringPool = (char*)(((uintptr_t)bufs.poolRaw + 63) & ~(uintptr_t)63);
+  }
+  if (!liveIn) {
+    constexpr size_t LIVE_BYTES = BITVEC_WORDS * sizeof(uint64_t);
+    bufs.liveRaw = new char[3 * LIVE_BYTES + 64];
+    char* base = (char*)(((uintptr_t)bufs.liveRaw + 63) & ~(uintptr_t)63);
+    liveIn  = (uint64_t*)(base);
+    liveOut = (uint64_t*)(base + LIVE_BYTES);
+    liveKill= (uint64_t*)(base + 2 * LIVE_BYTES);
+  }
 
   for (size_t i = 0; i < STRING_POOL_SIZE; ++i)
     stringPool[i] = (char)((seed + i * 13) % 255);
@@ -261,17 +288,11 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
     }
   }
 
-  volatile uint64_t sink = acc0 ^ acc1 ^ acc2 ^ acc3;
+  uint64_t result = acc0 ^ acc1 ^ acc2 ^ acc3;
+  volatile uint64_t sink = result;
   (void)sink;
+  return result;
 }
-
-#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
-#define TARGET_AVX2 __attribute__((target("avx2,fma")))
-#define TARGET_AVX512 __attribute__((target("avx512f,evex512")))
-#else
-#define TARGET_AVX2
-#define TARGET_AVX512
-#endif
 
 // ============================================================================
 // SCALAR MAX POWER - Explicit SIMD with full register file
@@ -280,8 +301,9 @@ void RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
 // 2x throughput over pure scalar on both architectures
 // ============================================================================
 
-void RunHyperStress_Scalar(uint64_t seed, int complexity,
-                           const StressConfig &config) {
+uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
+                               const StressConfig &config) {
+#pragma clang fp contract(off)
   (void)config;
   
   // Lazy heap allocation with proper 64-byte alignment, no TLS bloat
@@ -322,7 +344,8 @@ void RunHyperStress_Scalar(uint64_t seed, int complexity,
   uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
   
   int idx = 0;
-  const int MASK = 65535;
+  // Ensure 16-byte alignment for NEON (2 doubles = 16 bytes)
+  const int MASK = 65534;
   int iters = complexity * 280;
   
   for (int i = 0; i < iters; ++i) {
@@ -368,6 +391,7 @@ void RunHyperStress_Scalar(uint64_t seed, int complexity,
     
     #undef NEON_WORK
     
+    // Increment by 96 (must be even to maintain alignment)
     idx = (idx + 96) & MASK;
   }
   
@@ -392,9 +416,11 @@ void RunHyperStress_Scalar(uint64_t seed, int complexity,
   vst1q_f64(out, sum);
   uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7 ^
                   g8 ^ g9 ^ g10 ^ g11 ^ g12 ^ g13 ^ g14 ^ g15;
-  volatile double sink = out[0] + out[1] + (double)gint;
+  double final_val = out[0] + out[1] + (double)gint;
+  volatile double sink = final_val;
   (void)sink;
-  return;
+  uint64_t bits; std::memcpy(&bits, &final_val, 8);
+  return bits ^ gint;
 #elif defined(_M_IX86) || defined(_M_X64) || defined(__i386__) || defined(__x86_64__)
   // x86/x64: Use SSE2 for 2x throughput
   for (int i = 0; i < 65536; i += 2) {
@@ -430,7 +456,9 @@ void RunHyperStress_Scalar(uint64_t seed, int complexity,
   uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
 
   int idx = 0;
-  const int MASK = 65535;
+  // MASK must ensure 16-byte (2 double) alignment for SSE2 _mm_load_pd/_mm_store_pd
+  // 65535 & ~1 = 65534, which ensures index is always even (16-byte aligned)
+  const int MASK = 65534;
   
   int iters = complexity * 280;
 
@@ -439,10 +467,11 @@ void RunHyperStress_Scalar(uint64_t seed, int complexity,
     
     // SSE2: 2-wide operations (128-bit)
     // Load-Multiply-Add-Store pattern
+    // Using unaligned loads/stores for safety on all platforms
     #define SSE2_WORK(r, off) \
       r = _mm_mul_pd(r, mul); \
-      r = _mm_add_pd(r, _mm_load_pd(&memPtr[(idx + off) & MASK])); \
-      _mm_store_pd(&memPtr[(idx + off + 512) & MASK], r)
+      r = _mm_add_pd(r, _mm_loadu_pd(&memPtr[(idx + off) & MASK])); \
+      _mm_storeu_pd(&memPtr[(idx + off + 512) & MASK], r)
     
     SSE2_WORK(r0, 0);   SSE2_WORK(r1, 2);   SSE2_WORK(r2, 4);   SSE2_WORK(r3, 6);
     
@@ -520,8 +549,11 @@ void RunHyperStress_Scalar(uint64_t seed, int complexity,
   _mm_storeu_pd(out, sum);
   uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7 ^
                   g8 ^ g9 ^ g10 ^ g11 ^ g12 ^ g13 ^ g14 ^ g15;
-  volatile double sink = out[0] + out[1] + (double)gint;
+  double final_val = out[0] + out[1] + (double)gint;
+  volatile double sink = final_val;
   (void)sink;
+  uint64_t bits; std::memcpy(&bits, &final_val, 8);
+  return bits ^ gint;
 #else
   // Generic fallback: pure scalar for non-x86, non-ARM64 architectures
   for (int i = 0; i < 65536; i++) {
@@ -561,11 +593,15 @@ void RunHyperStress_Scalar(uint64_t seed, int complexity,
     g6 = g6 / ((g7 & 0xFFFFFFFF) | 1);
     idx = (idx + 16) & MASK;
   }
-  volatile double sink = r0 + r1 + r2 + r3 + r4 + r5 + r6 + r7 +
-                         r8 + r9 + r10 + r11 + r12 + r13 + r14 + r15 +
-                         (double)(g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7 ^
-                                  g8 ^ g9 ^ g10 ^ g11 ^ g12 ^ g13 ^ g14 ^ g15);
+  uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7 ^
+                  g8 ^ g9 ^ g10 ^ g11 ^ g12 ^ g13 ^ g14 ^ g15;
+  double final_val = r0 + r1 + r2 + r3 + r4 + r5 + r6 + r7 +
+                     r8 + r9 + r10 + r11 + r12 + r13 + r14 + r15 +
+                     (double)gint;
+  volatile double sink = final_val;
   (void)sink;
+  uint64_t bits; std::memcpy(&bits, &final_val, 8);
+  return bits ^ gint;
 #endif  // ARM64 vs x86/x64 vs generic
 }
 
@@ -573,8 +609,8 @@ void RunHyperStress_Scalar(uint64_t seed, int complexity,
 // AVX2 MAX POWER - 16 YMM registers
 // ============================================================================
 TARGET_AVX2
-void RunHyperStress_AVX2(uint64_t seed, int complexity,
-                         const StressConfig &config) {
+uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
+                             const StressConfig &config) {
   (void)config;
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__AVX2__) || defined(__clang__) || defined(__GNUC__))
   // Lazy heap allocation to avoid TLS bloat (saves 512KB per thread in binary)
@@ -606,7 +642,8 @@ void RunHyperStress_AVX2(uint64_t seed, int complexity,
   uint64_t g4 = seed + 4, g5 = seed + 5, g6 = seed + 6, g7 = seed + 7;
 
   int idx = 0;
-  const int MASK = 65535;
+  // Ensure 32-byte alignment for AVX2 (4 doubles = 32 bytes)
+  const int MASK = 65532;
   
   int iters = complexity * 180;
 
@@ -614,8 +651,8 @@ void RunHyperStress_AVX2(uint64_t seed, int complexity,
     if (g_App.quit) break;
     
     #define WORK(r, off) \
-      r = _mm256_fmadd_pd(r, mul, _mm256_load_pd(&memPtr[(idx + off) & MASK])); \
-      _mm256_store_pd(&memPtr[(idx + off + 512) & MASK], r)
+      r = _mm256_fmadd_pd(r, mul, _mm256_loadu_pd(&memPtr[(idx + off) & MASK])); \
+      _mm256_storeu_pd(&memPtr[(idx + off + 512) & MASK], r)
     
     WORK(r0, 0);   WORK(r1, 4);   WORK(r2, 8);   WORK(r3, 12);
     
@@ -661,10 +698,13 @@ void RunHyperStress_AVX2(uint64_t seed, int complexity,
   double out[4];
   _mm256_storeu_pd(out, sum);
   uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7;
-  volatile double sink = out[0] + out[1] + out[2] + out[3] + (double)gint;
+  double final_val = out[0] + out[1] + out[2] + out[3] + (double)gint;
+  volatile double sink = final_val;
   (void)sink;
+  uint64_t bits; std::memcpy(&bits, &final_val, 8);
+  return bits ^ gint;
 #else
-  RunHyperStress_Scalar(seed, complexity, config);
+  return RunHyperStress_Scalar(seed, complexity, config);
 #endif
 }
 
@@ -673,8 +713,8 @@ void RunHyperStress_AVX2(uint64_t seed, int complexity,
 // 512-bit vectors = 2x throughput of AVX2
 // ============================================================================
 TARGET_AVX512
-void RunHyperStress_AVX512(uint64_t seed, int complexity,
-                           const StressConfig &config) {
+uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
+                               const StressConfig &config) {
   (void)config;
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__AVX512F__) || defined(__clang__) || defined(__GNUC__)) && !defined(PLATFORM_MACOS)
   // Lazy heap allocation with proper 64-byte alignment, no TLS bloat
@@ -724,7 +764,8 @@ void RunHyperStress_AVX512(uint64_t seed, int complexity,
   uint64_t g4 = seed + 4, g5 = seed + 5, g6 = seed + 6, g7 = seed + 7;
 
   int idx = 0;
-  const int MASK = 65535;
+  // Ensure 64-byte alignment for AVX-512 (8 doubles = 64 bytes)
+  const int MASK = 65528;
   
   // Higher iteration count for 512-bit throughput
   int iters = complexity * 150;
@@ -734,8 +775,8 @@ void RunHyperStress_AVX512(uint64_t seed, int complexity,
     
     // 32 ZMM registers doing RMW - massive power!
     #define WORK(r, off) \
-      r = _mm512_fmadd_pd(r, mul, _mm512_load_pd(&memPtr[(idx + off) & MASK])); \
-      _mm512_store_pd(&memPtr[(idx + off + 512) & MASK], r)
+      r = _mm512_fmadd_pd(r, mul, _mm512_loadu_pd(&memPtr[(idx + off) & MASK])); \
+      _mm512_storeu_pd(&memPtr[(idx + off + 512) & MASK], r)
     
     WORK(r0, 0);   WORK(r1, 8);   WORK(r2, 16);  WORK(r3, 24);
     
@@ -789,22 +830,27 @@ void RunHyperStress_AVX512(uint64_t seed, int complexity,
   double out[8];
   _mm512_storeu_pd(out, sum);
   uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7;
-  volatile double sink = out[0] + out[1] + out[2] + out[3] + 
-                         out[4] + out[5] + out[6] + out[7] + (double)gint;
+  double final_val = out[0] + out[1] + out[2] + out[3] +
+                     out[4] + out[5] + out[6] + out[7] + (double)gint;
+  volatile double sink = final_val;
   (void)sink;
+  uint64_t bits; std::memcpy(&bits, &final_val, 8);
+  return bits ^ gint;
 #else
-  RunHyperStress_AVX2(seed, complexity, config);
+  return RunHyperStress_AVX2(seed, complexity, config);
 #endif
 }
 
 // --- Workload Dispatcher ---
-void UnsafeRunWorkload(uint64_t seed, int complexity,
-                       const StressConfig &config) {
+// noinline prevents LTO from inlining target-specific workloads into shared code
+__attribute__((noinline))
+uint64_t UnsafeRunWorkload(uint64_t seed, int complexity,
+                           const StressConfig &config) {
   if (g_App.quit)
-    return;
+    return 0;
 
   WorkloadType type = (WorkloadType)g_App.selectedWorkload.load();
-  
+
   if (type == WL_AUTO) {
       if (g_Cpu.hasAVX512F && !g_ForceNoAVX512) type = WL_AVX512;
       else if (g_Cpu.hasAVX2 && !g_ForceNoAVX2) type = WL_AVX2;
@@ -813,34 +859,30 @@ void UnsafeRunWorkload(uint64_t seed, int complexity,
 
   switch (type) {
     case WL_SCALAR:
-        RunHyperStress_Scalar(seed, complexity, config);
-        break;
+        return RunHyperStress_Scalar(seed, complexity, config);
     case WL_AVX2:
-        RunHyperStress_AVX2(seed, complexity, config);
-        break;
+        return RunHyperStress_AVX2(seed, complexity, config);
     case WL_AVX512:
-        RunHyperStress_AVX512(seed, complexity, config);
-        break;
+        return RunHyperStress_AVX512(seed, complexity, config);
     case WL_SCALAR_SIM:
-        RunRealisticCompilerSim_V3(seed, complexity, config);
-        break;
+        return RunRealisticCompilerSim_V3(seed, complexity, config);
     default:
-        RunRealisticCompilerSim_V3(seed, complexity, config);
-        break;
+        return RunRealisticCompilerSim_V3(seed, complexity, config);
   }
 }
 
-void SafeRunWorkload(uint64_t seed, int complexity, const StressConfig &config,
-                     int threadIdx) {
+uint64_t SafeRunWorkload(uint64_t seed, int complexity,
+                         const StressConfig &config, int threadIdx) {
 #if defined(_WIN32) && !defined(DISABLE_SEH)
   __try {
-    UnsafeRunWorkload(seed, complexity, config);
+    return UnsafeRunWorkload(seed, complexity, config);
   } __except (
       WriteCrashDump(GetExceptionInformation(), seed, complexity, threadIdx)) {
     ExitProcess(-1);
   }
+  return 0;
 #else
   (void)threadIdx;
-  UnsafeRunWorkload(seed, complexity, config);
+  return UnsafeRunWorkload(seed, complexity, config);
 #endif
 }

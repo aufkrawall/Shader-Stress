@@ -67,8 +67,9 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     // Auto-clipboard Check (polled during Paint for simplicity via Timer)
     static std::wstring s_lastHash;
     static uint64_t s_notifyTime = 0;
-    if (!g_App.benchHash.empty() && g_App.benchHash != s_lastHash) {
-      s_lastHash = g_App.benchHash;
+    std::wstring currentHash = g_App.GetBenchHash();
+    if (!currentHash.empty() && currentHash != s_lastHash) {
+      s_lastHash = currentHash;
 
       std::wstringstream ss;
       // Use thread-safe snapshot to avoid race conditions
@@ -244,11 +245,12 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     DrawTextW(s_memDC, part3.c_str(), -1, &tr, DT_LEFT | DT_NOCLIP);
 
     // Draw hash on right side (Moved left to avoid clipping)
-    if (g_App.mode == 0 && !g_App.benchHash.empty()) {
+    std::wstring paintHash = g_App.GetBenchHash();
+    if (g_App.mode == 0 && !paintHash.empty()) {
       SetTextColor(s_memDC, RGB(120, 200, 255)); // Light blue for hash
       // Moved from 610 to 480 to give more room
       RECT hashRect = {S(480), S(125), S(750), S(200)};
-      std::wstring hashLabel = L"Hash:\n" + g_App.benchHash;
+      std::wstring hashLabel = L"Hash:\n" + paintHash;
       DrawTextW(s_memDC, hashLabel.c_str(), -1, &hashRect, DT_LEFT | DT_NOCLIP);
     }
 
@@ -377,7 +379,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         newSel = WL_SCALAR_SIM;
 
       if (newSel != -1 && newSel != g_App.selectedWorkload) {
-        g_ConfigVersion++;
+        g_ConfigVersion.fetch_add(1, std::memory_order_release);
         g_App.selectedWorkload = newSel;
         g_App.Log(L"User changed ISA to: " + GetResolvedISAName(newSel));
         if (g_App.running) {
