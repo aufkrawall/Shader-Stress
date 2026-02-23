@@ -17,8 +17,41 @@
 constexpr int SPAWN_TIMEOUT_MS = 5000;
 constexpr int POLL_INTERVAL_US = 50000; // 50ms
 
+static std::vector<char*> BuildSpawnArgs(const char* launcher, bool needsHoldArg,
+                                         int argc, char* argv[]) {
+    std::vector<char*> args;
+    args.reserve(static_cast<size_t>(argc) + 6);
+    args.push_back(const_cast<char*>(launcher));
+    if (needsHoldArg) {
+        args.push_back(const_cast<char*>("--hold"));
+        args.push_back(const_cast<char*>("-e"));
+    } else {
+        args.push_back(const_cast<char*>("--"));
+    }
+    args.push_back(argv[0]);
+    for (int i = 1; i < argc; ++i) {
+        args.push_back(argv[i]);
+    }
+    args.push_back(nullptr);
+    return args;
+}
+
+static std::vector<char*> BuildOpenVtArgs(int argc, char* argv[]) {
+    std::vector<char*> args;
+    args.reserve(static_cast<size_t>(argc) + 7);
+    args.push_back(const_cast<char*>("openvt"));
+    args.push_back(const_cast<char*>("-s"));
+    args.push_back(const_cast<char*>("-w"));
+    args.push_back(const_cast<char*>("--"));
+    args.push_back(argv[0]);
+    for (int i = 1; i < argc; ++i) {
+        args.push_back(argv[i]);
+    }
+    args.push_back(nullptr);
+    return args;
+}
+
 static bool TrySpawnInTerminalEmulator(int argc, char* argv[]) {
-    const char* selfPath = argv[0];
     const char* display = getenv("DISPLAY");
     const char* wayland = getenv("WAYLAND_DISPLAY");
 
@@ -51,11 +84,8 @@ static bool TrySpawnInTerminalEmulator(int argc, char* argv[]) {
                 close(devNull);
             }
             
-            if (term.needsHoldArg) {
-                execlp(term.cmd, term.cmd, "--hold", "-e", selfPath, (char*)NULL);
-            } else {
-                execlp(term.cmd, term.cmd, "--", selfPath, (char*)NULL);
-            }
+            auto termArgs = BuildSpawnArgs(term.cmd, term.needsHoldArg, argc, argv);
+            execvp(term.cmd, termArgs.data());
             // If we get here, execlp failed
             _exit(127);
         } else if (pid > 0) {
@@ -97,14 +127,13 @@ static bool TrySpawnInTerminalEmulator(int argc, char* argv[]) {
 }
 
 static bool TrySpawnInVirtualTerminal(int argc, char* argv[]) {
-    const char* selfPath = argv[0];
-
     for (int vt = 1; vt <= 12; ++vt) {
         pid_t pid = fork();
         if (pid == 0) {
             // Child
             setsid();
-            execlp("openvt", "openvt", "-s", "-w", "--", selfPath, (char*)NULL);
+            auto openVtArgs = BuildOpenVtArgs(argc, argv);
+            execvp("openvt", openVtArgs.data());
             _exit(127);
         } else if (pid > 0) {
             // Parent: wait with timeout

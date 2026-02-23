@@ -121,18 +121,19 @@ static inline uint64_t SafeTZCNT(uint64_t x) {
 #define ALWAYS_INLINE __attribute__((always_inline)) inline
 #endif
 
-using namespace std::chrono_literals;
-
 extern const std::wstring APP_VERSION;
 // Numeric version for hash encoding
-static const uint8_t APP_VERSION_MAJOR = 3;
-static const uint8_t APP_VERSION_MINOR = 5;
-static const uint8_t APP_VERSION_PATCH = 1;
+constexpr uint8_t APP_VERSION_MAJOR = 3;
+constexpr uint8_t APP_VERSION_MINOR = 5;
+constexpr uint8_t APP_VERSION_PATCH = 2;
 
 constexpr uint64_t GOLDEN_RATIO = 0x9E3779B97F4A7C15ull;
 constexpr size_t IO_CHUNK_SIZE = 256 * 1024;
 constexpr size_t IO_FILE_SIZE = 512 * 1024 * 1024;
 constexpr int BENCHMARK_DURATION_SEC = 180;
+// Complexity used for the periodic golden-value verification check.
+// Higher = more execution-unit pressure = better error sensitivity.
+constexpr int VERIFY_COMPLEXITY = 1000;
 
 struct ScopedHandle {
 #ifdef PLATFORM_WINDOWS
@@ -152,6 +153,8 @@ struct ScopedHandle {
   }
   operator int() const { return fd; }
 #endif
+  ScopedHandle(const ScopedHandle&) = delete;
+  ScopedHandle& operator=(const ScopedHandle&) = delete;
 };
 
 struct ScopedMem {
@@ -275,6 +278,8 @@ enum WorkloadType {
 };
 
 std::wstring GetResolvedISAName(int workloadSel);
+WorkloadType NormalizeWorkloadSelection(WorkloadType requested);
+WorkloadType ResolveSelectedWorkload(int workloadSel);
 
 // Apply configuration based on selected workload (for MAX POWER modes)
 void ApplyWorkloadConfig(int workloadSel);
@@ -295,7 +300,6 @@ struct AppState {
 
   // Statistics counters
   std::atomic<uint64_t> shaders{0};
-  std::atomic<uint64_t> totalNodes{0};
   std::atomic<uint64_t> errors{0};
   std::atomic<uint64_t> elapsed{0};
   std::atomic<uint64_t> currentRate{0};
@@ -307,7 +311,6 @@ struct AppState {
       true}; // Stop and idle after 3min benchmark
 
   std::atomic<uint64_t> maxDuration{0};
-  std::wstring sigStatus;
   std::wstring benchHash; // Generated hash for benchmark validation
   static constexpr size_t MAX_LOG_HISTORY = 1000;
   std::deque<std::wstring> logHistory;
@@ -337,6 +340,9 @@ inline int S(int v) { return (int)(v * g_Scale); }
 
 void DisablePowerThrottling();
 void PinThreadToCore(int coreIdx);
+// Sets MXCSR FTZ+DAZ bits on x86-64 for consistent FP behaviour (no-op on ARM64).
+// Call once per thread, and in the main thread before InitGoldenValues().
+void SetFpuFlushMode();
 
 struct alignas(64) HotNode {
   float fRegs[16];
@@ -384,8 +390,7 @@ struct ThreadWrapper {
 enum class WorkerState {
   Idle = 0,
   Running = 1,
-  Terminating = 2,
-  Stopped = 3
+  Stopped = 2
 };
 
 struct alignas(64) Worker {
@@ -393,8 +398,10 @@ struct alignas(64) Worker {
   std::atomic<uint64_t> localShaders{0};
   std::atomic<uint64_t> lastTick{0};
   std::atomic<WorkerState> state{WorkerState::Idle};
-  uint8_t pad[64 - sizeof(std::atomic<WorkerState>)];
+  // alignas(64) pads the struct to exactly 64 bytes (one cache line).
+  // No explicit padding needed.
 };
+static_assert(sizeof(Worker) == 64, "Worker must be exactly one cache line");
 
 extern std::vector<std::unique_ptr<Worker>> g_Workers;
 extern std::vector<std::unique_ptr<Worker>> g_IOThreads;

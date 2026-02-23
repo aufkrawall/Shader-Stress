@@ -73,22 +73,21 @@ CpuFeatures GetCpuInfo() {
   unsigned int maxFunc = eax;
 
   // Detect CPU family and model for tuning
-  // Intel signature: ebx = vendor (GenuineIntel=0x756E6547)
-  // AMD signature: ebx = vendor (AuthenticAMD=0x68747541)
+  // Decode family/model from CPUID leaf 1 signature (EAX).
+  // This follows Intel/AMD architectural encoding and avoids vendor-string
+  // dependency mistakes.
   if (maxFunc >= 1) {
     __get_cpuid(1, &eax, &ebx, &ecx, &edx);
-    f.family = (eax >> 8) & 0xF;
-    f.model = ((eax >> 12) & 0xF0) | ((eax >> 4) & 0xF);
-    
-    // Extended family for AMD
-    if (ebx == 0x68747541 || ebx == 0x69746E65 || ebx == 0x746E6541) {
-      // AMD signature detected
-      unsigned int eax_ext;
-      if (__get_cpuid(0x80000000, &eax_ext, &ebx, &ecx, &edx) && eax_ext >= 0x80000001) {
-        unsigned int extFamily = (eax_ext >> 20) & 0xFF;
-        f.family += extFamily;  // Extended family
-      }
-    }
+    const unsigned int signature = eax;
+    const unsigned int baseFamily = (signature >> 8) & 0xF;
+    const unsigned int baseModel = (signature >> 4) & 0xF;
+    const unsigned int extFamily = (signature >> 20) & 0xFF;
+    const unsigned int extModel = (signature >> 16) & 0xF;
+    f.family =
+        (baseFamily == 0xF) ? (int)(baseFamily + extFamily) : (int)baseFamily;
+    f.model = (int)baseModel;
+    if (baseFamily == 0x6 || baseFamily == 0xF)
+      f.model |= (int)(extModel << 4);
     
     f.hasFMA = (ecx & (1 << 12)) != 0;
     bool osxsave = (ecx & (1 << 27)) != 0;

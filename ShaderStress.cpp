@@ -3,12 +3,14 @@
 // Linux/macOS: main() with CLI
 #include "Common.h"
 #include "TerminalUtils.h"
+using namespace std::chrono_literals;
 
 // Map ISA menu selection (1-5) to WorkloadType enum
 // Menu:  1=Auto, 2=AVX-512, 3=AVX2, 4=Scalar(synthetic), 5=Scalar(realistic)
 // Enum:  WL_AUTO=0, WL_SCALAR=1, WL_AVX2=2, WL_AVX512=3, WL_SCALAR_SIM=4
-static int MapISASelection(int menuChoice) {
-  constexpr int map[] = {WL_AUTO, WL_AUTO, WL_AVX512, WL_AVX2, WL_SCALAR, WL_SCALAR_SIM};
+static WorkloadType MapISASelection(int menuChoice) {
+  constexpr WorkloadType map[] = {WL_AUTO, WL_AUTO, WL_AVX512, WL_AVX2,
+                                  WL_SCALAR, WL_SCALAR_SIM};
   if (menuChoice >= 1 && menuChoice <= 5) return map[menuChoice];
   return WL_AUTO;
 }
@@ -32,7 +34,6 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
   g_App.LogRaw(L"Architecture: " + GetArchName());
 
   g_Cpu = GetCpuInfo();
-  g_App.sigStatus = g_Cpu.name;
 
   int argc = 0;
   LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -95,6 +96,7 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     return 0;
   }
 
+  SetFpuFlushMode(); // Must be called before InitGoldenValues for consistent FP state
   InitGoldenValues();
 
   // Full CLI mode (pseudo-GUI like Linux/macOS)
@@ -190,7 +192,7 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
               << "4. Scalar (synthetic)\n"
               << "5. Scalar (realistic)\n";
     int isaSel = AskInput("ISA", isaDef, 1, 5);
-    g_App.selectedWorkload = MapISASelection(isaSel);
+    g_App.selectedWorkload = NormalizeWorkloadSelection(MapISASelection(isaSel));
 
     DetectBestConfig();
 
@@ -312,7 +314,7 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
 
         // Check if time expired
         if (g_App.maxDuration > 0) {
-          int remaining = g_App.maxDuration - (int)(g_App.elapsed / 1000);
+          int remaining = (int)g_App.maxDuration - (int)g_App.elapsed;
           if (remaining <= 0)
             break;
         }
@@ -370,8 +372,14 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
   // RAM/IO threads spawned dynamically in SetWork
 
   if (g_Repro.active) {
-    g_App.Log(L"Repro Mode Active. Running workload...");
-    std::this_thread::sleep_for(11s);
+    g_App.Log(L"Repro Mode: seed=" + std::to_wstring(g_Repro.seed) +
+              L" complexity=" + std::to_wstring(g_Repro.complexity));
+    StressConfig reproCfg;
+    {
+      std::lock_guard<std::mutex> lk(g_ConfigMtx);
+      reproCfg = g_ActiveConfig;
+    }
+    SafeRunWorkload(g_Repro.seed, g_Repro.complexity, reproCfg, 0);
     g_App.Log(L"Repro finished without crash.");
     goto cleanup;
   }
@@ -520,7 +528,6 @@ int main(int argc, char *argv[]) {
   InstallCrashHandlers();
 
   g_Cpu = GetCpuInfo();
-  g_App.sigStatus = g_Cpu.name;
   g_App.LogRaw(L"CPU: " + g_Cpu.brand);
 
   // Print startup info to console
@@ -541,7 +548,7 @@ int main(int argc, char *argv[]) {
     if (strcmp(argv[i], "--benchmark") == 0) {
       g_App.mode = 0;
       g_App.selectedWorkload =
-          WL_SCALAR; // Force scalar MAX POWER for benchmark
+          WL_SCALAR_SIM; // Force scalar realistic for benchmark
       duration = 180;
       batchMode = true;
     }
@@ -554,9 +561,8 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  SetFpuFlushMode(); // Must be called before InitGoldenValues for consistent FP state
   InitGoldenValues();
-
-  // Interactive Menu (if not in batch mode via args)
   if (!batchMode) {
     std::cout << "\nSelect Mode:\n"
               << "1. Dynamic\n"
@@ -566,7 +572,7 @@ int main(int argc, char *argv[]) {
     int modeSel = AskInput("Mode", 1, 1, 4);
 
     if (modeSel == 4) { // Verify Hash
-      std::cout << "\nEnter hash to verify (format: SS3-XXXXXXXXXXX): ";
+      std::cout << "\nEnter hash to verify (format: SS3-XXXXXXXXXXXXXXXX): ";
       std::string hashInput;
       std::cin >> hashInput;
       std::wstring whash(hashInput.begin(), hashInput.end());
@@ -617,7 +623,7 @@ int main(int argc, char *argv[]) {
                 << "4. Scalar (synthetic)\n"
                 << "5. Scalar (realistic)\n";
       int isaSel = AskInput("ISA", isaDef, 1, 5);
-      g_App.selectedWorkload = MapISASelection(isaSel);
+      g_App.selectedWorkload = NormalizeWorkloadSelection(MapISASelection(isaSel));
     } else {
       g_App.mode = (modeSel == 1) ? 2 : 1; // 1->Dynamic(2), 2->Steady(1)
 
@@ -630,7 +636,7 @@ int main(int argc, char *argv[]) {
       int isaDef = 1;
       int isaSel = AskInput("ISA", isaDef, 1, 5);
 
-      g_App.selectedWorkload = MapISASelection(isaSel);
+      g_App.selectedWorkload = NormalizeWorkloadSelection(MapISASelection(isaSel));
     }
   }
 
@@ -707,7 +713,7 @@ int main(int argc, char *argv[]) {
     std::wcout << L"Time: " << FmtTime(g_App.elapsed) << L"\n";
 
     if (g_App.mode == 2) {
-      std::wcout << L"Phase: " << g_App.currentPhase << L" / 15\n";
+      std::wcout << L"Phase: " << g_App.currentPhase << L" / 16\n";
       std::wcout << L"Loop: " << g_App.loops << L"\n";
     } else if (g_App.mode == 0) {
       std::wcout << L"\n--- Benchmark Rounds ---\n";

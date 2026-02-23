@@ -1,7 +1,7 @@
 // Common.cpp - Global variable definitions and utility function implementations
 #include "Common.h"
 
-const std::wstring APP_VERSION = L"3.5.1";
+const std::wstring APP_VERSION = L"3.5.2";
 
 // --- Global Variables ---
 CpuFeatures g_Cpu;
@@ -69,16 +69,46 @@ std::wstring GetArchName() {
 #endif
 }
 
-std::wstring GetResolvedISAName(int workloadSel) {
-  WorkloadType type = (WorkloadType)workloadSel;
-  if (type == WL_AUTO) {
-    if (g_Cpu.hasAVX512F && !g_ForceNoAVX512)
-      type = WL_AVX512;
-    else if (g_Cpu.hasAVX2 && !g_ForceNoAVX2)
-      type = WL_AVX2;
-    else
-      type = WL_SCALAR; // Default to Synthetic Scalar for max power
+static bool HasUsableAVX2() {
+  return g_Cpu.hasAVX2 && g_Cpu.hasFMA && !g_ForceNoAVX2;
+}
+
+static bool HasUsableAVX512() { return g_Cpu.hasAVX512F && !g_ForceNoAVX512; }
+
+WorkloadType NormalizeWorkloadSelection(WorkloadType requested) {
+  switch (requested) {
+  case WL_AUTO:
+  case WL_SCALAR:
+  case WL_SCALAR_SIM:
+    return requested;
+  case WL_AVX512:
+    if (HasUsableAVX512())
+      return WL_AVX512;
+    if (HasUsableAVX2())
+      return WL_AVX2;
+    return WL_SCALAR;
+  case WL_AVX2:
+    return HasUsableAVX2() ? WL_AVX2 : WL_SCALAR;
+  default:
+    return WL_SCALAR;
   }
+}
+
+WorkloadType ResolveSelectedWorkload(int workloadSel) {
+  WorkloadType requested =
+      NormalizeWorkloadSelection((WorkloadType)workloadSel);
+  if (requested == WL_AUTO) {
+    if (HasUsableAVX512())
+      return WL_AVX512;
+    if (HasUsableAVX2())
+      return WL_AVX2;
+    return WL_SCALAR;
+  }
+  return requested;
+}
+
+std::wstring GetResolvedISAName(int workloadSel) {
+  WorkloadType type = ResolveSelectedWorkload(workloadSel);
 
   switch (type) {
   case WL_SCALAR:
@@ -220,19 +250,6 @@ void DetectBestConfig() {
 }
 
 // --- Golden Value Initialization ---
-static WorkloadType ResolveWorkloadType(int sel) {
-  WorkloadType type = (WorkloadType)sel;
-  if (type == WL_AUTO) {
-    if (g_Cpu.hasAVX512F && !g_ForceNoAVX512)
-      type = WL_AVX512;
-    else if (g_Cpu.hasAVX2 && !g_ForceNoAVX2)
-      type = WL_AVX2;
-    else
-      type = WL_SCALAR;
-  }
-  return type;
-}
-
 void InitGoldenValues() {
   StressConfig defaultCfg;
   defaultCfg.fma_intensity = 8;
@@ -246,21 +263,17 @@ void InitGoldenValues() {
   defaultCfg.cache_stride = 32768;
 
   // Compute golden values for each workload type
-  g_Golden.values[WL_SCALAR] = RunHyperStress_Scalar(42, 100, defaultCfg);
+  g_Golden.values[WL_SCALAR] = RunHyperStress_Scalar(42, VERIFY_COMPLEXITY, defaultCfg);
   g_Golden.values[WL_SCALAR_SIM] =
-      RunRealisticCompilerSim_V3(42, 100, defaultCfg);
+      RunRealisticCompilerSim_V3(42, VERIFY_COMPLEXITY, defaultCfg);
 
-  if (g_Cpu.hasAVX2 && !g_ForceNoAVX2)
-    g_Golden.values[WL_AVX2] = RunHyperStress_AVX2(42, 100, defaultCfg);
+  if (g_Cpu.hasAVX2 && g_Cpu.hasFMA && !g_ForceNoAVX2)
+    g_Golden.values[WL_AVX2] = RunHyperStress_AVX2(42, VERIFY_COMPLEXITY, defaultCfg);
   if (g_Cpu.hasAVX512F && !g_ForceNoAVX512)
-    g_Golden.values[WL_AVX512] = RunHyperStress_AVX512(42, 100, defaultCfg);
+    g_Golden.values[WL_AVX512] = RunHyperStress_AVX512(42, VERIFY_COMPLEXITY, defaultCfg);
 
   g_Golden.initialized = true;
 }
-
-// --- Benchmark Hash Validation ---
-// Encoding scheme: SS3-XXXXXXXXXXX (11 char Base62 hash)
-// Layout: [OS:2][ARCH:2][CPUHASH:8][R0:16][R1:16][R2:16][CHECK:8] = 68 bits
 
 // --- Benchmark Hash Validation ---
 // Encoding scheme: SS3-XXXXXXXXXXXXXXXX (16 char Base62 hash)

@@ -9,6 +9,7 @@ HBRUSH g_BgBrush = nullptr;
 HBRUSH g_BtnActive = nullptr;
 HBRUSH g_BtnInactive = nullptr;
 HBRUSH g_BtnDisabled = nullptr;
+static HBRUSH s_EditBrush = nullptr;
 
 // Backbuffer resources
 static HDC s_memDC = nullptr;
@@ -25,6 +26,7 @@ void InitGDI() {
   g_BtnActive = CreateSolidBrush(RGB(60, 100, 160));
   g_BtnInactive = CreateSolidBrush(RGB(50, 50, 50));
   g_BtnDisabled = CreateSolidBrush(RGB(30, 30, 30));
+  s_EditBrush = CreateSolidBrush(RGB(40, 40, 40));
 }
 
 void CleanupGDI() {
@@ -33,6 +35,7 @@ void CleanupGDI() {
   DeleteObject(g_BtnActive);
   DeleteObject(g_BtnInactive);
   DeleteObject(g_BtnDisabled);
+  DeleteObject(s_EditBrush);
 }
 
 LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -187,7 +190,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         FmtNum(g_App.currentRate) + L"\nTime: " + FmtTime(g_App.elapsed);
 
     if (g_App.mode == 2) {
-      part1 += L"\nPhase: " + std::to_wstring(g_App.currentPhase) + L" / 15";
+      part1 += L"\nPhase: " + std::to_wstring(g_App.currentPhase) + L" / 16";
       part1 += L"\nLoop: " + std::to_wstring(g_App.loops);
     } else if (g_App.mode == 0) {
       part1 += L"\n\n--- Benchmark Rounds (60s each) ---";
@@ -312,7 +315,6 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       auto ResetState = []() {
         g_App.shaders = 0;
         g_App.elapsed = 0;
-        g_App.totalNodes = 0;
         g_App.loops = 0;
         g_App.currentPhase = 0;
         for (auto &w : g_Workers)
@@ -339,7 +341,6 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         g_App.Log(L"Mode changed to: " + modeName);
 
         // When switching to Benchmark, default to Realistic if currently on Auto
-        // But allow user to manually select other workloads
         if (newMode == 0 && g_App.selectedWorkload == WL_AUTO) {
           g_App.selectedWorkload = WL_SCALAR_SIM;
           g_App.Log(L"Benchmark: Defaulting to " +
@@ -468,8 +469,7 @@ LRESULT CALLBACK HashDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     HDC hdc = (HDC)wParam;
     SetTextColor(hdc, RGB(200, 200, 200));
     SetBkColor(hdc, RGB(40, 40, 40));
-    static HBRUSH editBrush = CreateSolidBrush(RGB(40, 40, 40));
-    return (LRESULT)editBrush;
+    return (LRESULT)s_EditBrush;
   }
   case WM_CTLCOLORBTN: {
     return (LRESULT)g_BtnInactive;
@@ -495,7 +495,7 @@ LRESULT CALLBACK HashDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
 
     // Input label
     RECT labelRect = {S(20), S(40), S(380), S(60)};
-    DrawTextW(ps.hdc, L"Enter hash (format: SS3-XXXXXXXXXXX):", -1, &labelRect,
+    DrawTextW(ps.hdc, L"Enter hash (format: SS3-XXXXXXXXXXXXXXXX):", -1, &labelRect,
               DT_LEFT);
 
     // Result area - extended to show all content

@@ -1,5 +1,6 @@
 // Threading.cpp - Worker threads, IO stress, RAM stress, Dynamic mode, Watchdog
 #include "Common.h"
+using namespace std::chrono_literals;
 
 #if !defined(PLATFORM_WINDOWS)
 #include <signal.h>
@@ -144,28 +145,32 @@ static void RunCompilerLogic(int idx, Worker &w) {
 #endif
   SafeRunWorkload(seed, complexity, jobCfg, idx);
   uint64_t localCount = w.localShaders.fetch_add(1, std::memory_order_relaxed);
-  g_App.totalNodes.fetch_add(complexity, std::memory_order_relaxed);
 
-  // Periodic golden-value verification for CPU error detection
-  if (g_Golden.initialized && (localCount % 200) == 0) {
+  // Periodic golden-value verification for CPU error detection.
+  // Resolve the workload type ONCE so the dispatch and the expected-value
+  // lookup are guaranteed to match (avoids a race if the user changes the
+  // selected workload between two atomic reads).
+  int mode = g_App.mode.load(std::memory_order_relaxed);
+  const uint64_t verifyInterval = (mode == 0) ? 64ull : 128ull;
+  const int verifyComplexity = VERIFY_COMPLEXITY;
+  if (g_Golden.initialized && (localCount % verifyInterval) == 0) {
     StressConfig verifyCfg;
     verifyCfg.fma_intensity = 8;
     verifyCfg.int_intensity = 2;
     verifyCfg.div_intensity = 1;
-    WorkloadType type = (WorkloadType)g_App.selectedWorkload.load();
-    if (type == WL_AUTO) {
-      if (g_Cpu.hasAVX512F && !g_ForceNoAVX512)
-        type = WL_AVX512;
-      else if (g_Cpu.hasAVX2 && !g_ForceNoAVX2)
-        type = WL_AVX2;
-      else
-        type = WL_SCALAR;
+    WorkloadType type = ResolveSelectedWorkload(g_App.selectedWorkload.load());
+    uint64_t got;
+    switch (type) {
+    case WL_AVX512:  got = RunHyperStress_AVX512(42, verifyComplexity, verifyCfg); break;
+    case WL_AVX2:    got = RunHyperStress_AVX2(42, verifyComplexity, verifyCfg);   break;
+    case WL_SCALAR_SIM: got = RunRealisticCompilerSim_V3(42, verifyComplexity, verifyCfg); break;
+    default:         got = RunHyperStress_Scalar(42, verifyComplexity, verifyCfg); break;
     }
-    uint64_t got = UnsafeRunWorkload(42, 100, verifyCfg);
     uint64_t expected = g_Golden.values[type];
     if (got != expected) {
       g_App.errors.fetch_add(1, std::memory_order_relaxed);
       g_App.Log(L"CPU ERROR detected on thread " + std::to_wstring(idx) +
+                L" [" + GetResolvedISAName(type) + L"]" +
                 L" (expected " + std::to_wstring(expected) + L", got " +
                 std::to_wstring(got) + L")");
     }
@@ -205,9 +210,7 @@ static void RunDecompressLogic(int idx, Worker &w) {
 void WorkerThread(int idx) {
   DisablePowerThrottling();
   PinThreadToCore(idx);
-#if !defined(PLATFORM_WINDOWS) && (defined(__x86_64__) || defined(_M_X64))
-  _mm_setcsr(_mm_getcsr() | 0x8040); // FTZ (bit 15) + DAZ (bit 6)
-#endif
+  SetFpuFlushMode();
 #if !defined(PLATFORM_WINDOWS)
   t_threadIdx = idx;
 #endif
@@ -248,9 +251,7 @@ void WorkerThread(int idx) {
 
 void IOThread(int ioIdx) {
   DisablePowerThrottling();
-#if !defined(PLATFORM_WINDOWS) && (defined(__x86_64__) || defined(_M_X64))
-  _mm_setcsr(_mm_getcsr() | 0x8040); // FTZ (bit 15) + DAZ (bit 6)
-#endif
+  SetFpuFlushMode();
   auto &w = *g_IOThreads[ioIdx];
 
   wchar_t path[MAX_PATH];
@@ -265,18 +266,22 @@ void IOThread(int ioIdx) {
 
   while (!w.terminate) {
     if (!g_App.ioActive && !g_Repro.active) {
-      std::this_thread::sleep_for(100ms);
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
       continue;
     }
 
     // Create temp file on first activation (deferred from startup)
     if (!fileCreated) {
-      std::string fpathNarrow(fpath.begin(), fpath.end());
-      std::ofstream f(fpathNarrow, std::ios::binary);
-      std::vector<char> junk(1024 * 1024, 'x');
-      for (int i = 0; i < (IO_FILE_SIZE / (1024 * 1024)); ++i)
-        f.write(junk.data(), junk.size());
-      f.close();
+      // Use CreateFileW to avoid narrow-string conversion (handles non-ASCII paths)
+      HANDLE hCreate = CreateFileW(fpath.c_str(), GENERIC_WRITE, 0, nullptr,
+                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+      if (hCreate != INVALID_HANDLE_VALUE) {
+        std::vector<char> junk(1024 * 1024, 'x');
+        DWORD written;
+        for (int i = 0; i < (IO_FILE_SIZE / (1024 * 1024)); ++i)
+          WriteFile(hCreate, junk.data(), (DWORD)junk.size(), &written, nullptr);
+        CloseHandle(hCreate);
+      }
 
       hFile = CreateFileW(fpath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                           OPEN_EXISTING, FILE_FLAG_NO_BUFFERING, nullptr);
@@ -284,7 +289,12 @@ void IOThread(int ioIdx) {
     }
 
     if (hFile == INVALID_HANDLE_VALUE) {
-      std::this_thread::sleep_for(1s);
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+      continue;
+    }
+
+    if (!buf) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
       continue;
     }
 
@@ -311,9 +321,7 @@ void IOThread(int ioIdx) {
 
 void RAMThread() {
   DisablePowerThrottling();
-#if !defined(PLATFORM_WINDOWS) && (defined(__x86_64__) || defined(_M_X64))
-  _mm_setcsr(_mm_getcsr() | 0x8040); // FTZ (bit 15) + DAZ (bit 6)
-#endif
+  SetFpuFlushMode();
   auto &w = g_RAM;
   std::mt19937_64 rng(GetTick());
 
@@ -372,9 +380,7 @@ void RAMThread() {
 #include <unistd.h>
 
 void IOThread(int ioIdx) {
-#if !defined(PLATFORM_WINDOWS) && (defined(__x86_64__) || defined(_M_X64))
-  _mm_setcsr(_mm_getcsr() | 0x8040); // FTZ (bit 15) + DAZ (bit 6)
-#endif
+  SetFpuFlushMode();
   auto &w = *g_IOThreads[ioIdx];
 
   std::string fpath = "/tmp/stress_" + std::to_string(ioIdx) + ".tmp";
@@ -386,7 +392,7 @@ void IOThread(int ioIdx) {
 
   while (!w.terminate) {
     if (!g_App.ioActive && !g_Repro.active) {
-      std::this_thread::sleep_for(100ms);
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
       continue;
     }
 
@@ -412,7 +418,12 @@ void IOThread(int ioIdx) {
     }
 
     if (hFile == -1) {
-      std::this_thread::sleep_for(1s);
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+      continue;
+    }
+
+    if (!buf) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
       continue;
     }
 
@@ -437,9 +448,7 @@ void IOThread(int ioIdx) {
 }
 
 void RAMThread() {
-#if !defined(PLATFORM_WINDOWS) && (defined(__x86_64__) || defined(_M_X64))
-  _mm_setcsr(_mm_getcsr() | 0x8040); // FTZ (bit 15) + DAZ (bit 6)
-#endif
+  SetFpuFlushMode();
   auto &w = g_RAM;
   std::mt19937_64 rng(GetTick());
 
@@ -931,6 +940,7 @@ void Watchdog() {
       if (g_App.maxDuration.load() > 0 && runStart > 0) {
         if ((now - runStart) / 1000 >= g_App.maxDuration.load()) {
           g_App.running = false;
+          g_App.quit = true;
           g_App.Log(L"Max duration reached. Stopping.");
 #ifdef PLATFORM_WINDOWS
           if (g_MainWindow)

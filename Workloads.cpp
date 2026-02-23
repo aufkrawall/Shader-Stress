@@ -3,15 +3,20 @@
 #include <cstring>
 #include <vector>
 
-// Thread-local work buffer - 8 bytes TLS, 512KB+ heap, manually aligned
+struct WorkBufferTls {
+    std::unique_ptr<char[]> raw;
+    double* aligned = nullptr;
+};
+
+// Thread-local work buffer - heap-backed and reclaimed at thread exit.
 inline double* GetWorkBuffer() {
-    static thread_local char* raw = nullptr;
-    static thread_local double* aligned_buf = nullptr;
-    if (aligned_buf == nullptr) {
-        raw = new char[65536 * sizeof(double) + 64];
-        aligned_buf = (double*)(((uintptr_t)raw + 63) & ~(uintptr_t)63);
+    static thread_local WorkBufferTls tls;
+    if (tls.aligned == nullptr) {
+        tls.raw = std::make_unique<char[]>(65536 * sizeof(double) + 64);
+        tls.aligned = reinterpret_cast<double*>(
+            (reinterpret_cast<uintptr_t>(tls.raw.get()) + 63u) & ~uintptr_t(63u));
     }
-    return aligned_buf;
+    return tls.aligned;
 }
 
 // SSE2 intrinsics for x86/x64 only
@@ -131,10 +136,16 @@ uint64_t RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
   // Windows PE TLS ignores alignas() beyond 16 bytes, causing vmovdqa crashes
   // when the v3 build auto-vectorizes init loops with 256-bit aligned stores.
   struct RealisticBufs {
-    char* treeRaw;    FakeAstNode* tree;
-    char* tableRaw;   HashEntry* tableEntries;
-    char* poolRaw;    char* stringPool;
-    char* liveRaw;    uint64_t* liveIn; uint64_t* liveOut; uint64_t* liveKill;
+    std::unique_ptr<char[]> treeRaw;
+    FakeAstNode* tree = nullptr;
+    std::unique_ptr<char[]> tableRaw;
+    HashEntry* tableEntries = nullptr;
+    std::unique_ptr<char[]> poolRaw;
+    char* stringPool = nullptr;
+    std::unique_ptr<char[]> liveRaw;
+    uint64_t* liveIn = nullptr;
+    uint64_t* liveOut = nullptr;
+    uint64_t* liveKill = nullptr;
   };
   static thread_local RealisticBufs bufs = {};
 
@@ -146,24 +157,32 @@ uint64_t RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
   auto& liveKill = bufs.liveKill;
 
   if (!tree) {
-    bufs.treeRaw = new char[TREE_NODES * sizeof(FakeAstNode) + 64];
-    tree = (FakeAstNode*)(((uintptr_t)bufs.treeRaw + 63) & ~(uintptr_t)63);
+    bufs.treeRaw = std::make_unique<char[]>(TREE_NODES * sizeof(FakeAstNode) + 64);
+    tree = reinterpret_cast<FakeAstNode*>(
+        (reinterpret_cast<uintptr_t>(bufs.treeRaw.get()) + 63u) &
+        ~uintptr_t(63u));
   }
   if (!tableEntries) {
-    bufs.tableRaw = new char[HASH_BUCKETS * sizeof(HashEntry) + 64];
-    tableEntries = (HashEntry*)(((uintptr_t)bufs.tableRaw + 63) & ~(uintptr_t)63);
+    bufs.tableRaw = std::make_unique<char[]>(HASH_BUCKETS * sizeof(HashEntry) + 64);
+    tableEntries = reinterpret_cast<HashEntry*>(
+        (reinterpret_cast<uintptr_t>(bufs.tableRaw.get()) + 63u) &
+        ~uintptr_t(63u));
   }
   if (!stringPool) {
-    bufs.poolRaw = new char[STRING_POOL_SIZE + 64];
-    stringPool = (char*)(((uintptr_t)bufs.poolRaw + 63) & ~(uintptr_t)63);
+    bufs.poolRaw = std::make_unique<char[]>(STRING_POOL_SIZE + 64);
+    stringPool = reinterpret_cast<char *>(
+        (reinterpret_cast<uintptr_t>(bufs.poolRaw.get()) + 63u) &
+        ~uintptr_t(63u));
   }
   if (!liveIn) {
     constexpr size_t LIVE_BYTES = BITVEC_WORDS * sizeof(uint64_t);
-    bufs.liveRaw = new char[3 * LIVE_BYTES + 64];
-    char* base = (char*)(((uintptr_t)bufs.liveRaw + 63) & ~(uintptr_t)63);
-    liveIn  = (uint64_t*)(base);
-    liveOut = (uint64_t*)(base + LIVE_BYTES);
-    liveKill= (uint64_t*)(base + 2 * LIVE_BYTES);
+    bufs.liveRaw = std::make_unique<char[]>(3 * LIVE_BYTES + 64);
+    char* base = reinterpret_cast<char *>(
+        (reinterpret_cast<uintptr_t>(bufs.liveRaw.get()) + 63u) &
+        ~uintptr_t(63u));
+    liveIn  = reinterpret_cast<uint64_t*>(base);
+    liveOut = reinterpret_cast<uint64_t*>(base + LIVE_BYTES);
+    liveKill= reinterpret_cast<uint64_t*>(base + 2 * LIVE_BYTES);
   }
 
   for (size_t i = 0; i < STRING_POOL_SIZE; ++i)
@@ -349,12 +368,11 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   int iters = complexity * 280;
   
   for (int i = 0; i < iters; ++i) {
-    if (g_App.quit) break;
+    if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) break;
     
-    // NEON: 2-wide RMW operations
+    // NEON: FMA read-modify-write (r = r*mul + mem[off])
     #define NEON_WORK(r, off) \
-      r = vmulq_f64(r, mul); \
-      r = vaddq_f64(r, vld1q_f64(&memPtr[(idx + off) & MASK])); \
+      r = vfmaq_f64(vld1q_f64(&memPtr[(idx + off) & MASK]), r, mul); \
       vst1q_f64(&memPtr[(idx + off + 512) & MASK], r)
     
     NEON_WORK(r0, 0);   NEON_WORK(r1, 2);   NEON_WORK(r2, 4);   NEON_WORK(r3, 6);
@@ -463,11 +481,10 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   int iters = complexity * 280;
 
   for (int i = 0; i < iters; ++i) {
-    if (g_App.quit) break;
+    if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) break;
     
     // SSE2: 2-wide operations (128-bit)
     // Load-Multiply-Add-Store pattern
-    // Using unaligned loads/stores for safety on all platforms
     #define SSE2_WORK(r, off) \
       r = _mm_mul_pd(r, mul); \
       r = _mm_add_pd(r, _mm_loadu_pd(&memPtr[(idx + off) & MASK])); \
@@ -570,7 +587,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   int idx = 0;
   const int MASK = 65535;
   for (int i = 0; i < complexity * 280; ++i) {
-    if (g_App.quit) break;
+    if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) break;
     r0 = r0 * 1.000001 + memPtr[(idx + 0) & MASK];
     r1 = r1 * 1.000001 + memPtr[(idx + 1) & MASK];
     r2 = r2 * 1.000001 + memPtr[(idx + 2) & MASK];
@@ -611,6 +628,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
 TARGET_AVX2
 uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
                              const StressConfig &config) {
+#pragma clang fp contract(off)
   (void)config;
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__AVX2__) || defined(__clang__) || defined(__GNUC__))
   // Lazy heap allocation to avoid TLS bloat (saves 512KB per thread in binary)
@@ -648,11 +666,13 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
   int iters = complexity * 180;
 
   for (int i = 0; i < iters; ++i) {
-    if (g_App.quit) break;
+    if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) break;
     
+    // MASK=65532 ensures the double index is always a multiple of 4, so the
+    // byte address is always 32-byte aligned – safe to use aligned load/store.
     #define WORK(r, off) \
-      r = _mm256_fmadd_pd(r, mul, _mm256_loadu_pd(&memPtr[(idx + off) & MASK])); \
-      _mm256_storeu_pd(&memPtr[(idx + off + 512) & MASK], r)
+      r = _mm256_fmadd_pd(r, mul, _mm256_load_pd(&memPtr[(idx + off) & MASK])); \
+      _mm256_store_pd(&memPtr[(idx + off + 512) & MASK], r)
     
     WORK(r0, 0);   WORK(r1, 4);   WORK(r2, 8);   WORK(r3, 12);
     
@@ -715,6 +735,7 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
 TARGET_AVX512
 uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
                                const StressConfig &config) {
+#pragma clang fp contract(off)
   (void)config;
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__AVX512F__) || defined(__clang__) || defined(__GNUC__)) && !defined(PLATFORM_MACOS)
   // Lazy heap allocation with proper 64-byte alignment, no TLS bloat
@@ -771,12 +792,13 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
   int iters = complexity * 150;
 
   for (int i = 0; i < iters; ++i) {
-    if (g_App.quit) break;
+    if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) break;
     
-    // 32 ZMM registers doing RMW - massive power!
+    // MASK=65528 ensures the double index is always a multiple of 8, so the
+    // byte address is always 64-byte aligned – safe to use aligned load/store.
     #define WORK(r, off) \
-      r = _mm512_fmadd_pd(r, mul, _mm512_loadu_pd(&memPtr[(idx + off) & MASK])); \
-      _mm512_storeu_pd(&memPtr[(idx + off + 512) & MASK], r)
+      r = _mm512_fmadd_pd(r, mul, _mm512_load_pd(&memPtr[(idx + off) & MASK])); \
+      _mm512_store_pd(&memPtr[(idx + off + 512) & MASK], r)
     
     WORK(r0, 0);   WORK(r1, 8);   WORK(r2, 16);  WORK(r3, 24);
     
@@ -849,13 +871,7 @@ uint64_t UnsafeRunWorkload(uint64_t seed, int complexity,
   if (g_App.quit)
     return 0;
 
-  WorkloadType type = (WorkloadType)g_App.selectedWorkload.load();
-
-  if (type == WL_AUTO) {
-      if (g_Cpu.hasAVX512F && !g_ForceNoAVX512) type = WL_AVX512;
-      else if (g_Cpu.hasAVX2 && !g_ForceNoAVX2) type = WL_AVX2;
-      else type = WL_SCALAR;
-  }
+  WorkloadType type = ResolveSelectedWorkload(g_App.selectedWorkload.load());
 
   switch (type) {
     case WL_SCALAR:

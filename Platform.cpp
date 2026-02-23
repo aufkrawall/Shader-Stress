@@ -63,6 +63,17 @@ void PinThreadToCore(int coreIdx) {
 #endif
 }
 
+void SetFpuFlushMode() {
+#if defined(__x86_64__) || defined(_M_X64)
+  // Enable Flush-To-Zero (FTZ, bit 15) and Denormals-Are-Zero (DAZ, bit 6) in
+  // MXCSR. This prevents denormal numbers from causing variable-latency
+  // exceptions and ensures consistent FP behaviour across all threads.
+  _mm_setcsr(_mm_getcsr() | 0x8040);
+#endif
+  // ARM64: denormal handling is configured globally and NEON never traps;
+  // nothing to do.
+}
+
 // Crash dump writing for debugging (Windows only)
 #ifdef PLATFORM_WINDOWS
 #include <dbghelp.h>
