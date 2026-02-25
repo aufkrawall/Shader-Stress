@@ -53,13 +53,14 @@ int main(void) {
   wcscpy(newCmdLine + 1 + pathLen + 1 + 7, args);
 
   // Start the exe with inherited console handles
-  STARTUPINFOW si = {sizeof(si)};
+  STARTUPINFOW si = {0};
+  si.cb = sizeof(si);
   si.dwFlags = STARTF_USESTDHANDLES;
   si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
   si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
   si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
 
-  PROCESS_INFORMATION pi;
+  PROCESS_INFORMATION pi = {0};
 
   if (!CreateProcessW(path, newCmdLine, NULL, NULL, TRUE, 0, NULL, NULL, &si,
                       &pi)) {

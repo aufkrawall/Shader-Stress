@@ -42,14 +42,6 @@ LONG WINAPI WriteCrashDump(PEXCEPTION_POINTERS pExceptionInfo, uint64_t seed,
                            int complexity, int threadIdx);
 #endif
 
-ALWAYS_INLINE uint64_t RunGraphColoringMicro(uint64_t val) {
-  uint64_t x = val;
-  x ^= x << 13;
-  x ^= x >> 7;
-  x ^= x << 17;
-  return x * 0x2545F4914F6CDD1Dull;
-}
-
 #define CASE_BLOCK_32(start, code)                                             \
   case start:                                                                  \
   case start + 1:                                                              \
@@ -865,7 +857,7 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
 
 // --- Workload Dispatcher ---
 // noinline prevents LTO from inlining target-specific workloads into shared code
-__attribute__((noinline))
+NOINLINE
 uint64_t UnsafeRunWorkload(uint64_t seed, int complexity,
                            const StressConfig &config) {
   if (g_App.quit)

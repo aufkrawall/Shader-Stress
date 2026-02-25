@@ -51,7 +51,11 @@ typedef int BOOL;
 // Architecture-specific intrinsics
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) ||             \
     defined(_M_IX86)
+#ifdef _MSC_VER
+#include <intrin.h>
+#else
 #include <cpuid.h>
+#endif
 #include <immintrin.h>
 #ifndef _MSC_VER
 #ifndef __popcnt64
@@ -117,15 +121,17 @@ static inline uint64_t SafeTZCNT(uint64_t x) {
 
 #if defined(_MSC_VER)
 #define ALWAYS_INLINE __forceinline
+#define NOINLINE __declspec(noinline)
 #else
 #define ALWAYS_INLINE __attribute__((always_inline)) inline
+#define NOINLINE __attribute__((noinline))
 #endif
 
 extern const std::wstring APP_VERSION;
 // Numeric version for hash encoding
 constexpr uint8_t APP_VERSION_MAJOR = 3;
 constexpr uint8_t APP_VERSION_MINOR = 5;
-constexpr uint8_t APP_VERSION_PATCH = 2;
+constexpr uint8_t APP_VERSION_PATCH = 3;
 
 constexpr uint64_t GOLDEN_RATIO = 0x9E3779B97F4A7C15ull;
 constexpr size_t IO_CHUNK_SIZE = 256 * 1024;
@@ -197,7 +203,24 @@ struct ScopedMem {
     other.ptr = nullptr;
     other.valid = false;
   }
-  
+  ScopedMem& operator=(ScopedMem&& other) noexcept {
+    if (this != &other) {
+      if (ptr) {
+#ifdef PLATFORM_WINDOWS
+        VirtualFree(ptr, 0, MEM_RELEASE);
+#else
+        munmap(ptr, sz);
+#endif
+      }
+      ptr = other.ptr;
+      sz = other.sz;
+      valid = other.valid;
+      other.ptr = nullptr;
+      other.valid = false;
+    }
+    return *this;
+  }
+
   explicit operator bool() const { return valid; }
   bool operator!() const { return !valid; }
   
@@ -214,9 +237,9 @@ inline uint64_t GetTick() {
 #ifdef PLATFORM_WINDOWS
   return GetTickCount64();
 #else
-  struct timeval tv;
-  gettimeofday(&tv, nullptr);
-  return (uint64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+  const auto now = std::chrono::steady_clock::now().time_since_epoch();
+  return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(now)
+      .count();
 #endif
 }
 
@@ -344,11 +367,6 @@ void PinThreadToCore(int coreIdx);
 // Call once per thread, and in the main thread before InitGoldenValues().
 void SetFpuFlushMode();
 
-struct alignas(64) HotNode {
-  float fRegs[16];
-  uint64_t iRegs[8];
-};
-
 struct FakeAstNode {
   uint32_t children[4];
   uint32_t meta;
@@ -370,9 +388,12 @@ uint64_t SafeRunWorkload(uint64_t seed, int complexity,
 
 struct GoldenValues {
   uint64_t values[5] = {}; // indexed by WorkloadType (0=auto unused, 1-4)
-  bool initialized = false;
+  std::atomic<bool> initialized{false};
 };
 extern GoldenValues g_Golden;
+// Returns the canonical StressConfig used for golden value computation and verification.
+// Must be identical in InitGoldenValues() and all runtime verification checks.
+StressConfig GetVerifyConfig();
 void InitGoldenValues();
 
 struct ThreadWrapper {

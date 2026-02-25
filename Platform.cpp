@@ -8,7 +8,7 @@
 
 void DisablePowerThrottling() {
 #ifdef PLATFORM_WINDOWS
-  PROCESS_POWER_THROTTLING_STATE PowerThrottling = {0};
+  PROCESS_POWER_THROTTLING_STATE PowerThrottling{};
   PowerThrottling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
   PowerThrottling.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
   PowerThrottling.StateMask = 0;
@@ -26,7 +26,7 @@ void PinThreadToCore(int coreIdx) {
     WORD group = (WORD)(coreIdx / coresPerGroup);
     BYTE procIndex = (BYTE)(coreIdx % coresPerGroup);
     if (group < groupCount) {
-      GROUP_AFFINITY affinity = {0};
+      GROUP_AFFINITY affinity{};
       affinity.Group = group;
       affinity.Mask = (KAFFINITY)1 << procIndex;
       SetThreadGroupAffinity(GetCurrentThread(), &affinity, nullptr);
@@ -91,7 +91,7 @@ LONG WINAPI WriteCrashDump(PEXCEPTION_POINTERS pExceptionInfo, uint64_t seed,
   CreateDirectoryA(folderName.c_str(), nullptr);
 
   g_App.Log(L"CRASH DETECTED in Thread " + std::to_wstring(threadIdx) +
-            L" | Seed: " + FmtNum(seed));
+            L" | Seed: " + std::to_wstring(seed));
 
   std::string dumpPath = folderName + "\\crash.dmp";
   std::wstring dumpPathW(dumpPath.begin(), dumpPath.end());

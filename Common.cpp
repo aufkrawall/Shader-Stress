@@ -1,7 +1,7 @@
 // Common.cpp - Global variable definitions and utility function implementations
 #include "Common.h"
 
-const std::wstring APP_VERSION = L"3.5.2";
+const std::wstring APP_VERSION = L"3.5.3";
 
 // --- Global Variables ---
 CpuFeatures g_Cpu;
@@ -33,7 +33,10 @@ std::wstring FmtNum(uint64_t v) {
   wchar_t buf[64];
   double n = (double)v;
   const wchar_t *suffix = L"";
-  if (v >= 1000000) {
+  if (v >= 1000000000ull) {
+    n /= 1000000000.0;
+    suffix = L"B";
+  } else if (v >= 1000000) {
     n /= 1000000.0;
     suffix = L"M";
   } else {
@@ -250,17 +253,16 @@ void DetectBestConfig() {
 }
 
 // --- Golden Value Initialization ---
+StressConfig GetVerifyConfig() {
+  StressConfig cfg;
+  cfg.fma_intensity = 8;
+  cfg.int_intensity = 2;
+  cfg.div_intensity = 1;
+  return cfg;
+}
+
 void InitGoldenValues() {
-  StressConfig defaultCfg;
-  defaultCfg.fma_intensity = 8;
-  defaultCfg.int_intensity = 2;
-  defaultCfg.div_intensity = 1;
-  defaultCfg.bit_intensity = 0;
-  defaultCfg.branch_intensity = 0;
-  defaultCfg.int_simd_intensity = 0;
-  defaultCfg.mem_pressure = 0;
-  defaultCfg.shuffle_freq = 8;
-  defaultCfg.cache_stride = 32768;
+  StressConfig defaultCfg = GetVerifyConfig();
 
   // Compute golden values for each workload type
   g_Golden.values[WL_SCALAR] = RunHyperStress_Scalar(42, VERIFY_COMPLEXITY, defaultCfg);
@@ -390,8 +392,6 @@ static uint8_t GetArchType() {
 static uint16_t ScaleRate(uint64_t rate) {
   return (rate > 65535) ? 65535 : (uint16_t)rate;
 }
-
-static uint64_t UnscaleRate(uint16_t scaled) { return scaled; }
 
 std::wstring GetOsName(uint8_t os) {
   switch (os) {

@@ -17,12 +17,14 @@ static WorkloadType MapISASelection(int menuChoice) {
 
 #ifdef PLATFORM_WINDOWS
 
+#ifdef _MSC_VER
 #pragma comment(lib, "user32")
 #pragma comment(lib, "gdi32")
 #pragma comment(lib, "dwmapi")
 #pragma comment(lib, "shcore")
 #pragma comment(lib, "shell32")
 #pragma comment(lib, "dbghelp")
+#endif
 
 int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);

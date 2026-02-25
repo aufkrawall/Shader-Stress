@@ -103,47 +103,35 @@ static void RunCompilerLogic(int idx, Worker &w) {
   if (g_App.mode == 1) // Steady mode
     complexity = 12000;
 
+  // StressConfig is passed through to workloads for interface consistency,
+  // but current workloads derive all behavior from seed/complexity alone.
   static thread_local uint64_t lastVer = 0;
   static thread_local StressConfig cachedCfg;
-
-  // Per-job randomization of knobs (Simulation of varying shader
-  // characteristics) We offset the global config slightly per job to create
-  // "de-correlated" load
-  StressConfig jobCfg;
 
   if (lastVer != g_ConfigVersion.load(std::memory_order_acquire)) {
     std::lock_guard<std::mutex> lk(g_ConfigMtx);
     cachedCfg = g_ActiveConfig;
     lastVer = g_ConfigVersion.load(std::memory_order_relaxed);
   }
-  jobCfg = cachedCfg;
 
-  // Apply micro-variation
-  if (g_App.mode !=
-      0) { // Don't randomize in benchmark mode if strictness is needed?
-    // Actually, benchmark should be consistent?
-    // Report says: "Randomize... per job... or periodically shuffle".
-    // Let's vary intensity slightly if not steady mode?
-    // For now, keep it simple: apply complexity variation.
-    // Knobs:
-    uint64_t r2 = NextRand();
-    if ((r2 & 3) == 0)
-      jobCfg.int_intensity =
-          std::max(1, jobCfg.int_intensity + ((int)(r2 % 3) - 1));
-    if ((r2 & 7) == 0)
-      jobCfg.fma_intensity =
-          std::max(1, jobCfg.fma_intensity + ((int)((r2 >> 4) % 3) - 1));
-  }
-
-  uint64_t seed =
-      (uint64_t)GetTick() ^ ((uint64_t)idx << 32) ^
-      (w.localShaders.load(std::memory_order_relaxed) * GOLDEN_RATIO);
+  // Global monotonically-increasing seed stream:
+  // guarantees no repeated seeds within a process (until 2^64 wrap-around).
+  static std::atomic<uint64_t> s_SeedCounter{0};
+  static const uint64_t s_RunSeed = []() -> uint64_t {
+    uint64_t t = (uint64_t)std::chrono::steady_clock::now()
+                     .time_since_epoch()
+                     .count();
+    uint64_t v = t ^ 0xD6E8FEB86659FD93ull;
+    return v ? v : GOLDEN_RATIO;
+  }();
+  uint64_t seq = s_SeedCounter.fetch_add(1, std::memory_order_relaxed);
+  uint64_t seed = s_RunSeed + (seq * GOLDEN_RATIO);
 
 #if !defined(PLATFORM_WINDOWS)
   t_lastSeed = seed;
   t_lastComplexity = complexity;
 #endif
-  SafeRunWorkload(seed, complexity, jobCfg, idx);
+  SafeRunWorkload(seed, complexity, cachedCfg, idx);
   uint64_t localCount = w.localShaders.fetch_add(1, std::memory_order_relaxed);
 
   // Periodic golden-value verification for CPU error detection.
@@ -153,11 +141,9 @@ static void RunCompilerLogic(int idx, Worker &w) {
   int mode = g_App.mode.load(std::memory_order_relaxed);
   const uint64_t verifyInterval = (mode == 0) ? 64ull : 128ull;
   const int verifyComplexity = VERIFY_COMPLEXITY;
-  if (g_Golden.initialized && (localCount % verifyInterval) == 0) {
-    StressConfig verifyCfg;
-    verifyCfg.fma_intensity = 8;
-    verifyCfg.int_intensity = 2;
-    verifyCfg.div_intensity = 1;
+  if (g_Golden.initialized.load(std::memory_order_relaxed) &&
+      (localCount % verifyInterval) == 0) {
+    StressConfig verifyCfg = GetVerifyConfig();
     WorkloadType type = ResolveSelectedWorkload(g_App.selectedWorkload.load());
     uint64_t got;
     switch (type) {
@@ -177,7 +163,7 @@ static void RunCompilerLogic(int idx, Worker &w) {
   }
 }
 
-static void RunDecompressLogic(int idx, Worker &w) {
+static void RunDecompressLogic(int idx) {
   const size_t BUF_SIZE = 512 * 1024;
   // Lazy heap allocation to avoid TLS bloat
   static thread_local std::vector<uint8_t> data;
@@ -237,7 +223,7 @@ void WorkerThread(int idx) {
     if (isComp)
       RunCompilerLogic(idx, w);
     else if (isDec)
-      RunDecompressLogic(idx, w);
+      RunDecompressLogic(idx);
     else
       std::this_thread::sleep_for(10ms);
 
@@ -278,7 +264,7 @@ void IOThread(int ioIdx) {
       if (hCreate != INVALID_HANDLE_VALUE) {
         std::vector<char> junk(1024 * 1024, 'x');
         DWORD written;
-        for (int i = 0; i < (IO_FILE_SIZE / (1024 * 1024)); ++i)
+        for (size_t i = 0; i < (IO_FILE_SIZE / (1024 * 1024)); ++i)
           WriteFile(hCreate, junk.data(), (DWORD)junk.size(), &written, nullptr);
         CloseHandle(hCreate);
       }
@@ -331,8 +317,12 @@ void RAMThread() {
       continue;
     }
 
-    MEMORYSTATUSEX ms{sizeof(ms)};
-    GlobalMemoryStatusEx(&ms);
+    MEMORYSTATUSEX ms{};
+    ms.dwLength = sizeof(ms);
+    if (!GlobalMemoryStatusEx(&ms)) {
+      std::this_thread::sleep_for(1s);
+      continue;
+    }
     uint64_t safeSize =
         std::min<uint64_t>(ms.ullAvailPhys, ms.ullTotalPhys) * 7 / 10;
     if (safeSize > 16ull * 1024 * 1024 * 1024)
@@ -378,6 +368,9 @@ void RAMThread() {
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef PLATFORM_MACOS
+#include <mach/mach.h>
+#endif
 
 void IOThread(int ioIdx) {
   SetFpuFlushMode();
@@ -400,7 +393,7 @@ void IOThread(int ioIdx) {
     if (!fileCreated) {
       std::ofstream f(fpath, std::ios::binary);
       std::vector<char> junk(1024 * 1024, 'x');
-      for (int i = 0; i < (IO_FILE_SIZE / (1024 * 1024)); ++i)
+      for (size_t i = 0; i < (IO_FILE_SIZE / (1024 * 1024)); ++i)
         f.write(junk.data(), junk.size());
       f.close();
 
@@ -465,16 +458,18 @@ void RAMThread() {
     if (pages > 0 && pageSize > 0)
       availPhys = (uint64_t)pages * (uint64_t)pageSize;
 #elif defined(PLATFORM_MACOS)
-    // macOS specific memory detection
-    int mib[2];
-    mib[0] = CTL_HW;
-    mib[1] = HW_MEMSIZE;
-    int64_t size = 0;
-    size_t len = sizeof(size);
-    if (sysctl(mib, 2, &size, &len, NULL, 0) == 0) {
-      availPhys = (uint64_t)size;
+    // macOS: use Mach VM statistics for actual available memory
+    // (HW_MEMSIZE returns total RAM which risks OOM/swap)
+    vm_statistics64_data_t vm_stat;
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+    if (host_statistics64(mach_host_self(), HOST_VM_INFO64,
+                          (host_info64_t)&vm_stat, &count) == KERN_SUCCESS) {
+      uint64_t pageSize = (uint64_t)sysconf(_SC_PAGESIZE);
+      // free + inactive pages are reclaimable without swap pressure
+      availPhys = ((uint64_t)vm_stat.free_count +
+                   (uint64_t)vm_stat.inactive_count) * pageSize;
     } else {
-      availPhys = 8ULL * 1024 * 1024 * 1024; // Fallback
+      availPhys = 4ULL * 1024 * 1024 * 1024; // Conservative fallback
     }
 #endif
 

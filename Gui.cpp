@@ -87,9 +87,15 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         size_t bytes = (fullText.size() + 1) * sizeof(wchar_t);
         HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
         if (hMem) {
-          memcpy(GlobalLock(hMem), fullText.data(), bytes);
-          GlobalUnlock(hMem);
-          SetClipboardData(CF_UNICODETEXT, hMem);
+          void *dst = GlobalLock(hMem);
+          if (dst) {
+            memcpy(dst, fullText.c_str(), bytes);
+            GlobalUnlock(hMem);
+            if (!SetClipboardData(CF_UNICODETEXT, hMem))
+              GlobalFree(hMem);
+          } else {
+            GlobalFree(hMem);
+          }
         }
         CloseClipboard();
         s_notifyTime = GetTickCount64();
@@ -103,6 +109,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
     auto btn = [&](int id, const wchar_t *txt, int x, int y, bool active,
                    bool enabled = true) {
+      (void)id;
       RECT r{x, y, x + S(140), y + S(30)};
       HBRUSH b =
           enabled ? (active ? g_BtnActive : g_BtnInactive) : g_BtnDisabled;
