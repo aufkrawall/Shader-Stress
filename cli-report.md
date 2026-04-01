@@ -137,4 +137,3 @@ ShaderStress.com --repro 12345 1000 --isa scalar
 - `build.py` packages `ShaderStress.exe` for the GUI and `ShaderStress.com` as the Windows CLI launcher.
 - The build script reads version metadata from `VERSION`.
 - Release archives are written to `dist/`.
-- `dist/SHA256SUMS.txt` contains SHA-256 checksums for every generated archive.
