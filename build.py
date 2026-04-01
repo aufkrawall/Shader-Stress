@@ -8,6 +8,7 @@ import sys
 import subprocess
 import shutil
 import multiprocessing
+import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -15,6 +16,25 @@ from pathlib import Path
 BASE_DIR = Path.cwd()
 ZIG_DIR = BASE_DIR / "zig-x86_64-windows-0.15.2"
 ZIG_EXE = ZIG_DIR / "zig.exe"
+VERSION_FILE = BASE_DIR / "VERSION"
+CLI_LAUNCHER_SOURCE = BASE_DIR / "cli_launcher.c"
+
+
+def load_version():
+    """Load version metadata from VERSION"""
+    if not VERSION_FILE.exists():
+        log(f"ERROR: VERSION file not found at {VERSION_FILE}")
+        sys.exit(1)
+
+    version_text = VERSION_FILE.read_text(encoding="utf-8").strip()
+    parts = version_text.split(".")
+    if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        log(f"ERROR: Invalid version string '{version_text}' in VERSION")
+        sys.exit(1)
+
+    major, minor, patch = (int(part) for part in parts)
+    return version_text, major, minor, patch
+
 
 # Source files
 SRC_FILES_WINDOWS = [
@@ -44,6 +64,9 @@ def log(msg):
     print(f"[BUILD] {msg}", flush=True)
 
 
+APP_VERSION_TEXT, APP_VERSION_MAJOR, APP_VERSION_MINOR, APP_VERSION_PATCH = load_version()
+
+
 def check_zig():
     """Verify Zig is available"""
     if not ZIG_EXE.exists():
@@ -52,11 +75,41 @@ def check_zig():
         sys.exit(1)
 
 
+def build_windows_cli_launcher(target, cpu, out_path):
+    launcher_path = out_path / "ShaderStress.com"
+    cmd = [
+        str(ZIG_EXE), "cc",
+        "-target", target,
+    ]
+
+    if cpu != "generic":
+        cmd.extend(["-mcpu=" + cpu])
+
+    cmd.extend([
+        "-Oz", "-s",
+        "-ffunction-sections", "-fdata-sections",
+        "-fno-asynchronous-unwind-tables",
+        "-fno-ident",
+        "-municode",
+        str(CLI_LAUNCHER_SOURCE),
+        "-o", str(launcher_path),
+        "-Xlinker", "--subsystem", "-Xlinker", "console",
+        "-Xlinker", "--gc-sections",
+    ])
+    subprocess.run(cmd, check=True, capture_output=True)
+
+
 def build_target(config):
     """Build a single target"""
     target, out_dir, cpu, is_windows, archive_name = config
     out_path = BASE_DIR / out_dir
     out_path.mkdir(parents=True, exist_ok=True)
+
+    if is_windows:
+        for stale_name in ["ShaderStress.com", "ShaderStressCli.exe", "ShaderStressGui.exe", "ShaderStressCli.cmd"]:
+            stale_path = out_path / stale_name
+            if stale_path.exists():
+                stale_path.unlink()
     
     log(f"Starting {target} (cpu={cpu})...")
     
@@ -65,6 +118,13 @@ def build_target(config):
     
     if is_windows and "arm64" in target:
         defines.extend(["-D_M_ARM64", "-D_WIN64"])
+
+    defines.extend([
+        f'-DAPP_VERSION_TEXT="{APP_VERSION_TEXT}"',
+        f"-DAPP_VERSION_MAJOR_NUM={APP_VERSION_MAJOR}",
+        f"-DAPP_VERSION_MINOR_NUM={APP_VERSION_MINOR}",
+        f"-DAPP_VERSION_PATCH_NUM={APP_VERSION_PATCH}",
+    ])
     
     # Disable SEH for Zig (not supported)
     defines.append("-DDISABLE_SEH")
@@ -91,7 +151,7 @@ def build_target(config):
         # macOS doesn't support LTO with default linker
         use_lto = "macos" not in target
         
-        cmd = [
+        base_cmd = [
             str(ZIG_EXE), "c++",
             "-target", target,
         ]
@@ -99,7 +159,7 @@ def build_target(config):
         # Add CPU target for architecture-specific optimizations BEFORE source files
         # This is crucial for v3 builds to enable AVX2, BMI, etc.
         if cpu != "generic":
-            cmd.extend(["-mcpu=" + cpu])
+            base_cmd.extend(["-mcpu=" + cpu])
         
         # Note: We do NOT add -mpopcnt/-mlzcnt/-mbmi for generic x86_64 builds
         # to maintain compatibility with older CPUs (pre-Haswell, pre-Nehalem).
@@ -107,9 +167,9 @@ def build_target(config):
         # the trade-off for broader compatibility. v3 builds target modern CPUs
         # and will automatically use these features via x86_64_v3.
         
-        cmd.extend([
+        base_cmd.extend([
             "-std=c++20", "-O3",
-            "-ffast-math",
+            "-ffast-math", "-funroll-loops", "-fno-strict-aliasing",
             "-fno-rtti",
             # Size optimizations - remove unused code/data
             "-ffunction-sections", "-fdata-sections",
@@ -120,52 +180,37 @@ def build_target(config):
         ])
         
         if use_lto:
-            cmd.append("-flto")
+            base_cmd.append("-flto")
         
-        cmd.extend([
+        base_cmd.extend([
             "-s",
             "-Wno-macro-redefined",
         ])
         
         if is_windows:
-            cmd.append("-municode")
+            base_cmd.append("-municode")
         
-        cmd.extend(defines)
-        cmd.extend(src_files)
-        
-        cmd.extend(["-o", str(exe_path)])
-        
+        base_cmd.extend(defines)
+        base_cmd.extend(src_files)
+
         # Platform-specific link flags
         if is_windows:
-            cmd.extend([
+            cmd = base_cmd[:] + [
+                "-o", str(exe_path),
                 "-Xlinker", "--subsystem", "-Xlinker", "windows",
                 # Remove unused sections (requires -ffunction-sections/-fdata-sections)
                 "-Xlinker", "--gc-sections",
-                "-luser32", "-lgdi32", "-ldwmapi", "-lshcore", 
+                "-luser32", "-lgdi32", "-ldwmapi", "-lshcore",
                 "-lshell32", "-lole32", "-ldbghelp"
-            ])
-        else:
-            cmd.append("-lpthread")
-        
-        # Remove empty strings
-        cmd = [c for c in cmd if c]
-        
-        subprocess.run(cmd, check=True, capture_output=True)
-        
-        # Build CLI launcher for Windows
-        if is_windows:
-            com_path = out_path / "ShaderStress.com"
-            # CLI launcher
-            cmd_cli = [
-                str(ZIG_EXE), "cc",
-                "-target", target,
-                "-x", "c",
-                "-O2", "-s",
-                "-Xlinker", "--subsystem", "-Xlinker", "console",
-                "cli_launcher.c",
-                "-o", str(com_path),
             ]
-            subprocess.run(cmd_cli, check=True, capture_output=True)
+
+            cmd = [c for c in cmd if c]
+            subprocess.run(cmd, check=True, capture_output=True)
+            build_windows_cli_launcher(target, cpu, out_path)
+        else:
+            cmd = base_cmd[:] + ["-o", str(exe_path), "-lpthread"]
+            cmd = [c for c in cmd if c]
+            subprocess.run(cmd, check=True, capture_output=True)
         
         return (True, target, out_dir, archive_name)
         
@@ -234,10 +279,30 @@ def create_archives(results):
     
     successful = sum(archive_results)
     log(f"Created {successful}/{len(archive_results)} archives")
+    write_checksums(dist_dir)
+
+
+def write_checksums(dist_dir):
+    """Write SHA256 checksums for all release archives"""
+    checksum_entries = []
+
+    for archive in sorted(dist_dir.iterdir()):
+        if not archive.is_file() or archive.name == "SHA256SUMS.txt":
+            continue
+        hasher = hashlib.sha256()
+        with archive.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        checksum_entries.append(f"{hasher.hexdigest()}  {archive.name}")
+
+    checksums_path = dist_dir / "SHA256SUMS.txt"
+    checksums_path.write_text("\n".join(checksum_entries) + "\n", encoding="utf-8")
+    log(f"Wrote checksums to {checksums_path.name}")
 
 
 def main():
     check_zig()
+    log(f"Version: {APP_VERSION_TEXT}")
     
     # Parse arguments
     targets_requested = sys.argv[1:] if len(sys.argv) > 1 else ["all"]

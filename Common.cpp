@@ -1,7 +1,14 @@
 // Common.cpp - Global variable definitions and utility function implementations
 #include "Common.h"
 
-const std::wstring APP_VERSION = L"3.5.3";
+#define APP_VERSION_WIDEN_INNER(x) L##x
+#define APP_VERSION_WIDEN(x) APP_VERSION_WIDEN_INNER(x)
+
+#ifndef APP_VERSION_TEXT
+#define APP_VERSION_TEXT "3.5.4"
+#endif
+
+const std::wstring APP_VERSION = APP_VERSION_WIDEN(APP_VERSION_TEXT);
 
 // --- Global Variables ---
 CpuFeatures g_Cpu;

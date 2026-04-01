@@ -629,15 +629,3 @@ void ShowVerifyDialog(HWND parent) {
   SetForegroundWindow(parent);
 }
 
-void PrintHelp() {
-  AllocConsole();
-  freopen("CONOUT$", "w", stdout);
-  wprintf(L"ShaderStress v%ls\n\n", APP_VERSION.c_str());
-  printf(
-      "Options:\n  --repro <seed> <complexity>  : Run a specific crash "
-      "reproduction case.\n  --max-duration <sec>         : Automatically stop "
-      "after N seconds.\n  --no-avx512                  : Force AVX2/Scalar "
-      "path.\n  --no-avx2                    : Force Scalar path.\n");
-  getchar();
-  ExitProcess(0);
-}

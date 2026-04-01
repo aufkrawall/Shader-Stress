@@ -132,7 +132,8 @@ static void RunCompilerLogic(int idx, Worker &w) {
   t_lastComplexity = complexity;
 #endif
   SafeRunWorkload(seed, complexity, cachedCfg, idx);
-  uint64_t localCount = w.localShaders.fetch_add(1, std::memory_order_relaxed);
+  uint64_t localCount =
+      w.localShaders.fetch_add(1, std::memory_order_relaxed) + 1;
 
   // Periodic golden-value verification for CPU error detection.
   // Resolve the workload type ONCE so the dispatch and the expected-value
@@ -142,6 +143,9 @@ static void RunCompilerLogic(int idx, Worker &w) {
   const uint64_t verifyInterval = (mode == 0) ? 64ull : 128ull;
   const int verifyComplexity = VERIFY_COMPLEXITY;
   if (g_Golden.initialized.load(std::memory_order_relaxed) &&
+      g_App.running.load(std::memory_order_relaxed) &&
+      !g_App.quit.load(std::memory_order_relaxed) &&
+      !w.terminate.load(std::memory_order_relaxed) &&
       (localCount % verifyInterval) == 0) {
     StressConfig verifyCfg = GetVerifyConfig();
     WorkloadType type = ResolveSelectedWorkload(g_App.selectedWorkload.load());
@@ -152,6 +156,17 @@ static void RunCompilerLogic(int idx, Worker &w) {
     case WL_SCALAR_SIM: got = RunRealisticCompilerSim_V3(42, verifyComplexity, verifyCfg); break;
     default:         got = RunHyperStress_Scalar(42, verifyComplexity, verifyCfg); break;
     }
+
+    // Verification workloads honor g_App.quit so they can stop promptly on
+    // Ctrl+C or shutdown. If shutdown starts while a verification run is in
+    // flight, the partial result is not meaningful and must not be counted as a
+    // CPU error.
+    if (g_App.quit.load(std::memory_order_relaxed) ||
+        !g_App.running.load(std::memory_order_relaxed) ||
+        w.terminate.load(std::memory_order_relaxed)) {
+      return;
+    }
+
     uint64_t expected = g_Golden.values[type];
     if (got != expected) {
       g_App.errors.fetch_add(1, std::memory_order_relaxed);

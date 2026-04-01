@@ -128,10 +128,23 @@ static inline uint64_t SafeTZCNT(uint64_t x) {
 #endif
 
 extern const std::wstring APP_VERSION;
+
+#ifndef APP_VERSION_MAJOR_NUM
+#define APP_VERSION_MAJOR_NUM 3
+#endif
+
+#ifndef APP_VERSION_MINOR_NUM
+#define APP_VERSION_MINOR_NUM 5
+#endif
+
+#ifndef APP_VERSION_PATCH_NUM
+#define APP_VERSION_PATCH_NUM 4
+#endif
+
 // Numeric version for hash encoding
-constexpr uint8_t APP_VERSION_MAJOR = 3;
-constexpr uint8_t APP_VERSION_MINOR = 5;
-constexpr uint8_t APP_VERSION_PATCH = 3;
+constexpr uint8_t APP_VERSION_MAJOR = static_cast<uint8_t>(APP_VERSION_MAJOR_NUM);
+constexpr uint8_t APP_VERSION_MINOR = static_cast<uint8_t>(APP_VERSION_MINOR_NUM);
+constexpr uint8_t APP_VERSION_PATCH = static_cast<uint8_t>(APP_VERSION_PATCH_NUM);
 
 constexpr uint64_t GOLDEN_RATIO = 0x9E3779B97F4A7C15ull;
 constexpr size_t IO_CHUNK_SIZE = 256 * 1024;
@@ -443,7 +456,6 @@ void CleanupGDI();
 LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l);
 #endif
 void DetectBestConfig();
-void PrintHelp();
 
 #if !defined(PLATFORM_WINDOWS)
 void InstallCrashHandlers();
