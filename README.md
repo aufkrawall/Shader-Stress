@@ -2,7 +2,7 @@
 
 Shader Stress is a CPU stress tool tuned to look more like shader and compiler workloads than a synthetic power virus. It supports a native Windows GUI and a cross-platform CLI for scripted or interactive runs.
 
-<img width="591" height="446" alt="shaderstress" src="https://github.com/user-attachments/assets/f8d34343-d9d1-4aee-8ff3-f0925ce1c9ce" />
+<img width="572" height="556" alt="shaderstress" src="https://github.com/user-attachments/assets/3ba8410e-093d-43a4-9795-c5a820c03f5f" />
 
 ## Highlights
 
