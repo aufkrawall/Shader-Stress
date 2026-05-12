@@ -1,0 +1,28 @@
+# Build outputs
+bin/
+dist/
+
+# Vendored toolchain
+zig-*/
+
+# Runtime artifacts
+*.log
+Crash_*/
+
+# Compiled resource files
+*.res
+*.obj
+*.o
+*.exe
+*.com
+
+# IDE / editor
+.vs/
+.vscode/
+*.user
+*.suo
+
+# OS
+.DS_Store
+Thumbs.db
+NUL
