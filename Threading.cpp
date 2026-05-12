@@ -251,7 +251,7 @@ void WorkerThread(int idx) {
     else if (isDec)
       RunDecompressLogic(idx);
     else
-      std::this_thread::sleep_for(10ms);
+      std::this_thread::sleep_for(1ms);
 
     w.lastTick = GetTick();
   }
