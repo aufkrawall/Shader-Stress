@@ -170,7 +170,7 @@ def build_target(config):
         
         base_cmd.extend([
             "-std=c++20", "-O3",
-            "-ffast-math", "-funroll-loops", "-fno-strict-aliasing",
+            "-ffast-math", "-funroll-loops",
             "-fno-rtti",
             # Size optimizations - remove unused code/data
             "-ffunction-sections", "-fdata-sections",
