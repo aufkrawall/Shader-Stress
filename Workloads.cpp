@@ -3,6 +3,18 @@
 #include <cstring>
 #include <vector>
 
+// Work buffer size: 32MB (4,194,304 doubles) — exceeds L3 cache on most CPUs
+// to force main-memory bandwidth utilization and maximize memory controller
+// stress. Was 512KB in v3.5.4.
+constexpr size_t WORK_BUF_ELEMS = 4 * 1024 * 1024;
+// Alignment-safe MASK values derived from buffer size (must be power-of-two):
+// SSE2/NEON: clear lowest 1 bit  → 16-byte alignment
+// AVX2:      clear lowest 2 bits → 32-byte alignment
+// AVX-512:   clear lowest 3 bits → 64-byte alignment
+constexpr int MASK_SSE2   = (WORK_BUF_ELEMS - 2);
+constexpr int MASK_AVX2   = (WORK_BUF_ELEMS - 4);
+constexpr int MASK_AVX512 = (WORK_BUF_ELEMS - 8);
+
 struct WorkBufferTls {
     std::unique_ptr<char[]> raw;
     double* aligned = nullptr;
@@ -12,7 +24,7 @@ struct WorkBufferTls {
 inline double* GetWorkBuffer() {
     static thread_local WorkBufferTls tls;
     if (tls.aligned == nullptr) {
-        tls.raw = std::make_unique<char[]>(65536 * sizeof(double) + 64);
+        tls.raw = std::make_unique<char[]>(WORK_BUF_ELEMS * sizeof(double) + 64);
         tls.aligned = reinterpret_cast<double*>(
             (reinterpret_cast<uintptr_t>(tls.raw.get()) + 63u) & ~uintptr_t(63u));
     }
@@ -206,10 +218,12 @@ uint64_t RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
     if (g_App.quit)
       break;
 
-    // Prefetch tree and hash table for the upcoming lookup
+#if defined(__x86_64__) || defined(_M_X64)
+    // Prefetch tree, hash table, and bitvectors for the upcoming lookup
     _mm_prefetch(reinterpret_cast<const char*>(&tree[0]), _MM_HINT_T0);
     _mm_prefetch(reinterpret_cast<const char*>(&tableEntries[0]), _MM_HINT_T0);
     _mm_prefetch(reinterpret_cast<const char*>(&liveIn[0]), _MM_HINT_T0);
+#endif
 
     {
       uint32_t strStart = (uint32_t)(acc0 & (STRING_POOL_SIZE - 256));
@@ -335,7 +349,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
 
 #if defined(_M_ARM64) || defined(__aarch64__)
   // ARM64: Use NEON for 2x throughput (16 × 128-bit registers)
-  for (int i = 0; i < 65536; i += 2) {
+  for (int i = 0; i < WORK_BUF_ELEMS; i += 2) {
     memPtr[i] = (double)(seed + i) * 0.00001;
     memPtr[i+1] = (double)(seed + i + 1) * 0.00001;
   }
@@ -369,7 +383,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   
   int idx = 0;
   // Ensure 16-byte alignment for NEON (2 doubles = 16 bytes)
-  const int MASK = 65534;
+  const int MASK = MASK_SSE2;
   int iters = complexity * 280;
   
   for (int i = 0; i < iters; ++i) {
@@ -451,7 +465,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   return bits ^ gint;
 #elif defined(_M_IX86) || defined(_M_X64) || defined(__i386__) || defined(__x86_64__)
   // x86/x64: Use SSE2 for 2x throughput
-  for (int i = 0; i < 65536; i += 2) {
+  for (size_t i = 0; i < WORK_BUF_ELEMS; i += 2) {
     memPtr[i] = (double)(seed + i) * 0.00001;
     memPtr[i+1] = (double)(seed + i + 1) * 0.00001;
   }
@@ -485,8 +499,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
 
   int idx = 0;
   // MASK must ensure 16-byte (2 double) alignment for SSE2 _mm_load_pd/_mm_store_pd
-  // 65535 & ~1 = 65534, which ensures index is always even (16-byte aligned)
-  const int MASK = 65534;
+  const int MASK = MASK_SSE2;
   
   int iters = complexity * 280;
 
@@ -588,7 +601,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   return bits ^ gint;
 #else
   // Generic fallback: pure scalar for non-x86, non-ARM64 architectures
-  for (int i = 0; i < 65536; i++) {
+  for (int i = 0; i < WORK_BUF_ELEMS; i++) {
     memPtr[i] = (double)(seed + i) * 0.00001;
   }
   double r0 = (double)seed * 1.0001, r1 = r0 + 0.01, r2 = r0 + 0.02, r3 = r0 + 0.03;
@@ -600,7 +613,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   uint64_t g8 = seed + 8, g9 = seed + 9, g10 = seed + 10, g11 = seed + 11;
   uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
   int idx = 0;
-  const int MASK = 65535;
+  const int MASK = (int)(WORK_BUF_ELEMS - 1);
   for (int i = 0; i < complexity * 280; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) break;
     r0 = r0 * 1.000001 + memPtr[(idx + 0) & MASK];
@@ -648,7 +661,7 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__AVX2__) || defined(__clang__) || defined(__GNUC__))
   // Lazy heap allocation to avoid TLS bloat (saves 512KB per thread in binary)
   double* memPtr = GetWorkBuffer();
-  for (int i = 0; i < 65536; i += 4) {
+  for (int i = 0; i < WORK_BUF_ELEMS; i += 4) {
     _mm256_store_pd(&memPtr[i], _mm256_set1_pd((double)(seed + i) * 0.00001));
   }
   
@@ -676,7 +689,7 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
 
   int idx = 0;
   // Ensure 32-byte alignment for AVX2 (4 doubles = 32 bytes)
-  const int MASK = 65532;
+  const int MASK = MASK_AVX2;
   
   int iters = complexity * 180;
 
@@ -688,7 +701,7 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx]), _MM_HINT_T0);
     _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx + 512) & MASK]), _MM_HINT_T0);
     
-    // MASK=65532 ensures the double index is always a multiple of 4, so the
+    // MASK_AVX2 ensures the double index is always a multiple of 4, so the
     // byte address is always 32-byte aligned – safe to use aligned load/store.
     #define WORK(r, off) \
       r = _mm256_fmadd_pd(r, mul, _mm256_load_pd(&memPtr[(idx + off) & MASK])); \
@@ -760,7 +773,7 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__AVX512F__) || defined(__clang__) || defined(__GNUC__)) && !defined(PLATFORM_MACOS)
   // Lazy heap allocation with proper 64-byte alignment, no TLS bloat
   double* memPtr = GetWorkBuffer();
-  for (int i = 0; i < 65536; i += 8) {
+  for (int i = 0; i < WORK_BUF_ELEMS; i += 8) {
     _mm512_store_pd(&memPtr[i], _mm512_set1_pd((double)(seed + i) * 0.00001));
   }
   
@@ -806,7 +819,7 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
 
   int idx = 0;
   // Ensure 64-byte alignment for AVX-512 (8 doubles = 64 bytes)
-  const int MASK = 65528;
+  const int MASK = MASK_AVX512;
   
   // Higher iteration count for 512-bit throughput
   int iters = complexity * 150;
@@ -819,7 +832,7 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
     _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx]), _MM_HINT_T0);
     _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx + 512) & MASK]), _MM_HINT_T0);
     
-    // MASK=65528 ensures the double index is always a multiple of 8, so the
+    // MASK_AVX512 ensures the double index is always a multiple of 8, so the
     // byte address is always 64-byte aligned – safe to use aligned load/store.
     #define WORK(r, off) \
       r = _mm512_fmadd_pd(r, mul, _mm512_load_pd(&memPtr[(idx + off) & MASK])); \
