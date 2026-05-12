@@ -695,11 +695,8 @@ static void ResetAppState() {
 
 static void InitializeLocaleForCli() {
 #ifndef PLATFORM_WINDOWS
-  try {
-    std::locale::global(std::locale(""));
-  } catch (...) {
-    std::setlocale(LC_ALL, "");
-  }
+  // Use C locale directly to avoid exceptions from std::locale::global.
+  std::setlocale(LC_ALL, "");
 #endif
 }
 
@@ -717,6 +714,10 @@ static void InitializeRuntime(bool quiet) {
   g_App.LogRaw(L"Architecture: " + GetArchName());
   g_Cpu = GetCpuInfo();
   g_App.LogRaw(L"CPU: " + g_Cpu.brand);
+
+#ifdef PLATFORM_WINDOWS
+  RequestHighPerformance();
+#endif
 }
 
 static void ApplyRunOptions(const CliOptions &options) {
@@ -738,6 +739,10 @@ static void CleanupWorkers() {
   g_DynThread.reset();
   g_WdThread.reset();
   g_Threads.clear();
+
+#ifdef PLATFORM_WINDOWS
+  ReleaseHighPerformance();
+#endif
 }
 
 static void PrintVerifyResult(const std::wstring &hash, const HashResult &result) {

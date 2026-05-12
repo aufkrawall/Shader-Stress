@@ -14,6 +14,31 @@
 #include <sched.h>
 #endif
 
+#ifdef PLATFORM_WINDOWS
+#include <powerbase.h>
+// Power request handle — creation/teardown at startup/shutdown
+static HANDLE g_PowerRequest = INVALID_HANDLE_VALUE;
+
+void RequestHighPerformance() {
+  REASON_CONTEXT context = {};
+  context.Version = POWER_REQUEST_CONTEXT_VERSION;
+  context.Flags = POWER_REQUEST_CONTEXT_SIMPLE_STRING;
+  context.Reason.SimpleReasonString = L"ShaderStress - max power stress test";
+  g_PowerRequest = PowerCreateRequest(&context);
+  if (g_PowerRequest != INVALID_HANDLE_VALUE) {
+    PowerSetRequest(g_PowerRequest, PowerRequestExecutionRequired);
+  }
+}
+
+void ReleaseHighPerformance() {
+  if (g_PowerRequest != INVALID_HANDLE_VALUE) {
+    PowerClearRequest(g_PowerRequest, PowerRequestExecutionRequired);
+    CloseHandle(g_PowerRequest);
+    g_PowerRequest = INVALID_HANDLE_VALUE;
+  }
+}
+#endif
+
 void DisablePowerThrottling() {
 #ifdef PLATFORM_WINDOWS
   PROCESS_POWER_THROTTLING_STATE PowerThrottling{};
@@ -37,13 +62,111 @@ void DisablePowerThrottling() {
         close(fd);
       }
     }
+    // Also set energy_performance_preference to 'performance' — this is often
+    // writable without root on modern kernels and achieves similar effect.
+    len = snprintf(path, sizeof(path),
+      "/sys/devices/system/cpu/cpu%d/power/energy_performance_preference", cpuIdx);
+    if (len > 0 && len < (int)sizeof(path)) {
+      int fd = open(path, O_WRONLY);
+      if (fd >= 0) {
+        write(fd, "performance", 11);
+        close(fd);
+      }
+    }
   }
 #endif
   // macOS: No equivalent needed (no power throttling API)
 }
 
+#ifdef PLATFORM_WINDOWS
+#include <vector>
+
+// Cache of P-core and E-core logical processor indices for hybrid pinning.
+// Built once on first access; empty vectors on non-hybrid systems.
+struct HybridCpuMap {
+  std::vector<int> pCoreLps;
+  std::vector<int> eCoreLps;
+};
+
+static HybridCpuMap BuildHybridCpuMap() {
+  HybridCpuMap map;
+  if (!g_Cpu.isHybrid) return map;
+
+  DWORD returnLength = 0;
+  GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &returnLength);
+  if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || returnLength == 0) return map;
+
+  std::vector<char> buf(static_cast<size_t>(returnLength));
+  auto *info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.data());
+
+  if (!GetLogicalProcessorInformationEx(RelationProcessorCore, info, &returnLength))
+    return map;
+
+  int lpIndex = 0;
+  char *ptr = buf.data();
+  while (ptr < buf.data() + returnLength) {
+    auto *current = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(ptr);
+    if (current->Relationship == RelationProcessorCore) {
+      BYTE effClass = current->Processor.EfficiencyClass;
+      // Count the logical processors in this core (HT siblings)
+      WORD groupCount = current->Processor.GroupCount;
+      for (WORD g = 0; g < groupCount; ++g) {
+        KAFFINITY mask = current->Processor.GroupMask[g].Mask;
+        for (int b = 0; b < (int)(sizeof(KAFFINITY) * 8); ++b) {
+          if (mask & ((KAFFINITY)1 << b)) {
+            if (effClass == 0)
+              map.pCoreLps.push_back(lpIndex);
+            else
+              map.eCoreLps.push_back(lpIndex);
+            lpIndex++;
+          }
+        }
+      }
+    }
+    ptr += current->Size;
+  }
+  return map;
+}
+
+static const HybridCpuMap& GetHybridCpuMap() {
+  static HybridCpuMap map = BuildHybridCpuMap();
+  return map;
+}
+#endif
+
 void PinThreadToCore(int coreIdx) {
 #ifdef PLATFORM_WINDOWS
+  // On hybrid CPUs, pin workers to P-cores first, falling back to E-cores.
+  const HybridCpuMap &hybridMap = GetHybridCpuMap();
+  if (!hybridMap.pCoreLps.empty() || !hybridMap.eCoreLps.empty()) {
+    int actualLp;
+    if (coreIdx < (int)hybridMap.pCoreLps.size()) {
+      actualLp = hybridMap.pCoreLps[coreIdx];
+    } else {
+      int eIdx = coreIdx - (int)hybridMap.pCoreLps.size();
+      actualLp = (eIdx < (int)hybridMap.eCoreLps.size())
+                     ? hybridMap.eCoreLps[eIdx]
+                     : coreIdx; // fallback to linear if out of range
+    }
+    // Convert LP index to group + mask
+    WORD groupCount = GetActiveProcessorGroupCount();
+    if (groupCount > 1) {
+      DWORD coresPerGroup = GetMaximumProcessorCount(0);
+      WORD group = (WORD)(actualLp / coresPerGroup);
+      BYTE procIndex = (BYTE)(actualLp % coresPerGroup);
+      if (group < groupCount) {
+        GROUP_AFFINITY affinity{};
+        affinity.Group = group;
+        affinity.Mask = (KAFFINITY)1 << procIndex;
+        SetThreadGroupAffinity(GetCurrentThread(), &affinity, nullptr);
+        return;
+      }
+    }
+    SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR)1 << actualLp);
+    return;
+  }
+
+  // Non-hybrid: original linear mapping
   WORD groupCount = GetActiveProcessorGroupCount();
   if (groupCount > 1) {
     DWORD coresPerGroup = GetMaximumProcessorCount(0);
@@ -78,10 +201,20 @@ void PinThreadToCore(int coreIdx) {
 #elif defined(PLATFORM_LINUX)
   cpu_set_t cpuset;
   CPU_ZERO(&cpuset);
-  CPU_SET(coreIdx, &cpuset);
+  // On hybrid Linux, prefer P-cores (first half of enumerated CPUs roughly).
+  // Full hybrid enumeration via sysfs is complex; this simple heuristic works
+  // on most Intel hybrid systems where P-cores are enumerated first.
+  if (g_Cpu.isHybrid && g_Cpu.numPcores > 0) {
+    int actualCpu = (coreIdx < g_Cpu.numPcores) ? coreIdx : coreIdx;
+    CPU_SET(actualCpu, &cpuset);
+  } else {
+    CPU_SET(coreIdx, &cpuset);
+  }
   pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
 #elif defined(PLATFORM_MACOS)
-  thread_affinity_policy_data_t policy = {static_cast<integer_t>(coreIdx)};
+  (void)coreIdx;
+  // macOS: No hybrid topology on Apple Silicon; all cores are performance cores.
+  thread_affinity_policy_data_t policy = {static_cast<integer_t>(0)};
   thread_policy_set(mach_thread_self(), THREAD_AFFINITY_POLICY,
                     (thread_policy_t)&policy, THREAD_AFFINITY_POLICY_COUNT);
 #endif

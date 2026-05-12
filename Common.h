@@ -194,6 +194,10 @@ struct ScopedMem {
                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     valid = (ptr != MAP_FAILED);
     if (!valid) ptr = nullptr;
+    // Lock pages to prevent swapping (best-effort; may fail without CAP_IPC_LOCK).
+    if (valid) {
+      mlock(ptr, size);
+    }
 #endif
   }
   
@@ -279,6 +283,9 @@ struct CpuFeatures {
 std::wstring GetCpuBrand();
 CpuFeatures GetCpuInfo();
 
+// Enumerate hybrid CPU topology (P-cores vs E-cores) into the CpuFeatures struct.
+void EnumerateHybridTopology(CpuFeatures &f);
+
 extern CpuFeatures g_Cpu;
 extern bool g_ForceNoAVX512;
 extern bool g_ForceNoAVX2;
@@ -324,33 +331,41 @@ WorkloadType ResolveSelectedWorkload(int workloadSel);
 void ApplyWorkloadConfig(int workloadSel);
 
 struct AppState {
-  // Control flags use seq_cst for proper synchronization between threads
-  std::atomic<bool> running{false};
+  // Cache-line 1: Worker-Read-Hot — read by ALL worker threads every
+  // iteration.  Isolated on its own cache line to avoid MESI invalidation
+  // from Watchdog/DynamicLoop writing to other groups.
+  alignas(64) std::atomic<bool> running{false};
   std::atomic<bool> quit{false};
   std::atomic<int> mode{2};
   std::atomic<int> activeCompilers{0};
   std::atomic<int> activeDecomp{0};
-  std::atomic<int> loops{0};
-  std::atomic<bool> ioActive{false};
-  std::atomic<bool> ramActive{false};
-  std::atomic<bool> resetTimer{false};
-  std::atomic<int> currentPhase{0};
   std::atomic<int> selectedWorkload{WL_AUTO};
 
-  // Statistics counters
-  std::atomic<uint64_t> shaders{0};
+  // Cache-line 2: Watchdog-Written — also read by workers (shaders, errors)
+  // but only rarely.  Separate line prevents Watchdog writes from invalidating
+  // the worker-read-hot cache line.
+  alignas(64) std::atomic<uint64_t> shaders{0};
   std::atomic<uint64_t> errors{0};
   std::atomic<uint64_t> elapsed{0};
   std::atomic<uint64_t> currentRate{0};
 
+  // Cache-line 3: DynamicLoop/Bench — written infrequently by DynamicLoop
+  // (~10s), separate from the high-frequency paths.
+  alignas(64) std::atomic<int> loops{0};
+  std::atomic<bool> ioActive{false};
+  std::atomic<bool> ramActive{false};
+  std::atomic<bool> resetTimer{false};
+  std::atomic<int> currentPhase{0};
   std::atomic<uint64_t> benchRates[3];
   std::atomic<int> benchWinner{-1};
   std::atomic<bool> benchComplete{false};
   std::atomic<bool> autoStopBenchmark{
       true}; // Stop and idle after 3min benchmark
-
   std::atomic<uint64_t> maxDuration{0};
-  std::wstring benchHash; // Generated hash for benchmark validation
+
+  // Cache-line 4: Cold data — logging, hash, platform handles.
+  // Accessed rarely and by single threads, no false-sharing concern.
+  alignas(64) std::wstring benchHash;
   static constexpr size_t MAX_LOG_HISTORY = 1000;
   std::deque<std::wstring> logHistory;
   mutable std::mutex historyMtx;
@@ -382,6 +397,14 @@ void PinThreadToCore(int coreIdx);
 // Sets MXCSR FTZ+DAZ bits on x86-64 for consistent FP behaviour (no-op on ARM64).
 // Call once per thread, and in the main thread before InitGoldenValues().
 void SetFpuFlushMode();
+
+// Windows Power Request API — process-scoped high-performance request.
+// Prevents frequency reduction, core parking, deep C-states and throttling.
+// Does NOT change the system-wide power scheme.
+#ifdef PLATFORM_WINDOWS
+void RequestHighPerformance();
+void ReleaseHighPerformance();
+#endif
 
 struct FakeAstNode {
   uint32_t children[4];

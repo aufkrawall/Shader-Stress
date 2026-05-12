@@ -174,6 +174,10 @@ def build_target(config):
             "-std=c++20", "-O3",
             "-ffast-math", "-funroll-loops",
             "-fno-rtti",
+            # Disable C++ exceptions entirely (no try/catch in code, SEH compiled out)
+            "-fno-exceptions",
+            # Prevent symbol interposition allowing more aggressive inlining
+            "-fno-semantic-interposition",
             # Register allocation improvements for better ILP
             "-frename-registers", "-fweb",
             # Remove stack canary checks (acceptable for stress tool)
@@ -194,6 +198,7 @@ def build_target(config):
         base_cmd.extend([
             "-s",
             "-Wno-macro-redefined",
+            "-Wno-ignored-optimization-argument",
         ])
         
         if is_windows:
@@ -226,6 +231,9 @@ def build_target(config):
                 "-lpthread",
                 # Sort common symbols and sections for improved cache locality
                 "-Wl,--sort-common,--sort-section=alignment",
+                # Remove unused sections (requires -ffunction-sections/-fdata-sections)
+                "-Wl,--gc-sections",
+
             ]
             cmd = [c for c in cmd if c]
             subprocess.run(cmd, check=True, capture_output=True)

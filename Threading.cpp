@@ -230,8 +230,8 @@ void WorkerThread(int idx) {
   auto &w = *g_Workers[idx];
   w.state.store(WorkerState::Running, std::memory_order_release);
 
-  while (!w.terminate) {
-    if (g_Repro.active) {
+  while (!w.terminate) [[likely]] {
+    if (g_Repro.active) [[unlikely]] {
       StressConfig reproCfg;
       {
         std::lock_guard<std::mutex> lk(g_ConfigMtx);
@@ -276,14 +276,14 @@ void IOThread(int ioIdx) {
   ScopedMem buf(IO_CHUNK_SIZE);
   std::mt19937_64 rng(GetTick() + ioIdx);
 
-  while (!w.terminate) {
-    if (!g_App.ioActive && !g_Repro.active) {
+  while (!w.terminate) [[likely]] {
+    if (!g_App.ioActive && !g_Repro.active) [[unlikely]] {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
       continue;
     }
 
     // Create temp file on first activation (deferred from startup)
-    if (!fileCreated) {
+    if (!fileCreated) [[unlikely]] {
       // Use CreateFileW to avoid narrow-string conversion (handles non-ASCII paths)
       HANDLE hCreate = CreateFileW(fpath.c_str(), GENERIC_WRITE, 0, nullptr,
                                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -380,8 +380,11 @@ void RAMThread() {
 
       uint64_t burstEnd = GetTick() + 5000;
       while (GetTick() < burstEnd && !w.terminate && g_App.ramActive) {
-        if (rng() % 2 == 0) {
-          size_t stride = 64;
+        // 70% high-bandwidth stride writes, 30% pointer-chase latency stress
+        if ((rng() % 10) < 7) {
+          // High-bandwidth write pattern: stride=1 (8 bytes) saturates
+          // memory controller with max possible write transactions.
+          size_t stride = 1;
           for (size_t i = 0; i < count; i += stride) {
             p[i] = (i + 16) % count;
           }
@@ -547,8 +550,11 @@ void RAMThread() {
 
       uint64_t burstEnd = GetTick() + 5000;
       while (GetTick() < burstEnd && !w.terminate && g_App.ramActive) {
-        if (rng() % 2 == 0) {
-          size_t stride = 64;
+        // 70% high-bandwidth stride writes, 30% pointer-chase latency stress
+        if ((rng() % 10) < 7) {
+          // High-bandwidth write pattern: stride=1 (8 bytes) saturates
+          // memory controller with max possible write transactions.
+          size_t stride = 1;
           for (size_t i = 0; i < count; i += stride) {
             // Read/Write to properly dirty pages
             p[i] = (p[i] + 1);
@@ -587,7 +593,9 @@ void SetWork(int requestComps, int requestDecomp, bool io, bool ram) {
   
   // 1. Calculate Budget
   int cpuTotal = (int)g_Workers.size();
-  int cntIO = io ? 1 : 0;
+  // Multi-thread IO: up to min(cpu/4, 4) IO threads for better disk saturation
+  int maxIO = std::max(1, std::min(cpuTotal / 4, 4));
+  int cntIO = io ? maxIO : 0;
   int cntRAM = ram ? 1 : 0;
   int reserved = cntIO + cntRAM;
   int availableForWorkers = std::max(0, cpuTotal - reserved);
@@ -621,15 +629,17 @@ void SetWork(int requestComps, int requestDecomp, bool io, bool ram) {
   // Note: We don't join threads when reducing count, just let them idle
   // The WorkerThread checks activeCompilers/activeDecomp to decide work
 
-  // 4. Manage IO Thread (Single Thread)
+  // 4. Manage IO Threads (up to 4 for better disk saturation)
   if (io && !s_IOActive) {
     g_IOThreads.clear();
     s_IOThreadHandles.clear();
-    g_IOThreads.push_back(std::make_unique<Worker>());
-    g_IOThreads[0]->terminate = false;
-    auto t = std::make_unique<ThreadWrapper>();
-    t->t = std::thread(IOThread, 0);
-    s_IOThreadHandles.push_back(std::move(t));
+    for (int i = 0; i < cntIO; ++i) {
+      g_IOThreads.push_back(std::make_unique<Worker>());
+      g_IOThreads[i]->terminate = false;
+      auto t = std::make_unique<ThreadWrapper>();
+      t->t = std::thread(IOThread, i);
+      s_IOThreadHandles.push_back(std::move(t));
+    }
     s_IOActive = true;
   } else if (!io && s_IOActive) {
     for (auto &w : g_IOThreads)

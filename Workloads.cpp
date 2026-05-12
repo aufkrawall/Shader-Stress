@@ -214,7 +214,7 @@ uint64_t RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
   uint64_t acc0 = seed, acc1 = seed + 1, acc2 = seed + 2, acc3 = seed + 3;
 
   for (int iter = 0; iter < complexity; iter += 4) {
-    if (g_App.quit)
+    if (g_App.quit) [[unlikely]]
       break;
 
 #if defined(__x86_64__) || defined(_M_X64)
@@ -386,7 +386,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   int iters = complexity * 280;
   
   for (int i = 0; i < iters; ++i) {
-    if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) break;
+    if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
     
     // Prefetch next iterations' data ahead of time
     int nextIdx = (idx + 96) & MASK;
@@ -506,7 +506,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   int iters = complexity * 280;
 
   for (int i = 0; i < iters; ++i) {
-    if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) break;
+    if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
     
     // Prefetch next iterations' data ahead of time
     int nextIdx = (idx + 96) & MASK;
@@ -628,7 +628,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   int idx = 0;
   const int MASK = (int)(WORK_BUF_ELEMS - 1);
   for (int i = 0; i < complexity * 280; ++i) {
-    if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) break;
+    if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
     r0 = r0 * 1.000001 + memPtr[(idx + 0) & MASK];
     r1 = r1 * 1.000001 + memPtr[(idx + 1) & MASK];
     r2 = r2 * 1.000001 + memPtr[(idx + 2) & MASK];
@@ -707,7 +707,7 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
   int iters = complexity * 180;
 
   for (int i = 0; i < iters; ++i) {
-    if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) break;
+    if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
     
     // Prefetch next iterations' data ahead of time
     int nextIdx = (idx + 64) & MASK;
@@ -841,7 +841,7 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
   int iters = complexity * 150;
 
   for (int i = 0; i < iters; ++i) {
-    if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) break;
+    if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
     
     // Prefetch next iterations' data ahead of time
     int nextIdx = (idx + 256) & MASK;
