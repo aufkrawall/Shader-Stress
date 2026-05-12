@@ -206,6 +206,11 @@ uint64_t RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
     if (g_App.quit)
       break;
 
+    // Prefetch tree and hash table for the upcoming lookup
+    _mm_prefetch(reinterpret_cast<const char*>(&tree[0]), _MM_HINT_T0);
+    _mm_prefetch(reinterpret_cast<const char*>(&tableEntries[0]), _MM_HINT_T0);
+    _mm_prefetch(reinterpret_cast<const char*>(&liveIn[0]), _MM_HINT_T0);
+
     {
       uint32_t strStart = (uint32_t)(acc0 & (STRING_POOL_SIZE - 256));
       uint32_t strLen = 4 + (uint32_t)(acc1 & 0x1F);
@@ -370,6 +375,11 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) break;
     
+    // Prefetch next iteration's data ahead of time
+    int nextIdx = (idx + 96) & MASK;
+    __builtin_prefetch(&memPtr[nextIdx]);
+    __builtin_prefetch(&memPtr[(nextIdx + 512) & MASK]);
+    
     // NEON: FMA read-modify-write (r = r*mul + mem[off])
     #define NEON_WORK(r, off) \
       r = vfmaq_f64(vld1q_f64(&memPtr[(idx + off) & MASK]), r, mul); \
@@ -483,12 +493,17 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) break;
     
+    // Prefetch next iteration's data ahead of time
+    int nextIdx = (idx + 96) & MASK;
+    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx]), _MM_HINT_T0);
+    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx + 512) & MASK]), _MM_HINT_T0);
+    
     // SSE2: 2-wide operations (128-bit)
     // Load-Multiply-Add-Store pattern
     #define SSE2_WORK(r, off) \
       r = _mm_mul_pd(r, mul); \
-      r = _mm_add_pd(r, _mm_loadu_pd(&memPtr[(idx + off) & MASK])); \
-      _mm_storeu_pd(&memPtr[(idx + off + 512) & MASK], r)
+      r = _mm_add_pd(r, _mm_load_pd(&memPtr[(idx + off) & MASK])); \
+      _mm_store_pd(&memPtr[(idx + off + 512) & MASK], r)
     
     SSE2_WORK(r0, 0);   SSE2_WORK(r1, 2);   SSE2_WORK(r2, 4);   SSE2_WORK(r3, 6);
     
@@ -668,6 +683,11 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) break;
     
+    // Prefetch next iteration's data ahead of time
+    int nextIdx = (idx + 64) & MASK;
+    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx]), _MM_HINT_T0);
+    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx + 512) & MASK]), _MM_HINT_T0);
+    
     // MASK=65532 ensures the double index is always a multiple of 4, so the
     // byte address is always 32-byte aligned – safe to use aligned load/store.
     #define WORK(r, off) \
@@ -793,6 +813,11 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
 
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) break;
+    
+    // Prefetch next iteration's data ahead of time
+    int nextIdx = (idx + 256) & MASK;
+    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx]), _MM_HINT_T0);
+    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx + 512) & MASK]), _MM_HINT_T0);
     
     // MASK=65528 ensures the double index is always a multiple of 8, so the
     // byte address is always 64-byte aligned – safe to use aligned load/store.
