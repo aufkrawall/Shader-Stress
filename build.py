@@ -148,9 +148,9 @@ def build_target(config):
                 log(f"Warning: Could not compile resource.rc for {target}: {e}")
         
         # Main build command
-        # LTO supported on all targets with Zig's bundled LLD linker
-        # macOS uses ThinLTO for compatibility, others use full LTO
-        use_lto = True
+        # LTO supported on all targets except macOS (system linker ld doesn't support LLVM bitcode).
+        # macOS builds skip LTO since Zig falls back to the system linker on that platform.
+        use_lto = "macos" not in target
         
         base_cmd = [
             str(ZIG_EXE), "c++",
@@ -181,10 +181,7 @@ def build_target(config):
         ])
         
         if use_lto:
-            if "macos" in target:
-                base_cmd.append("-flto=thin")
-            else:
-                base_cmd.append("-flto")
+            base_cmd.append("-flto")
         
         base_cmd.extend([
             "-s",
