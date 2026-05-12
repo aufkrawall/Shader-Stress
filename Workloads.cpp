@@ -3,10 +3,9 @@
 #include <cstring>
 #include <vector>
 
-// Work buffer size: 32MB (4,194,304 doubles) — exceeds L3 cache on most CPUs
-// to force main-memory bandwidth utilization and maximize memory controller
-// stress. Was 512KB in v3.5.4.
-constexpr size_t WORK_BUF_ELEMS = 4 * 1024 * 1024;
+// Work buffer size: 512KB (65536 doubles) — exceeds L2 but fits in L3 on most
+// CPUs. Keeps the workload ALU-bound for maximum power draw.
+constexpr size_t WORK_BUF_ELEMS = 65536;
 // Alignment-safe MASK values derived from buffer size (must be power-of-two):
 // SSE2/NEON: clear lowest 1 bit  → 16-byte alignment
 // AVX2:      clear lowest 2 bits → 32-byte alignment
