@@ -35,6 +35,7 @@ Copyright (c) 2026 aufkrawall
 ## Non-negotiable project constraints
 
 - Do not disable features to avoid fixing bugs!
+- Regression unit tests, smoke tests etc. must not run the actual stresstest workloads, we do not want our program to cause heat and system load during development!
 
 ## Build, diagnostics, and tests
 

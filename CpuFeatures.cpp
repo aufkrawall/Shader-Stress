@@ -60,8 +60,11 @@ CpuFeatures GetCpuInfo() {
   f.hasAVX2 = false;
   f.hasAVX512F = false;
   f.hasFMA = false;
+  f.isHybrid = false;
   f.family = 0;
   f.model = 0;
+  f.numPcores = 0;
+  f.numEcores = 0;
   f.name = L"Scalar";
 
 #if defined(_M_ARM64) || defined(__aarch64__)
@@ -105,12 +108,17 @@ CpuFeatures GetCpuInfo() {
           __get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx);
           f.hasAVX2 = (ebx & (1 << 5)) != 0;
           f.hasAVX512F = (ebx & (1 << 16)) != 0;
+          f.isHybrid = (edx & (1 << 15)) != 0;
 
           if (f.hasAVX512F && (xcr0 & 0xE0) != 0xE0)
             f.hasAVX512F = false;
         }
       }
     }
+
+    // Detect hybrid core topology (Intel hybrid: Alder Lake+).
+    // Per-thread core type detection is done in PinThreadToCore.
+    // Here we just mark that the CPU has hybrid topology.
   }
 
   if (f.hasAVX512F)

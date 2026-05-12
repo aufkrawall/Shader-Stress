@@ -6,6 +6,7 @@
 #include "TerminalUtils.h"
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <clocale>
 #include <cstdio>
@@ -18,6 +19,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #ifdef PLATFORM_WINDOWS
@@ -166,29 +168,26 @@ static std::wstring ToWide(const char *value) {
 #endif
 
 static std::optional<uint64_t> ParseUint64(const std::wstring &text) {
-  try {
-    size_t pos = 0;
-    unsigned long long parsed = std::stoull(text, &pos, 10);
-    if (pos != text.size())
-      return std::nullopt;
-    return static_cast<uint64_t>(parsed);
-  } catch (...) {
+  if (text.empty())
     return std::nullopt;
-  }
+  std::string narrow(text.begin(), text.end());
+  uint64_t result = 0;
+  auto [ptr, ec] = std::from_chars(narrow.data(), narrow.data() + narrow.size(), result, 10);
+  if (ec != std::errc() || ptr != narrow.data() + narrow.size())
+    return std::nullopt;
+  return result;
 }
 
 static std::optional<int> ParsePositiveInt(const std::wstring &text) {
-  try {
-    size_t pos = 0;
-    long long parsed = std::stoll(text, &pos, 10);
-    if (pos != text.size() || parsed <= 0 ||
-        parsed > std::numeric_limits<int>::max()) {
-      return std::nullopt;
-    }
-    return static_cast<int>(parsed);
-  } catch (...) {
+  if (text.empty())
     return std::nullopt;
-  }
+  std::string narrow(text.begin(), text.end());
+  long long parsed = 0;
+  auto [ptr, ec] = std::from_chars(narrow.data(), narrow.data() + narrow.size(), parsed, 10);
+  if (ec != std::errc() || ptr != narrow.data() + narrow.size() ||
+      parsed <= 0 || parsed > std::numeric_limits<int>::max())
+    return std::nullopt;
+  return static_cast<int>(parsed);
 }
 
 static std::optional<int> ParseModeValue(const std::wstring &text) {
@@ -589,13 +588,10 @@ static std::optional<int> AskWizardChoice(const char *prompt, int def, int min,
     if (line->empty())
       return def;
 
-    try {
-      size_t pos = 0;
-      int value = std::stoi(*line, &pos);
-      if (pos == line->size() && value >= min && value <= max)
-        return value;
-    } catch (...) {
-    }
+    int value = 0;
+    auto [ptr, ec] = std::from_chars(line->data(), line->data() + line->size(), value, 10);
+    if (ec == std::errc() && ptr == line->data() + line->size() && value >= min && value <= max)
+      return value;
 
     std::cout << "Please enter a number between " << min << " and " << max
               << "." << std::endl;

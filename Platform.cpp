@@ -6,6 +6,14 @@
 #include <mach/thread_policy.h>
 #endif
 
+#ifdef PLATFORM_LINUX
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#include <fcntl.h>
+#include <sched.h>
+#endif
+
 void DisablePowerThrottling() {
 #ifdef PLATFORM_WINDOWS
   PROCESS_POWER_THROTTLING_STATE PowerThrottling{};
@@ -14,8 +22,24 @@ void DisablePowerThrottling() {
   PowerThrottling.StateMask = 0;
   SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling,
                        &PowerThrottling, sizeof(PowerThrottling));
+#elif defined(PLATFORM_LINUX)
+  // Try to set scaling governor to 'performance' for maximum frequency
+  // (may need root / CAP_SYS_ADMIN; silently ignored on failure).
+  int cpuIdx = sched_getcpu();
+  if (cpuIdx >= 0) {
+    char path[128];
+    int len = snprintf(path, sizeof(path),
+      "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_governor", cpuIdx);
+    if (len > 0 && len < (int)sizeof(path)) {
+      int fd = open(path, O_WRONLY);
+      if (fd >= 0) {
+        write(fd, "performance", 11);
+        close(fd);
+      }
+    }
+  }
 #endif
-  // Linux/macOS: No equivalent needed (no power throttling API)
+  // macOS: No equivalent needed (no power throttling API)
 }
 
 void PinThreadToCore(int coreIdx) {

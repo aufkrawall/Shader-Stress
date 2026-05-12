@@ -267,8 +267,11 @@ struct CpuFeatures {
   bool hasAVX2 = false;
   bool hasAVX512F = false;
   bool hasFMA = false;
-  int family = 0;       // CPU family (for tuning)
-  int model = 0;        // CPU model (for tuning)
+  bool isHybrid = false;    // Intel hybrid (P-core + E-core) topology
+  int family = 0;           // CPU family (for tuning)
+  int model = 0;            // CPU model (for tuning)
+  int numPcores = 0;        // Number of performance cores (hybrid only)
+  int numEcores = 0;        // Number of efficient cores (hybrid only)
   std::wstring name;
   std::wstring brand;
 };

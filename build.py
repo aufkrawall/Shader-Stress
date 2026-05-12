@@ -51,9 +51,11 @@ BUILD_CONFIGS = [
     # (target, out_dir, cpu, is_windows, archive_name)
     ("x86_64-windows-gnu", "bin/x64-zig", "x86_64", True, "ShaderStress-Windows-x64-Zig.7z"),
     ("x86_64-windows-gnu", "bin/x64-zig-v3", "x86_64_v3", True, "ShaderStress-Windows-x64-v3.7z"),
+    ("x86_64-windows-gnu", "bin/x64-zig-v4", "x86_64_v4", True, "ShaderStress-Windows-x64-v4.7z"),
     ("aarch64-windows-gnu", "bin/arm64-zig", "generic", True, "ShaderStress-Windows-ARM64-Zig.7z"),
     ("x86_64-linux-gnu", "bin/linux-x64", "x86_64", False, "ShaderStress-Linux-x64.7z"),
     ("x86_64-linux-gnu", "bin/linux-x64-v3", "x86_64_v3", False, "ShaderStress-Linux-x64-v3.7z"),
+    ("x86_64-linux-gnu", "bin/linux-x64-v4", "x86_64_v4", False, "ShaderStress-Linux-x64-v4.7z"),
     ("aarch64-linux-gnu", "bin/linux-arm64", "generic", False, "ShaderStress-Linux-ARM64.7z"),
     ("x86_64-macos", "bin/macos-x64", "x86_64", False, "ShaderStress-macOS-x64.7z"),
     ("aarch64-macos", "bin/macos-arm64", "generic", False, "ShaderStress-macOS-ARM64.7z"),
@@ -172,6 +174,12 @@ def build_target(config):
             "-std=c++20", "-O3",
             "-ffast-math", "-funroll-loops",
             "-fno-rtti",
+            # Register allocation improvements for better ILP
+            "-frename-registers", "-fweb",
+            # Remove stack canary checks (acceptable for stress tool)
+            "-fno-stack-protector",
+            # Free RBP as general-purpose register on x86-64
+            "-fomit-frame-pointer",
             # Size optimizations - remove unused code/data
             "-ffunction-sections", "-fdata-sections",
             # Remove exception handling overhead (not used)
@@ -213,7 +221,12 @@ def build_target(config):
             subprocess.run(cmd, check=True, capture_output=True)
             build_windows_cli_launcher(target, cpu, out_path)
         else:
-            cmd = base_cmd[:] + ["-o", str(exe_path), "-lpthread"]
+            cmd = base_cmd[:] + [
+                "-o", str(exe_path),
+                "-lpthread",
+                # Sort common symbols and sections for improved cache locality
+                "-Wl,--sort-common,--sort-section=alignment",
+            ]
             cmd = [c for c in cmd if c]
             subprocess.run(cmd, check=True, capture_output=True)
         
@@ -319,6 +332,7 @@ def main():
         print("  windows   - Windows x64 and ARM64")
         print("  linux     - Linux x64 and ARM64")
         print("  macos     - macOS x64 and ARM64")
+        print("  v4        - x86_64_v4 targets (AVX-512) only")
         print("  native    - Current platform only")
         print("")
         print("Examples:")
@@ -338,15 +352,28 @@ def main():
                 configs.extend([c for c in BUILD_CONFIGS if "linux" in c[0]])
             elif t == "macos":
                 configs.extend([c for c in BUILD_CONFIGS if "macos" in c[0]])
+            elif t == "v4":
+                configs.extend([c for c in BUILD_CONFIGS if "v4" in c[1]])
             elif t == "native":
-                # Detect current platform
+                # Detect current platform and prefer highest CPU variant
                 import platform
                 machine = platform.machine().lower()
                 system = platform.system().lower()
                 if system == "windows":
-                    configs.append([c for c in BUILD_CONFIGS if "windows" in c[0] and "x86_64" in c[0]][0])
+                    candidates = [c for c in BUILD_CONFIGS if "windows" in c[0] and "x86_64" in c[0]]
+                    # Prefer v4 > v3 > generic for native builds
+                    for pref in ["v4", "v3", "zig"]:
+                        match = [c for c in candidates if pref in c[1]]
+                        if match:
+                            configs.append(match[0])
+                            break
                 elif system == "linux":
-                    configs.append([c for c in BUILD_CONFIGS if "linux" in c[0] and "x86_64" in c[0]][0])
+                    candidates = [c for c in BUILD_CONFIGS if "linux" in c[0] and "x86_64" in c[0]]
+                    for pref in ["v4", "v3", "x64"]:
+                        match = [c for c in candidates if pref in c[1]]
+                        if match:
+                            configs.append(match[0])
+                            break
                 elif system == "darwin":
                     if "arm" in machine:
                         configs.append([c for c in BUILD_CONFIGS if "macos" in c[0] and "aarch64" in c[0]][0])
