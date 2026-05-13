@@ -874,7 +874,27 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     r15 = _mm256_permute4x64_pd(r15, _MM_SHUFFLE(1, 0, 3, 2));
     #endif
     
-    // Daisy-chain reg-to-reg FMA — one full rotation for V1/V2/V4, two for V3
+    // V5: extra permute pass (doubles port 5 pressure)
+    #if AVX2_VARIANT == 5
+    r0 = _mm256_permute4x64_pd(r0, _MM_SHUFFLE(0, 1, 2, 3));
+    r1 = _mm256_permute4x64_pd(r1, _MM_SHUFFLE(0, 1, 2, 3));
+    r2 = _mm256_permute4x64_pd(r2, _MM_SHUFFLE(0, 1, 2, 3));
+    r3 = _mm256_permute4x64_pd(r3, _MM_SHUFFLE(0, 1, 2, 3));
+    r4 = _mm256_permute4x64_pd(r4, _MM_SHUFFLE(0, 1, 2, 3));
+    r5 = _mm256_permute4x64_pd(r5, _MM_SHUFFLE(0, 1, 2, 3));
+    r6 = _mm256_permute4x64_pd(r6, _MM_SHUFFLE(0, 1, 2, 3));
+    r7 = _mm256_permute4x64_pd(r7, _MM_SHUFFLE(0, 1, 2, 3));
+    r8 = _mm256_permute4x64_pd(r8, _MM_SHUFFLE(0, 1, 2, 3));
+    r9 = _mm256_permute4x64_pd(r9, _MM_SHUFFLE(0, 1, 2, 3));
+    r10 = _mm256_permute4x64_pd(r10, _MM_SHUFFLE(0, 1, 2, 3));
+    r11 = _mm256_permute4x64_pd(r11, _MM_SHUFFLE(0, 1, 2, 3));
+    r12 = _mm256_permute4x64_pd(r12, _MM_SHUFFLE(0, 1, 2, 3));
+    r13 = _mm256_permute4x64_pd(r13, _MM_SHUFFLE(0, 1, 2, 3));
+    r14 = _mm256_permute4x64_pd(r14, _MM_SHUFFLE(0, 1, 2, 3));
+    r15 = _mm256_permute4x64_pd(r15, _MM_SHUFFLE(0, 1, 2, 3));
+    #endif
+    
+    // Daisy-chain reg-to-reg FMA — one full rotation for V1/V2/V4/V5, two for V3
     #if AVX2_VARIANT >= 2
     r0 = _mm256_fmadd_pd(r0, mul, r1);   r1 = _mm256_fmadd_pd(r1, mul, r2);
     r2 = _mm256_fmadd_pd(r2, mul, r3);   r3 = _mm256_fmadd_pd(r3, mul, r4);
