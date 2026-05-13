@@ -437,12 +437,13 @@ def main():
                     else:
                         configs.append([c for c in BUILD_CONFIGS if "macos" in c[0] and "x86_64" in c[0]][0])
             elif t.startswith("avx2-"):
-                # Build native x86_64 with specific AVX2 variant
+                # Build native x86_64 with specific AVX2 variant (use v3 for best
+                # AVX2+FMA support without AVX-512, which is ideal for Zen 3).
                 import platform
                 variant = int(t.split("-")[1])
                 system = platform.system().lower()
                 candidates = [c for c in BUILD_CONFIGS if "windows" in c[0] and "x86_64" in c[0]] if system == "windows" else [c for c in BUILD_CONFIGS if "linux" in c[0] and "x86_64" in c[0]]
-                for pref in ["v4", "v3", "zig"]:
+                for pref in ["v3", "v4", "zig"]:
                     match = [c for c in candidates if pref in c[1]]
                     if match:
                         cfg = list(match[0])
