@@ -1,6 +1,6 @@
 # Optimization Audit
 
-Audited for maximum power draw, throughput, heat, and utilization (2026-05-12).
+Audited for maximum power draw, throughput, heat, and utilization (2026-05-13).
 
 ## Implemented Optimizations
 
@@ -14,7 +14,10 @@ Audited for maximum power draw, throughput, heat, and utilization (2026-05-12).
 - **`-fno-exceptions`**: Disables C++ exception handling entirely (no try/catch/throwing code in codebase). Removes personality functions, landing pads, and exception tables — improves icache density. Zero risk.
 - **`-fno-semantic-interposition`**: Prevents symbol interposition, allowing more aggressive inlining (complementary to LTO).
 - **Linux linker flags**: `-Wl,--sort-common,--sort-section=alignment` for better cache locality; `-Wl,--gc-sections` to remove unreferenced sections (requires `-ffunction-sections`/`-fdata-sections`).
-- **Help text**: Added `v4` target listing.
+- **`-funroll-all-loops` / `-fpeel-loops`**: Unrolls all loops aggressively; peels prologue/epilogue for better vector alignment.
+- **`-mprefer-vector-width=512`**: Forces 512-bit ZMM register usage on x86_64_v4 targets for all auto-vectorized loops (init, golden verify).
+- **PGO build support**: `--pgo-gen` and `--pgo-use` flags for profile-guided optimization workflow (2-pass build).
+- **Help text**: Added `v4` target listing and PGO workflow documentation.
 
 ### Windows Power Request API (Platform.cpp, ShaderStress.cpp)
 
@@ -28,13 +31,19 @@ Audited for maximum power draw, throughput, heat, and utilization (2026-05-12).
 
 ### Code (Workloads.cpp, ShaderStress.cpp, Threading.cpp, Common.h)
 
+- **Port 5 shuffle pressure**: Added `_mm_shuffle_pd` (SSE2), `_mm256_permute4x64_pd` (AVX2), `_mm512_permutex_pd` (AVX-512), and `vextq_f64` (NEON) calls in all max-power workload hot loops. Saturates the shuffle port (port 5 on Intel) which was previously underutilized next to FMA (port 0/1) + load/store (port 2/3/4).
+- **AVX-512 mask register pressure**: Added `_mm512_cmp_pd_mask` + `_mm512_mask_blend_pd` in `RunHyperStress_AVX512` hot loop. Keeps mask register file (k0–k7) active alongside vector pipes, utilizing compare and blend hardware.
+- **Replaced integer division with high-IPC GPR ops**: Replaced low-throughput `idiv` instructions in SSE2/NEON max-power paths with `multiply + xor + shift` operations matching the AVX2/AVX-512 pattern. Eliminates ~40-cycle pipeline stalls from each `idiv`, keeping FMA pipes saturated longer.
+- **Cross-lane reduction at function exit**: Added shuffle+add merge step at the end of all 4 workload reduction phases (SSE2, NEON, AVX2, AVX-512). Adds extra shuffle-port pressure during the hot reduction sequence.
+- **Thread affinity re-assertion**: WorkerThread now re-pins to the assigned core every 10 seconds, preventing OS migration during idle phases in dynamic mode.
+
 - **SSE2 FMA**: `SSE2_WORK` macro conditionally uses `_mm_fmadd_pd` when compiled with `__FMA__` defined (v3/v4 builds). Falls back to separate `_mm_mul_pd` + `_mm_add_pd` for generic x86_64.
 - **Prefetch distance doubled**: All 4 workload paths (SSE2, NEON, AVX2, AVX-512) now prefetch 2 strides ahead instead of 1, for better cache coverage.
 - **Noexcept parsers**: Replaced `std::stoull`/`std::stoll`/`std::stoi` with `std::from_chars` in `ParseUint64`, `ParsePositiveInt`, `AskWizardChoice`. Eliminates exception handling code/data from all 3 functions.
 - **`[[unlikely]]` annotations**: C++20 `[[unlikely]]` added to `g_App.quit` break checks in all 4 workload hot loops (RealisticCompilerSim, SSE2/NEON, AVX2, AVX-512), plus `w.terminate` loop in `WorkerThread`, `g_Repro.active` check, and IO thread idle/init paths. Compiler optimizes branch layout for the hot path.
 - **RAM stress stride tuning**: Reduced write pattern stride from 64 elements (512 bytes / 8 cache lines) to 1 element (8 bytes), increasing memory controller write transactions. Changed ratio from 50/50 to 70/30 (70% high-bandwidth stride writes, 30% pointer-chase latency stress). Applied to both Windows and Linux paths.
 - **Linux `mlock()`**: `ScopedMem` now calls `mlock()` after `mmap` on Linux to prevent page swapping during RAM stress. Best-effort; silently ignored without `CAP_IPC_LOCK`.
-- **Multi-thread IO stress**: Increased from single IO thread to up to `min(cpu/4, 4)` IO threads with separate temporary files, improving disk controller queue depth and IO subsystem utilization.
+- **Multi-thread IO stress**: Increased from single IO thread to up to `min(cpu/4, 8)` IO threads with separate temporary files, improving disk controller queue depth and IO subsystem utilization.
 - **AppState false sharing fix**: Split `AppState` into 4 cache-line-aligned groups to prevent MESI protocol invalidations between hot fields with different access patterns:
   - Cache-line 1: Worker-Read-Hot (quit, running, mode, activeCompilers, activeDecomp, selectedWorkload)
   - Cache-line 2: Watchdog-Written (shaders, errors, elapsed, currentRate)
@@ -60,7 +69,7 @@ Audited for maximum power draw, throughput, heat, and utilization (2026-05-12).
 |------|--------|
 | Thread/process priority changes (REALTIME_PRIORITY_CLASS, SCHED_FIFO, THREAD_PRIORITY_TIME_CRITICAL) | Rejected — can starve critical OS threads and freeze the system |
 | Windows power scheme set/restore | Replaced by process-scoped PowerRequest API which is non-invasive |
-| PGO (Profile-Guided Optimization) | Complex 2-pass build; representative workload trace not available; potential 10-20% gain but high effort |
+| PGO (Profile-Guided Optimization) | Build script supports `--pgo-gen`/`--pgo-use` workflow; user provides training run + llvm-profdata merge |
 | macOS LTO | Depends on Zig using lld64 instead of system linker — needs investigation |
 | `-fvect-cost-model=unlimited` | Flag not supported by Zig 0.15.2's Clang |
 | ARM64 NEON prefetch | Already had `__builtin_prefetch` — was not missing |

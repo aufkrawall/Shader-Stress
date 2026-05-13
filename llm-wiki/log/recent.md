@@ -1,5 +1,18 @@
 # Recent Changes Log
 
+## 2026-05-13 — Optimization Audit v3 (Execution Port Saturation Sweep)
+
+- **Build**: Added `-funroll-all-loops`, `-fpeel-loops` (aggressive unrolling + alignment)
+- **Build**: Added `-mprefer-vector-width=512` for x86_64_v4 targets (forces ZMM in auto-vec)
+- **Build**: Added `--pgo-gen` / `--pgo-use` flags for PGO workflow (build.py)
+- **Code**: Port 5 shuffle pressure — `_mm_shuffle_pd` / `_mm256_permute4x64_pd` / `_mm512_permutex_pd` / `vextq_f64` in all max-power hot loops, saturating the otherwise-idle shuffle port
+- **Code**: AVX-512 mask register pressure — `_mm512_cmp_pd_mask` + `_mm512_mask_blend_pd` in AVX-512 hot loop
+- **Code**: Replaced integer `idiv` with `multiply+xor+shift` in SSE2/NEON max-power paths (eliminates ~40-cycle pipeline stalls from each idiv, keeps FMA pipes saturated)
+- **Code**: Cross-lane shuffle+add at function exit reduction in all 4 workloads
+- **Code**: More IO threads: 4 → 8 (Threading.cpp, Workloads.cpp cleanup)
+- **Code**: Thread affinity re-assertion every 10s in WorkerThread to prevent OS migration
+- **Skipped**: Cache-thrashing approaches (reduces CPU power by stalling execution), NT stores (bypass cache → less CPU-side power), random access patterns (stalls → less power)
+
 ## 2026-05-12 — Optimization Audit v2 (Missing Optimization Sweep)
 
 - **Build**: Added `-fno-exceptions` (removes all EH tables, zero risk — no try/catch/throwing code)

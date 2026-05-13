@@ -7,7 +7,9 @@ CPU stress-test tool that mimics shader-compiler workloads. Purely CPU-bound (no
 ### Build System (build.py)
 
 - Zig 0.15.2 cross-compiler (`zig c++` / `zig cc`)
-- C++20, `-O3`, `-ffast-math`, `-funroll-loops`, `-flto` (all except macOS)
+- C++20, `-O3`, `-ffast-math`, `-funroll-loops`, `-funroll-all-loops`, `-fpeel-loops`, `-flto` (all except macOS)
+- `-mprefer-vector-width=512` on x86_64_v4 targets (forces ZMM for auto-vectorized code)
+- PGO support via `--pgo-gen` / `--pgo-use` flags (2-pass profile-guided optimization)
 - Source files compiled via python build script with ThreadPoolExecutor parallelism
 - Build targets: `build.py [all|windows|linux|macos|v4|native]`
 - `x86_64`, `x86_64_v3`, `x86_64_v4` CPU levels + ARM64 generic

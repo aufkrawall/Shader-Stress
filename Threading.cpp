@@ -223,6 +223,7 @@ void WorkerThread(int idx) {
   DisablePowerThrottling();
   PinThreadToCore(idx);
   SetFpuFlushMode();
+  thread_local uint64_t s_lastAffinityTick = GetTick();
 #if !defined(PLATFORM_WINDOWS)
   t_threadIdx = idx;
 #endif
@@ -254,6 +255,13 @@ void WorkerThread(int idx) {
       std::this_thread::sleep_for(1ms);
 
     w.lastTick = GetTick();
+    
+    // Re-assert core affinity every 10s to prevent OS migration during idle phases
+    uint64_t now = w.lastTick;
+    if (now - s_lastAffinityTick >= 10000) {
+      PinThreadToCore(idx);
+      s_lastAffinityTick = now;
+    }
   }
   w.state.store(WorkerState::Stopped, std::memory_order_release);
 }
@@ -594,7 +602,7 @@ void SetWork(int requestComps, int requestDecomp, bool io, bool ram) {
   // 1. Calculate Budget
   int cpuTotal = (int)g_Workers.size();
   // Multi-thread IO: up to min(cpu/4, 4) IO threads for better disk saturation
-  int maxIO = std::max(1, std::min(cpuTotal / 4, 4));
+  int maxIO = std::max(1, std::min(cpuTotal / 4, 8));
   int cntIO = io ? maxIO : 0;
   int cntRAM = ram ? 1 : 0;
   int reserved = cntIO + cntRAM;

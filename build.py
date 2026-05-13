@@ -101,6 +101,14 @@ def build_windows_cli_launcher(target, cpu, out_path):
     subprocess.run(cmd, check=True, capture_output=True)
 
 
+# PGO mode: None, "generate", or "use"
+PGO_MODE = None
+
+
+# PGO mode: None, "generate", or "use"
+PGO_MODE = None
+
+
 def build_target(config):
     """Build a single target"""
     target, out_dir, cpu, is_windows, archive_name = config
@@ -164,6 +172,11 @@ def build_target(config):
         if cpu != "generic":
             base_cmd.extend(["-mcpu=" + cpu])
         
+        # Force 512-bit ZMM vector width on x86_64_v4 targets for maximum
+        # power draw via wider auto-vectorization of init loops and non-hot code.
+        if cpu == "x86_64_v4":
+            base_cmd.append("-mprefer-vector-width=512")
+
         # Note: We do NOT add -mpopcnt/-mlzcnt/-mbmi for generic x86_64 builds
         # to maintain compatibility with older CPUs (pre-Haswell, pre-Nehalem).
         # The realistic workload may be slower on generic builds, but that's
@@ -172,7 +185,7 @@ def build_target(config):
         
         base_cmd.extend([
             "-std=c++20", "-O3",
-            "-ffast-math", "-funroll-loops",
+            "-ffast-math", "-funroll-loops", "-funroll-all-loops", "-fpeel-loops",
             "-fno-rtti",
             # Disable C++ exceptions entirely (no try/catch in code, SEH compiled out)
             "-fno-exceptions",
@@ -195,6 +208,16 @@ def build_target(config):
         if use_lto:
             base_cmd.append("-flto")
         
+        # PGO: instrument for profile generation or use pre-generated profile
+        if PGO_MODE == "generate":
+            base_cmd.append("-fprofile-generate")
+        elif PGO_MODE == "use":
+            profdata = BASE_DIR / "default.profdata"
+            if profdata.exists():
+                base_cmd.append(f"-fprofile-use={profdata}")
+            else:
+                log(f"WARNING: {profdata} not found, skipping PGO for {target}")
+
         base_cmd.extend([
             "-s",
             "-Wno-macro-redefined",
@@ -327,14 +350,23 @@ def write_checksums(dist_dir):
 
 
 def main():
+    global PGO_MODE
     check_zig()
     log(f"Version: {APP_VERSION_TEXT}")
     
     # Parse arguments
     targets_requested = sys.argv[1:] if len(sys.argv) > 1 else ["all"]
     
+    # Extract PGO flags before other parsing
+    if "--pgo-gen" in targets_requested:
+        PGO_MODE = "generate"
+        targets_requested.remove("--pgo-gen")
+    if "--pgo-use" in targets_requested:
+        PGO_MODE = "use"
+        targets_requested.remove("--pgo-use")
+    
     if "help" in targets_requested or "-h" in targets_requested or "--help" in targets_requested:
-        print("Usage: python build.py [targets...]")
+        print("Usage: python build.py [targets...] [options]")
         print("Targets:")
         print("  all       - All platforms (default)")
         print("  windows   - Windows x64 and ARM64")
@@ -342,6 +374,16 @@ def main():
         print("  macos     - macOS x64 and ARM64")
         print("  v4        - x86_64_v4 targets (AVX-512) only")
         print("  native    - Current platform only")
+        print("")
+        print("Options:")
+        print("  --pgo-gen  Build with profile generation instrumentation")
+        print("  --pgo-use  Build with profile-guided optimization (needs default.profdata)")
+        print("")
+        print("PGO workflow:")
+        print("  1. python build.py --pgo-gen native")
+        print("  2. ./bin/<target>/shaderstress --repro 42 10000 --quiet")
+        print("  3. llvm-profdata merge -output=default.profdata *.profraw")
+        print("  4. python build.py --pgo-use native")
         print("")
         print("Examples:")
         print("  python build.py")

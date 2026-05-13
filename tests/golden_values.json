@@ -1,0 +1,8 @@
+{
+  "seed": 42,
+  "complexity": 1000,
+  "workloads": {
+    "scalar": "ok",
+    "scalar-sim": "ok"
+  }
+}

@@ -402,33 +402,49 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
       vst1q_f64(&memPtr[(idx + off + 512) & MASK], r)
     
     NEON_WORK(r0, 0);   NEON_WORK(r1, 2);   NEON_WORK(r2, 4);   NEON_WORK(r3, 6);
-    g0 = g0 / ((g8 & 0xFFFFFFFF) | 1);
-    g1 = g1 / ((g9 & 0xFFFFFFFF) | 1);
+    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
+    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
     
     NEON_WORK(r4, 8);   NEON_WORK(r5, 10);  NEON_WORK(r6, 12);  NEON_WORK(r7, 14);
-    g2 = g2 / ((g10 & 0xFFFFFFFF) | 1);
-    g3 = g3 / ((g11 & 0xFFFFFFFF) | 1);
+    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
+    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
     
     NEON_WORK(r8, 16);  NEON_WORK(r9, 18);  NEON_WORK(r10, 20); NEON_WORK(r11, 22);
-    g4 = g4 / ((g12 & 0xFFFFFFFF) | 1);
-    g5 = g5 / ((g13 & 0xFFFFFFFF) | 1);
+    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
+    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
     
     NEON_WORK(r12, 24); NEON_WORK(r13, 26); NEON_WORK(r14, 28); NEON_WORK(r15, 30);
-    g6 = g6 / ((g14 & 0xFFFFFFFF) | 1);
-    g7 = g7 / ((g15 & 0xFFFFFFFF) | 1);
+    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
+    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
     
     NEON_WORK(r0, 32);  NEON_WORK(r1, 34);  NEON_WORK(r2, 36);  NEON_WORK(r3, 38);
     NEON_WORK(r4, 40);  NEON_WORK(r5, 42);  NEON_WORK(r6, 44);  NEON_WORK(r7, 46);
     NEON_WORK(r8, 48);  NEON_WORK(r9, 50);  NEON_WORK(r10, 52); NEON_WORK(r11, 54);
     NEON_WORK(r12, 56); NEON_WORK(r13, 58); NEON_WORK(r14, 60); NEON_WORK(r15, 62);
     
-    g14 = g14 / ((g6 & 0xFFFFFFFF) | 1);
-    g15 = g15 / ((g7 & 0xFFFFFFFF) | 1);
+    g8 = (g8 * 0x9E3779B97F4A7C15ULL) ^ (g9 >> 17) ^ (g10 << 13);
+    g9 = (g9 * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13);
     
     NEON_WORK(r0, 64);  NEON_WORK(r1, 66);  NEON_WORK(r2, 68);  NEON_WORK(r3, 70);
     NEON_WORK(r4, 72);  NEON_WORK(r5, 74);  NEON_WORK(r6, 76);  NEON_WORK(r7, 78);
     NEON_WORK(r8, 80);  NEON_WORK(r9, 82);  NEON_WORK(r10, 84); NEON_WORK(r11, 86);
     NEON_WORK(r12, 88); NEON_WORK(r13, 90); NEON_WORK(r14, 92); NEON_WORK(r15, 94);
+    
+    // NEON shuffle: reverse 64-bit elements within each 128-bit vector
+    // vextq_f64(a, b, 1) = {a[1], b[0]}  →  (rN, rN, 1) = {rN[1], rN[0]}
+    #define NEON_SHUFFLE(r) r = vextq_f64(r, r, 1)
+    NEON_SHUFFLE(r0); NEON_SHUFFLE(r1); NEON_SHUFFLE(r2); NEON_SHUFFLE(r3);
+    NEON_SHUFFLE(r4); NEON_SHUFFLE(r5); NEON_SHUFFLE(r6); NEON_SHUFFLE(r7);
+    NEON_SHUFFLE(r8); NEON_SHUFFLE(r9); NEON_SHUFFLE(r10); NEON_SHUFFLE(r11);
+    NEON_SHUFFLE(r12); NEON_SHUFFLE(r13); NEON_SHUFFLE(r14); NEON_SHUFFLE(r15);
+    #undef NEON_SHUFFLE
+    
+    g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13);
+    g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13);
+    g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13);
+    g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13);
+    g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g0 << 13);
+    g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
     
     g0 ^= g8; g1 ^= g9; g2 ^= g10; g3 ^= g11;
     g4 ^= g12; g5 ^= g13; g6 ^= g14; g7 ^= g15;
@@ -455,6 +471,10 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   sum = vaddq_f64(sum, r13);
   sum = vaddq_f64(sum, r14);
   sum = vaddq_f64(sum, r15);
+  
+  // Cross-lane merge via extract+add for extra shuffle pressure at exit
+  float64x2_t rev = vextq_f64(sum, sum, 1);
+  sum = vaddq_f64(sum, rev);
   
   double out[2];
   vst1q_f64(out, sum);
@@ -532,53 +552,63 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
     #endif
     
     SSE2_WORK(r0, 0);   SSE2_WORK(r1, 2);   SSE2_WORK(r2, 4);   SSE2_WORK(r3, 6);
-    
-    g0 = g0 / ((g8 & 0xFFFFFFFF) | 1);
-    g1 = g1 / ((g9 & 0xFFFFFFFF) | 1);
+    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
+    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
     
     SSE2_WORK(r4, 8);   SSE2_WORK(r5, 10);  SSE2_WORK(r6, 12);  SSE2_WORK(r7, 14);
-    
-    g2 = g2 / ((g10 & 0xFFFFFFFF) | 1);
-    g3 = g3 / ((g11 & 0xFFFFFFFF) | 1);
+    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
+    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
     
     SSE2_WORK(r8, 16);  SSE2_WORK(r9, 18);  SSE2_WORK(r10, 20); SSE2_WORK(r11, 22);
-    
-    g4 = g4 / ((g12 & 0xFFFFFFFF) | 1);
-    g5 = g5 / ((g13 & 0xFFFFFFFF) | 1);
+    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
+    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
     
     SSE2_WORK(r12, 24); SSE2_WORK(r13, 26); SSE2_WORK(r14, 28); SSE2_WORK(r15, 30);
+    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
+    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
     
-    g6 = g6 / ((g14 & 0xFFFFFFFF) | 1);
-    g7 = g7 / ((g15 & 0xFFFFFFFF) | 1);
-    
-    // Second pass - more compute
+    // Second pass
     SSE2_WORK(r0, 32);  SSE2_WORK(r1, 34);  SSE2_WORK(r2, 36);  SSE2_WORK(r3, 38);
-    
-    g8 = g8 / ((g0 & 0xFFFFFFFF) | 1);
-    g9 = g9 / ((g1 & 0xFFFFFFFF) | 1);
+    g8 = (g8 * 0x9E3779B97F4A7C15ULL) ^ (g9 >> 17) ^ (g10 << 13);
+    g9 = (g9 * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13);
     
     SSE2_WORK(r4, 40);  SSE2_WORK(r5, 42);  SSE2_WORK(r6, 44);  SSE2_WORK(r7, 46);
-    
-    g10 = g10 / ((g2 & 0xFFFFFFFF) | 1);
-    g11 = g11 / ((g3 & 0xFFFFFFFF) | 1);
+    g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13);
+    g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13);
     
     SSE2_WORK(r8, 48);  SSE2_WORK(r9, 50);  SSE2_WORK(r10, 52); SSE2_WORK(r11, 54);
-    
-    g12 = g12 / ((g4 & 0xFFFFFFFF) | 1);
-    g13 = g13 / ((g5 & 0xFFFFFFFF) | 1);
+    g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13);
+    g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13);
     
     SSE2_WORK(r12, 56); SSE2_WORK(r13, 58); SSE2_WORK(r14, 60); SSE2_WORK(r15, 62);
+    g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g0 << 13);
+    g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
     
-    g14 = g14 / ((g6 & 0xFFFFFFFF) | 1);
-    g15 = g15 / ((g7 & 0xFFFFFFFF) | 1);
-    
-    // More SSE2 work instead of scalar - saturate load/store ports
+    // Third pass - saturate load/store ports
     SSE2_WORK(r0, 64);  SSE2_WORK(r1, 66);  SSE2_WORK(r2, 68);  SSE2_WORK(r3, 70);
     SSE2_WORK(r4, 72);  SSE2_WORK(r5, 74);  SSE2_WORK(r6, 76);  SSE2_WORK(r7, 78);
     SSE2_WORK(r8, 80);  SSE2_WORK(r9, 82);  SSE2_WORK(r10, 84); SSE2_WORK(r11, 86);
     SSE2_WORK(r12, 88); SSE2_WORK(r13, 90); SSE2_WORK(r14, 92); SSE2_WORK(r15, 94);
     
-    // Light integer to break dependencies
+    // Port 5 shuffle pressure: swap double elements within each XMM register
+    r0 = _mm_shuffle_pd(r0, r0, _MM_SHUFFLE2(0, 1));
+    r1 = _mm_shuffle_pd(r1, r1, _MM_SHUFFLE2(0, 1));
+    r2 = _mm_shuffle_pd(r2, r2, _MM_SHUFFLE2(0, 1));
+    r3 = _mm_shuffle_pd(r3, r3, _MM_SHUFFLE2(0, 1));
+    r4 = _mm_shuffle_pd(r4, r4, _MM_SHUFFLE2(0, 1));
+    r5 = _mm_shuffle_pd(r5, r5, _MM_SHUFFLE2(0, 1));
+    r6 = _mm_shuffle_pd(r6, r6, _MM_SHUFFLE2(0, 1));
+    r7 = _mm_shuffle_pd(r7, r7, _MM_SHUFFLE2(0, 1));
+    r8 = _mm_shuffle_pd(r8, r8, _MM_SHUFFLE2(0, 1));
+    r9 = _mm_shuffle_pd(r9, r9, _MM_SHUFFLE2(0, 1));
+    r10 = _mm_shuffle_pd(r10, r10, _MM_SHUFFLE2(0, 1));
+    r11 = _mm_shuffle_pd(r11, r11, _MM_SHUFFLE2(0, 1));
+    r12 = _mm_shuffle_pd(r12, r12, _MM_SHUFFLE2(0, 1));
+    r13 = _mm_shuffle_pd(r13, r13, _MM_SHUFFLE2(0, 1));
+    r14 = _mm_shuffle_pd(r14, r14, _MM_SHUFFLE2(0, 1));
+    r15 = _mm_shuffle_pd(r15, r15, _MM_SHUFFLE2(0, 1));
+    
+    // Light GPR reduction
     g0 ^= g8; g1 ^= g9; g2 ^= g10; g3 ^= g11;
     g4 ^= g12; g5 ^= g13; g6 ^= g14; g7 ^= g15;
     
@@ -602,6 +632,10 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   sum = _mm_add_pd(sum, r13);
   sum = _mm_add_pd(sum, r14);
   sum = _mm_add_pd(sum, r15);
+  
+  // Cross-lane merge via shuffle+add for extra port 5 pressure at exit
+  __m128d shuf = _mm_shuffle_pd(sum, sum, _MM_SHUFFLE2(0, 1));
+  sum = _mm_add_pd(sum, shuf);
   
   double out[2];
   _mm_storeu_pd(out, sum);
@@ -743,6 +777,24 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
     g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
     
+    // Port 5 shuffle pressure: cross-lane permute (each pair swapped)
+    r0 = _mm256_permute4x64_pd(r0, _MM_SHUFFLE(1, 0, 3, 2));
+    r1 = _mm256_permute4x64_pd(r1, _MM_SHUFFLE(1, 0, 3, 2));
+    r2 = _mm256_permute4x64_pd(r2, _MM_SHUFFLE(1, 0, 3, 2));
+    r3 = _mm256_permute4x64_pd(r3, _MM_SHUFFLE(1, 0, 3, 2));
+    r4 = _mm256_permute4x64_pd(r4, _MM_SHUFFLE(1, 0, 3, 2));
+    r5 = _mm256_permute4x64_pd(r5, _MM_SHUFFLE(1, 0, 3, 2));
+    r6 = _mm256_permute4x64_pd(r6, _MM_SHUFFLE(1, 0, 3, 2));
+    r7 = _mm256_permute4x64_pd(r7, _MM_SHUFFLE(1, 0, 3, 2));
+    r8 = _mm256_permute4x64_pd(r8, _MM_SHUFFLE(1, 0, 3, 2));
+    r9 = _mm256_permute4x64_pd(r9, _MM_SHUFFLE(1, 0, 3, 2));
+    r10 = _mm256_permute4x64_pd(r10, _MM_SHUFFLE(1, 0, 3, 2));
+    r11 = _mm256_permute4x64_pd(r11, _MM_SHUFFLE(1, 0, 3, 2));
+    r12 = _mm256_permute4x64_pd(r12, _MM_SHUFFLE(1, 0, 3, 2));
+    r13 = _mm256_permute4x64_pd(r13, _MM_SHUFFLE(1, 0, 3, 2));
+    r14 = _mm256_permute4x64_pd(r14, _MM_SHUFFLE(1, 0, 3, 2));
+    r15 = _mm256_permute4x64_pd(r15, _MM_SHUFFLE(1, 0, 3, 2));
+    
     #undef WORK
     
     idx = (idx + 64) & MASK;
@@ -763,6 +815,10 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
   sum = _mm256_add_pd(sum, r13);
   sum = _mm256_add_pd(sum, r14);
   sum = _mm256_add_pd(sum, r15);
+  
+  // Cross-lane merge via permute+add for extra port 5 pressure at exit
+  __m256d perm = _mm256_permute4x64_pd(sum, _MM_SHUFFLE(1, 0, 3, 2));
+  sum = _mm256_add_pd(sum, perm);
   
   double out[4];
   _mm256_storeu_pd(out, sum);
@@ -883,6 +939,32 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
     WORK(r24, 192); WORK(r25, 200); WORK(r26, 208); WORK(r27, 216);
     WORK(r28, 224); WORK(r29, 232); WORK(r30, 240); WORK(r31, 248);
     
+    // AVX-512 mask register pressure: compare → mask → blend
+    // Keeps mask register file (k0–k7) active alongside vector pipes
+    {
+      __mmask8 mk = _mm512_cmp_pd_mask(r0, mul, _CMP_NEQ_UQ);
+      r0 = _mm512_mask_blend_pd(mk, r0, r1);
+      r1 = _mm512_mask_blend_pd(mk, r1, r2);
+      r2 = _mm512_mask_blend_pd(mk, r2, r3);
+      r3 = _mm512_mask_blend_pd(mk, r3, r4);
+      r4 = _mm512_mask_blend_pd(mk, r4, r5);
+      r5 = _mm512_mask_blend_pd(mk, r5, r6);
+      r6 = _mm512_mask_blend_pd(mk, r6, r7);
+      r7 = _mm512_mask_blend_pd(mk, r7, r0);
+    }
+    
+    // Port 5 shuffle pressure: cross-lane permute via within-256-bit shuffle
+    #define SHUFFLE(r) r = _mm512_permutex_pd(r, _MM_SHUFFLE(1, 0, 3, 2))
+    SHUFFLE(r0);  SHUFFLE(r1);  SHUFFLE(r2);  SHUFFLE(r3);
+    SHUFFLE(r4);  SHUFFLE(r5);  SHUFFLE(r6);  SHUFFLE(r7);
+    SHUFFLE(r8);  SHUFFLE(r9);  SHUFFLE(r10); SHUFFLE(r11);
+    SHUFFLE(r12); SHUFFLE(r13); SHUFFLE(r14); SHUFFLE(r15);
+    SHUFFLE(r16); SHUFFLE(r17); SHUFFLE(r18); SHUFFLE(r19);
+    SHUFFLE(r20); SHUFFLE(r21); SHUFFLE(r22); SHUFFLE(r23);
+    SHUFFLE(r24); SHUFFLE(r25); SHUFFLE(r26); SHUFFLE(r27);
+    SHUFFLE(r28); SHUFFLE(r29); SHUFFLE(r30); SHUFFLE(r31);
+    #undef SHUFFLE
+    
     #undef WORK
     
     idx = (idx + 256) & MASK;
@@ -905,6 +987,10 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
   sum = _mm512_add_pd(sum, r26);  sum = _mm512_add_pd(sum, r27);
   sum = _mm512_add_pd(sum, r28);  sum = _mm512_add_pd(sum, r29);
   sum = _mm512_add_pd(sum, r30);  sum = _mm512_add_pd(sum, r31);
+  
+  // Cross-lane merge via permute+add for extra port 5/shuffle pressure at exit
+  __m512d perm = _mm512_permutex_pd(sum, _MM_SHUFFLE(1, 0, 3, 2));
+  sum = _mm512_add_pd(sum, perm);
   
   double out[8];
   _mm512_storeu_pd(out, sum);
@@ -948,7 +1034,7 @@ static void CleanupTempFiles() {
   // Best-effort removal of IO stress temp files that may be left open.
   // Runs inside the SEH handler — must not throw or fault.
 #if defined(_WIN32)
-  for (int i = 0; i < 4; ++i) {
+  for (int i = 0; i < 8; ++i) {
     wchar_t path[MAX_PATH];
     if (GetTempPathW(MAX_PATH, path)) {
       std::wstring fpath = std::wstring(path) + L"stress_" + std::to_wstring(i) + L".tmp";
@@ -956,7 +1042,7 @@ static void CleanupTempFiles() {
     }
   }
 #else
-  for (int i = 0; i < 4; ++i) {
+  for (int i = 0; i < 8; ++i) {
     std::string fpath = "/tmp/stress_" + std::to_string(i) + ".tmp";
     unlink(fpath.c_str());
   }
