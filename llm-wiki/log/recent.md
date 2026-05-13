@@ -1,5 +1,9 @@
 # Recent Changes Log
 
+## 2026-05-13 — Fix: IO/RAM budget subtraction under-subscribes CPU in steady & dynamic modes
+
+- **Bugfix**: IO and RAM threads were subtracted from the worker budget in `SetWork`, reducing CPU-bound worker count. On a 16t CPU in steady mode, only 11 comp threads were active (4 IO + 1 RAM were I/O-bound, not saturating CPU). Removed `reserved` subtraction so `availableForWorkers = cpuTotal` always — IO/RAM threads are auxiliary and don't need dedicated CPU slots. Fixes both steady mode and all dynamic-mode phases that enable IO/RAM stress.
+
 ## 2026-05-13 — Optimization Audit v3 (Execution Port Saturation Sweep)
 
 - **Build**: Added `-funroll-all-loops`, `-fpeel-loops` (aggressive unrolling + alignment)
