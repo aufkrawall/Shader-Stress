@@ -605,7 +605,7 @@ void SetWork(int requestComps, int requestDecomp, bool io, bool ram) {
   int maxIO = std::max(1, std::min(cpuTotal / 4, 8));
   int cntIO = io ? maxIO : 0;
   int cntRAM = ram ? 1 : 0;
-  int reserved = cntIO + cntRAM;
+  int reserved = cntRAM;
   int availableForWorkers = std::max(0, cpuTotal - reserved);
 
   // 2. Clamp Worker Counts to Available Budget

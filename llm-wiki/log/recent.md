@@ -1,8 +1,8 @@
 # Recent Changes Log
 
-## 2026-05-13 — Fix: decompression threads starved by clamping in steady & dynamic modes
+## 2026-05-13 — Fix: decomp threads starved + CPU underutilization in steady & dynamic modes
 
-- **Bugfix**: `SetWork` clamping gave comp priority over decomp when combined requests exceeded available budget (after IO/RAM reservation). In steady mode on a 16t CPU, `SetWork(12, 4, t, t)` clamped decomp to 0. Changed to proportional clamping — comp and decomp both get a fair share. Also added `availableForWorkers <= 0` guard for tiny CPUs. Fixes steady mode and all dynamic-mode phases (1, 6, 9, 12, 14) where decomp was starved.
+- **Bugfix**: Two issues in `SetWork`: (1) clamping starved decomp when comp+decomp exceeded budget (comp got all slots, decomp=0). Fixed with proportional clamping. (2) IO threads were subtracted from worker budget despite being I/O-bound — only 8 CPU-bound comp threads on a 16t CPU. Changed `reserved` to count only RAM (1 slot), so available=15 workers. Steady mode now gets 11 comp + 4 decomp + 4 IO + 1 RAM = 20 threads, hitting near-100% CPU. Dynamic mode phases (1, 12) also get full CPU saturation.
 
 ## 2026-05-13 — Optimization Audit v3 (Execution Port Saturation Sweep)
 
