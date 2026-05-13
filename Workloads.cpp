@@ -439,11 +439,15 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
     NEON_SHUFFLE(r12); NEON_SHUFFLE(r13); NEON_SHUFFLE(r14); NEON_SHUFFLE(r15);
     #undef NEON_SHUFFLE
     
-    // Extra FMA pass: register-to-register (no memory, fills spare FMA cycles)
-    r0 = vfmaq_f64(r0, mul, r1);  r2 = vfmaq_f64(r2, mul, r3);
-    r4 = vfmaq_f64(r4, mul, r5);  r6 = vfmaq_f64(r6, mul, r7);
-    r8 = vfmaq_f64(r8, mul, r9);  r10 = vfmaq_f64(r10, mul, r11);
-    r12 = vfmaq_f64(r12, mul, r13); r14 = vfmaq_f64(r14, mul, r15);
+    // Extra FMA pass: register-to-register rotating daisy chain (no memory, fills spare FMA cycles)
+    r0 = vfmaq_f64(r0, mul, r1);  r1 = vfmaq_f64(r1, mul, r2);
+    r2 = vfmaq_f64(r2, mul, r3);  r3 = vfmaq_f64(r3, mul, r4);
+    r4 = vfmaq_f64(r4, mul, r5);  r5 = vfmaq_f64(r5, mul, r6);
+    r6 = vfmaq_f64(r6, mul, r7);  r7 = vfmaq_f64(r7, mul, r8);
+    r8 = vfmaq_f64(r8, mul, r9);  r9 = vfmaq_f64(r9, mul, r10);
+    r10 = vfmaq_f64(r10, mul, r11); r11 = vfmaq_f64(r11, mul, r12);
+    r12 = vfmaq_f64(r12, mul, r13); r13 = vfmaq_f64(r13, mul, r14);
+    r14 = vfmaq_f64(r14, mul, r15); r15 = vfmaq_f64(r15, mul, r0);
     
     g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13);
     g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13);
@@ -614,21 +618,33 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
     r14 = _mm_shuffle_pd(r14, r14, _MM_SHUFFLE2(0, 1));
     r15 = _mm_shuffle_pd(r15, r15, _MM_SHUFFLE2(0, 1));
     
-    // Extra FMA pass: register-to-register (no memory, fills spare FMA cycles)
+    // Extra FMA pass: register-to-register rotating daisy chain (no memory, fills spare FMA cycles)
     #ifdef __FMA__
-    r0 = _mm_fmadd_pd(r0, mul, r1);   r2 = _mm_fmadd_pd(r2, mul, r3);
-    r4 = _mm_fmadd_pd(r4, mul, r5);   r6 = _mm_fmadd_pd(r6, mul, r7);
-    r8 = _mm_fmadd_pd(r8, mul, r9);   r10 = _mm_fmadd_pd(r10, mul, r11);
-    r12 = _mm_fmadd_pd(r12, mul, r13); r14 = _mm_fmadd_pd(r14, mul, r15);
+    r0 = _mm_fmadd_pd(r0, mul, r1);   r1 = _mm_fmadd_pd(r1, mul, r2);
+    r2 = _mm_fmadd_pd(r2, mul, r3);   r3 = _mm_fmadd_pd(r3, mul, r4);
+    r4 = _mm_fmadd_pd(r4, mul, r5);   r5 = _mm_fmadd_pd(r5, mul, r6);
+    r6 = _mm_fmadd_pd(r6, mul, r7);   r7 = _mm_fmadd_pd(r7, mul, r8);
+    r8 = _mm_fmadd_pd(r8, mul, r9);   r9 = _mm_fmadd_pd(r9, mul, r10);
+    r10 = _mm_fmadd_pd(r10, mul, r11); r11 = _mm_fmadd_pd(r11, mul, r12);
+    r12 = _mm_fmadd_pd(r12, mul, r13); r13 = _mm_fmadd_pd(r13, mul, r14);
+    r14 = _mm_fmadd_pd(r14, mul, r15); r15 = _mm_fmadd_pd(r15, mul, r0);
     #else
     r0 = _mm_add_pd(_mm_mul_pd(r0, mul), r1);
+    r1 = _mm_add_pd(_mm_mul_pd(r1, mul), r2);
     r2 = _mm_add_pd(_mm_mul_pd(r2, mul), r3);
+    r3 = _mm_add_pd(_mm_mul_pd(r3, mul), r4);
     r4 = _mm_add_pd(_mm_mul_pd(r4, mul), r5);
+    r5 = _mm_add_pd(_mm_mul_pd(r5, mul), r6);
     r6 = _mm_add_pd(_mm_mul_pd(r6, mul), r7);
+    r7 = _mm_add_pd(_mm_mul_pd(r7, mul), r8);
     r8 = _mm_add_pd(_mm_mul_pd(r8, mul), r9);
+    r9 = _mm_add_pd(_mm_mul_pd(r9, mul), r10);
     r10 = _mm_add_pd(_mm_mul_pd(r10, mul), r11);
+    r11 = _mm_add_pd(_mm_mul_pd(r11, mul), r12);
     r12 = _mm_add_pd(_mm_mul_pd(r12, mul), r13);
+    r13 = _mm_add_pd(_mm_mul_pd(r13, mul), r14);
     r14 = _mm_add_pd(_mm_mul_pd(r14, mul), r15);
+    r15 = _mm_add_pd(_mm_mul_pd(r15, mul), r0);
     #endif
     
     // Light GPR reduction
@@ -818,15 +834,15 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     r14 = _mm256_permute4x64_pd(r14, _MM_SHUFFLE(1, 0, 3, 2));
     r15 = _mm256_permute4x64_pd(r15, _MM_SHUFFLE(1, 0, 3, 2));
     
-    // Extra FMA pass: register-to-register (no memory, fills spare FMA cycles)
-    r0 = _mm256_fmadd_pd(r0, mul, r1);
-    r2 = _mm256_fmadd_pd(r2, mul, r3);
-    r4 = _mm256_fmadd_pd(r4, mul, r5);
-    r6 = _mm256_fmadd_pd(r6, mul, r7);
-    r8 = _mm256_fmadd_pd(r8, mul, r9);
-    r10 = _mm256_fmadd_pd(r10, mul, r11);
-    r12 = _mm256_fmadd_pd(r12, mul, r13);
-    r14 = _mm256_fmadd_pd(r14, mul, r15);
+    // Extra FMA pass: register-to-register rotating daisy chain (no memory, fills spare FMA cycles)
+    r0 = _mm256_fmadd_pd(r0, mul, r1);   r1 = _mm256_fmadd_pd(r1, mul, r2);
+    r2 = _mm256_fmadd_pd(r2, mul, r3);   r3 = _mm256_fmadd_pd(r3, mul, r4);
+    r4 = _mm256_fmadd_pd(r4, mul, r5);   r5 = _mm256_fmadd_pd(r5, mul, r6);
+    r6 = _mm256_fmadd_pd(r6, mul, r7);   r7 = _mm256_fmadd_pd(r7, mul, r8);
+    r8 = _mm256_fmadd_pd(r8, mul, r9);   r9 = _mm256_fmadd_pd(r9, mul, r10);
+    r10 = _mm256_fmadd_pd(r10, mul, r11); r11 = _mm256_fmadd_pd(r11, mul, r12);
+    r12 = _mm256_fmadd_pd(r12, mul, r13); r13 = _mm256_fmadd_pd(r13, mul, r14);
+    r14 = _mm256_fmadd_pd(r14, mul, r15); r15 = _mm256_fmadd_pd(r15, mul, r0);
     
     #undef WORK
     
