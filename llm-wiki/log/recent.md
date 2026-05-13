@@ -1,8 +1,8 @@
 # Recent Changes Log
 
-## 2026-05-13 — Fix: IO/RAM budget subtraction under-subscribes CPU in steady & dynamic modes
+## 2026-05-13 — Fix: decompression threads starved by clamping in steady & dynamic modes
 
-- **Bugfix**: IO and RAM threads were subtracted from the worker budget in `SetWork`, reducing CPU-bound worker count. On a 16t CPU in steady mode, only 11 comp threads were active (4 IO + 1 RAM were I/O-bound, not saturating CPU). Removed `reserved` subtraction so `availableForWorkers = cpuTotal` always — IO/RAM threads are auxiliary and don't need dedicated CPU slots. Fixes both steady mode and all dynamic-mode phases that enable IO/RAM stress.
+- **Bugfix**: `SetWork` clamping gave comp priority over decomp when combined requests exceeded available budget (after IO/RAM reservation). In steady mode on a 16t CPU, `SetWork(12, 4, t, t)` clamped decomp to 0. Changed to proportional clamping — comp and decomp both get a fair share. Also added `availableForWorkers <= 0` guard for tiny CPUs. Fixes steady mode and all dynamic-mode phases (1, 6, 9, 12, 14) where decomp was starved.
 
 ## 2026-05-13 — Optimization Audit v3 (Execution Port Saturation Sweep)
 

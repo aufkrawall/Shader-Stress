@@ -605,13 +605,31 @@ void SetWork(int requestComps, int requestDecomp, bool io, bool ram) {
   int maxIO = std::max(1, std::min(cpuTotal / 4, 8));
   int cntIO = io ? maxIO : 0;
   int cntRAM = ram ? 1 : 0;
-  int availableForWorkers = cpuTotal;
+  int reserved = cntIO + cntRAM;
+  int availableForWorkers = std::max(0, cpuTotal - reserved);
 
   // 2. Clamp Worker Counts to Available Budget
-  if (requestComps > availableForWorkers)
-    requestComps = availableForWorkers;
-  if ((requestComps + requestDecomp) > availableForWorkers)
-    requestDecomp = availableForWorkers - requestComps;
+  // Preserve both comp and decomp proportionally rather than starving decomp
+  if ((requestComps + requestDecomp) > availableForWorkers) {
+    if (availableForWorkers <= 0) {
+      requestComps = 0;
+      requestDecomp = 0;
+    } else if (requestComps > 0 && requestDecomp > 0) {
+      int total = requestComps + requestDecomp;
+      int clamped = availableForWorkers * requestComps / total;
+      if (clamped < 1)
+        clamped = 1;
+      requestComps = clamped;
+      requestDecomp = availableForWorkers - requestComps;
+    } else if (requestDecomp > 0) {
+      requestDecomp = availableForWorkers;
+    } else {
+      requestComps = availableForWorkers;
+    }
+  } else {
+    if (requestComps > availableForWorkers)
+      requestComps = availableForWorkers;
+  }
 
   g_App.activeCompilers = requestComps;
   g_App.activeDecomp = requestDecomp;
