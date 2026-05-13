@@ -439,6 +439,12 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
     NEON_SHUFFLE(r12); NEON_SHUFFLE(r13); NEON_SHUFFLE(r14); NEON_SHUFFLE(r15);
     #undef NEON_SHUFFLE
     
+    // Extra FMA pass: register-to-register (no memory, fills spare FMA cycles)
+    r0 = vfmaq_f64(r0, mul, r1);  r2 = vfmaq_f64(r2, mul, r3);
+    r4 = vfmaq_f64(r4, mul, r5);  r6 = vfmaq_f64(r6, mul, r7);
+    r8 = vfmaq_f64(r8, mul, r9);  r10 = vfmaq_f64(r10, mul, r11);
+    r12 = vfmaq_f64(r12, mul, r13); r14 = vfmaq_f64(r14, mul, r15);
+    
     g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13);
     g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13);
     g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13);
@@ -607,6 +613,23 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
     r13 = _mm_shuffle_pd(r13, r13, _MM_SHUFFLE2(0, 1));
     r14 = _mm_shuffle_pd(r14, r14, _MM_SHUFFLE2(0, 1));
     r15 = _mm_shuffle_pd(r15, r15, _MM_SHUFFLE2(0, 1));
+    
+    // Extra FMA pass: register-to-register (no memory, fills spare FMA cycles)
+    #ifdef __FMA__
+    r0 = _mm_fmadd_pd(r0, mul, r1);   r2 = _mm_fmadd_pd(r2, mul, r3);
+    r4 = _mm_fmadd_pd(r4, mul, r5);   r6 = _mm_fmadd_pd(r6, mul, r7);
+    r8 = _mm_fmadd_pd(r8, mul, r9);   r10 = _mm_fmadd_pd(r10, mul, r11);
+    r12 = _mm_fmadd_pd(r12, mul, r13); r14 = _mm_fmadd_pd(r14, mul, r15);
+    #else
+    r0 = _mm_add_pd(_mm_mul_pd(r0, mul), r1);
+    r2 = _mm_add_pd(_mm_mul_pd(r2, mul), r3);
+    r4 = _mm_add_pd(_mm_mul_pd(r4, mul), r5);
+    r6 = _mm_add_pd(_mm_mul_pd(r6, mul), r7);
+    r8 = _mm_add_pd(_mm_mul_pd(r8, mul), r9);
+    r10 = _mm_add_pd(_mm_mul_pd(r10, mul), r11);
+    r12 = _mm_add_pd(_mm_mul_pd(r12, mul), r13);
+    r14 = _mm_add_pd(_mm_mul_pd(r14, mul), r15);
+    #endif
     
     // Light GPR reduction
     g0 ^= g8; g1 ^= g9; g2 ^= g10; g3 ^= g11;
@@ -795,6 +818,16 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     r14 = _mm256_permute4x64_pd(r14, _MM_SHUFFLE(1, 0, 3, 2));
     r15 = _mm256_permute4x64_pd(r15, _MM_SHUFFLE(1, 0, 3, 2));
     
+    // Extra FMA pass: register-to-register (no memory, fills spare FMA cycles)
+    r0 = _mm256_fmadd_pd(r0, mul, r1);
+    r2 = _mm256_fmadd_pd(r2, mul, r3);
+    r4 = _mm256_fmadd_pd(r4, mul, r5);
+    r6 = _mm256_fmadd_pd(r6, mul, r7);
+    r8 = _mm256_fmadd_pd(r8, mul, r9);
+    r10 = _mm256_fmadd_pd(r10, mul, r11);
+    r12 = _mm256_fmadd_pd(r12, mul, r13);
+    r14 = _mm256_fmadd_pd(r14, mul, r15);
+    
     #undef WORK
     
     idx = (idx + 64) & MASK;
@@ -964,6 +997,24 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
     SHUFFLE(r24); SHUFFLE(r25); SHUFFLE(r26); SHUFFLE(r27);
     SHUFFLE(r28); SHUFFLE(r29); SHUFFLE(r30); SHUFFLE(r31);
     #undef SHUFFLE
+    
+    // Extra FMA pass: register-to-register (no memory, fills spare FMA cycles)
+    r0 = _mm512_fmadd_pd(r0, mul, r1);   r1 = _mm512_fmadd_pd(r1, mul, r2);
+    r2 = _mm512_fmadd_pd(r2, mul, r3);   r3 = _mm512_fmadd_pd(r3, mul, r4);
+    r4 = _mm512_fmadd_pd(r4, mul, r5);   r5 = _mm512_fmadd_pd(r5, mul, r6);
+    r6 = _mm512_fmadd_pd(r6, mul, r7);   r7 = _mm512_fmadd_pd(r7, mul, r8);
+    r8 = _mm512_fmadd_pd(r8, mul, r9);   r9 = _mm512_fmadd_pd(r9, mul, r10);
+    r10 = _mm512_fmadd_pd(r10, mul, r11); r11 = _mm512_fmadd_pd(r11, mul, r12);
+    r12 = _mm512_fmadd_pd(r12, mul, r13); r13 = _mm512_fmadd_pd(r13, mul, r14);
+    r14 = _mm512_fmadd_pd(r14, mul, r15); r15 = _mm512_fmadd_pd(r15, mul, r16);
+    r16 = _mm512_fmadd_pd(r16, mul, r17); r17 = _mm512_fmadd_pd(r17, mul, r18);
+    r18 = _mm512_fmadd_pd(r18, mul, r19); r19 = _mm512_fmadd_pd(r19, mul, r20);
+    r20 = _mm512_fmadd_pd(r20, mul, r21); r21 = _mm512_fmadd_pd(r21, mul, r22);
+    r22 = _mm512_fmadd_pd(r22, mul, r23); r23 = _mm512_fmadd_pd(r23, mul, r24);
+    r24 = _mm512_fmadd_pd(r24, mul, r25); r25 = _mm512_fmadd_pd(r25, mul, r26);
+    r26 = _mm512_fmadd_pd(r26, mul, r27); r27 = _mm512_fmadd_pd(r27, mul, r28);
+    r28 = _mm512_fmadd_pd(r28, mul, r29); r29 = _mm512_fmadd_pd(r29, mul, r30);
+    r30 = _mm512_fmadd_pd(r30, mul, r31); r31 = _mm512_fmadd_pd(r31, mul, r0);
     
     #undef WORK
     
