@@ -204,18 +204,24 @@ static void RunDecompressLogic(int idx) {
     init = true;
   }
 
+  // Multiple passes to match compiler workload duration (complexity ~12000)
+  // Each pass processes BUF_SIZE bytes, repeated PASSES times to keep the
+  // core busy for a meaningful per-invocation interval.
+  const int PASSES = 64;
   uint64_t acc = 0;
-  for (size_t i = 0; i < BUF_SIZE; i += 8) {
-    uint8_t cmd = data[i] & 0x7;
-    if (cmd < 3)
-      acc = Rotl64(acc ^ data[i], 13);
-    else if (cmd < 6) {
-      size_t offset = (data[i + 1] << 8) | data[i + 2];
-      offset &= (BUF_SIZE - 1);
-      acc ^= data[offset];
-    } else
-      acc += 0xDEADBEEF;
-    data[i] ^= (uint8_t)acc;
+  for (int p = 0; p < PASSES; ++p) {
+    for (size_t i = 0; i < BUF_SIZE; i += 8) {
+      uint8_t cmd = data[i] & 0x7;
+      if (cmd < 3)
+        acc = Rotl64(acc ^ data[i], 13);
+      else if (cmd < 6) {
+        size_t offset = (data[i + 1] << 8) | data[i + 2];
+        offset &= (BUF_SIZE - 1);
+        acc ^= data[offset];
+      } else
+        acc += 0xDEADBEEF;
+      data[i] ^= (uint8_t)acc;
+    }
   }
 }
 

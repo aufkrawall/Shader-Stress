@@ -1,8 +1,8 @@
 # Recent Changes Log
 
-## 2026-05-13 — Fix: decomp threads starved + CPU underutilization in steady & dynamic modes
+## 2026-05-13 — Fix: decomp threads starved + underpowered + CPU underutilization
 
-- **Bugfix**: Two issues in `SetWork`: (1) clamping starved decomp when comp+decomp exceeded budget (comp got all slots, decomp=0). Fixed with proportional clamping. (2) IO threads were subtracted from worker budget despite being I/O-bound — only 8 CPU-bound comp threads on a 16t CPU. Changed `reserved` to count only RAM (1 slot), so available=15 workers. Steady mode now gets 11 comp + 4 decomp + 4 IO + 1 RAM = 20 threads, hitting near-100% CPU. Dynamic mode phases (1, 12) also get full CPU saturation.
+- **Bugfix**: Three issues in steady/dynamic mode threading. (1) IO threads counted against worker budget despite being I/O-bound — only 8 CPU-bound comp threads on 16t CPU. Changed `reserved` to count only RAM (1 slot), so available=15 workers. (2) Clamping starved decomp when over budget. Fixed with proportional split. (3) `RunDecompressLogic` did only one 512KB pass per invocation (~microseconds), too lightweight. Added 64-pass loop so each call does meaningful work matching compiler workload duration.
 
 ## 2026-05-13 — Optimization Audit v3 (Execution Port Saturation Sweep)
 
