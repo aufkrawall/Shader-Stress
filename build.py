@@ -103,15 +103,18 @@ def build_windows_cli_launcher(target, cpu, out_path):
 
 # PGO mode: None, "generate", or "use"
 PGO_MODE = None
-
-
-# PGO mode: None, "generate", or "use"
-PGO_MODE = None
+# AVX2 workload variant (0-4); None = default (V1)
+AVX2_VARIANT = None
 
 
 def build_target(config):
     """Build a single target"""
     target, out_dir, cpu, is_windows, archive_name = config
+    
+    # Append variant suffix for AVX2 workload variants
+    if AVX2_VARIANT is not None:
+        out_dir = f"{out_dir}-avx2-v{AVX2_VARIANT}"
+    
     out_path = BASE_DIR / out_dir
     out_path.mkdir(parents=True, exist_ok=True)
 
@@ -121,7 +124,7 @@ def build_target(config):
             if stale_path.exists():
                 stale_path.unlink()
     
-    log(f"Starting {target} (cpu={cpu})...")
+    log(f"Starting {target} (cpu={cpu}){' avx2-v' + str(AVX2_VARIANT) if AVX2_VARIANT is not None else ''}...")
     
     src_files = SRC_FILES_WINDOWS[:] if is_windows else SRC_FILES_UNIX[:]
     defines = ["-DUNICODE", "-D_UNICODE"] if is_windows else ["-DPLATFORM_LINUX" if "linux" in target else "-DPLATFORM_MACOS"]
@@ -138,6 +141,10 @@ def build_target(config):
     
     # Disable SEH for Zig (not supported)
     defines.append("-DDISABLE_SEH")
+    
+    # AVX2 workload variant (set via avx2-0..avx2-4 targets)
+    if AVX2_VARIANT is not None:
+        defines.append(f"-DAVX2_VARIANT={AVX2_VARIANT}")
     
     exe_name = "ShaderStress.exe" if is_windows else "shaderstress"
     exe_path = out_path / exe_name
@@ -350,7 +357,7 @@ def write_checksums(dist_dir):
 
 
 def main():
-    global PGO_MODE
+    global PGO_MODE, AVX2_VARIANT
     check_zig()
     log(f"Version: {APP_VERSION_TEXT}")
     
@@ -374,6 +381,7 @@ def main():
         print("  macos     - macOS x64 and ARM64")
         print("  v4        - x86_64_v4 targets (AVX-512) only")
         print("  native    - Current platform only")
+        print("  avx2-0..4 - Build native x86_64 with specific AVX2 variant (0=lean, 1=current, 2=no-permute, 3=double-daisy, 4=wide-memory)")
         print("")
         print("Options:")
         print("  --pgo-gen  Build with profile generation instrumentation")
@@ -411,7 +419,6 @@ def main():
                 system = platform.system().lower()
                 if system == "windows":
                     candidates = [c for c in BUILD_CONFIGS if "windows" in c[0] and "x86_64" in c[0]]
-                    # Prefer v4 > v3 > generic for native builds
                     for pref in ["v4", "v3", "zig"]:
                         match = [c for c in candidates if pref in c[1]]
                         if match:
@@ -429,6 +436,19 @@ def main():
                         configs.append([c for c in BUILD_CONFIGS if "macos" in c[0] and "aarch64" in c[0]][0])
                     else:
                         configs.append([c for c in BUILD_CONFIGS if "macos" in c[0] and "x86_64" in c[0]][0])
+            elif t.startswith("avx2-"):
+                # Build native x86_64 with specific AVX2 variant
+                import platform
+                variant = int(t.split("-")[1])
+                system = platform.system().lower()
+                candidates = [c for c in BUILD_CONFIGS if "windows" in c[0] and "x86_64" in c[0]] if system == "windows" else [c for c in BUILD_CONFIGS if "linux" in c[0] and "x86_64" in c[0]]
+                for pref in ["v4", "v3", "zig"]:
+                    match = [c for c in candidates if pref in c[1]]
+                    if match:
+                        cfg = list(match[0])
+                        configs.append(tuple(cfg))
+                        AVX2_VARIANT = variant
+                        break
     
     if not configs:
         log("No targets to build")

@@ -3,6 +3,16 @@
 #include <cstring>
 #include <vector>
 
+// AVX2 workload variant selector (set via -DAVX2_VARIANT=N in build):
+//   0 = Lean:         16 WORK + 8 GPR chains only (baseline, no extras)
+//   1 = Current:      16 WORK + 8 GPR + 16 permutes + 16 daisy-chain reg-reg FMA
+//   2 = No permute:   16 WORK + 8 GPR + 16 daisy-chain reg-reg FMA only
+//   3 = Double daisy: 16 WORK + 8 GPR + 16 permutes + 32 daisy-chain reg-reg FMA
+//   4 = Wide memory:  32 WORK + 8 GPR + 16 permutes + 16 daisy-chain reg-reg FMA
+#ifndef AVX2_VARIANT
+#define AVX2_VARIANT 1
+#endif
+
 // Work buffer size: 512KB (65536 doubles) — exceeds L2 but fits in L3 on most
 // CPUs. Keeps the workload ALU-bound for maximum power draw.
 constexpr size_t WORK_BUF_ELEMS = 65536;
@@ -783,8 +793,13 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
     
     // Prefetch next iterations' data ahead of time
-    int nextIdx = (idx + 64) & MASK;
-    int nextIdx2 = (idx + 128) & MASK;
+    #if AVX2_VARIANT == 4
+    int stride = 128;
+    #else
+    int stride = 64;
+    #endif
+    int nextIdx = (idx + stride) & MASK;
+    int nextIdx2 = (idx + stride * 2) & MASK;
     _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx]), _MM_HINT_T0);
     _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx + 512) & MASK]), _MM_HINT_T0);
     _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx2]), _MM_HINT_T0);
@@ -796,27 +811,51 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
       r = _mm256_fmadd_pd(r, mul, _mm256_load_pd(&memPtr[(idx + off) & MASK])); \
       _mm256_store_pd(&memPtr[(idx + off + 512) & MASK], r)
     
+    #if AVX2_VARIANT == 4
+    // V4: Wide memory — 2 passes of 16 WORK
     WORK(r0, 0);   WORK(r1, 4);   WORK(r2, 8);   WORK(r3, 12);
-    
     g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
     g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
-    
     WORK(r4, 16);  WORK(r5, 20);  WORK(r6, 24);  WORK(r7, 28);
-    
     g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
     g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
-    
     WORK(r8, 32);  WORK(r9, 36);  WORK(r10, 40); WORK(r11, 44);
-    
     g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
     g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
-    
     WORK(r12, 48); WORK(r13, 52); WORK(r14, 56); WORK(r15, 60);
-    
     g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
     g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
+    // Second memory pass
+    WORK(r0, 64);  WORK(r1, 68);  WORK(r2, 72);  WORK(r3, 76);
+    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
+    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
+    WORK(r4, 80);  WORK(r5, 84);  WORK(r6, 88);  WORK(r7, 92);
+    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
+    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
+    WORK(r8, 96);  WORK(r9, 100); WORK(r10, 104); WORK(r11, 108);
+    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
+    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
+    WORK(r12, 112); WORK(r13, 116); WORK(r14, 120); WORK(r15, 124);
+    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
+    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
+    #else
+    WORK(r0, 0);   WORK(r1, 4);   WORK(r2, 8);   WORK(r3, 12);
+    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
+    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
+    WORK(r4, 16);  WORK(r5, 20);  WORK(r6, 24);  WORK(r7, 28);
+    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
+    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
+    WORK(r8, 32);  WORK(r9, 36);  WORK(r10, 40); WORK(r11, 44);
+    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
+    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
+    WORK(r12, 48); WORK(r13, 52); WORK(r14, 56); WORK(r15, 60);
+    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
+    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
+    #endif
     
-    // Port 5 shuffle pressure: cross-lane permute (each pair swapped)
+    #if AVX2_VARIANT >= 1
+    // Permute (port 5 shuffle pressure) — skipped in V0, V2
+    #if AVX2_VARIANT != 2
     r0 = _mm256_permute4x64_pd(r0, _MM_SHUFFLE(1, 0, 3, 2));
     r1 = _mm256_permute4x64_pd(r1, _MM_SHUFFLE(1, 0, 3, 2));
     r2 = _mm256_permute4x64_pd(r2, _MM_SHUFFLE(1, 0, 3, 2));
@@ -833,8 +872,10 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     r13 = _mm256_permute4x64_pd(r13, _MM_SHUFFLE(1, 0, 3, 2));
     r14 = _mm256_permute4x64_pd(r14, _MM_SHUFFLE(1, 0, 3, 2));
     r15 = _mm256_permute4x64_pd(r15, _MM_SHUFFLE(1, 0, 3, 2));
+    #endif
     
-    // Extra FMA pass: register-to-register rotating daisy chain (no memory, fills spare FMA cycles)
+    // Daisy-chain reg-to-reg FMA — one full rotation for V1/V2/V4, two for V3
+    #if AVX2_VARIANT >= 2
     r0 = _mm256_fmadd_pd(r0, mul, r1);   r1 = _mm256_fmadd_pd(r1, mul, r2);
     r2 = _mm256_fmadd_pd(r2, mul, r3);   r3 = _mm256_fmadd_pd(r3, mul, r4);
     r4 = _mm256_fmadd_pd(r4, mul, r5);   r5 = _mm256_fmadd_pd(r5, mul, r6);
@@ -843,10 +884,23 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     r10 = _mm256_fmadd_pd(r10, mul, r11); r11 = _mm256_fmadd_pd(r11, mul, r12);
     r12 = _mm256_fmadd_pd(r12, mul, r13); r13 = _mm256_fmadd_pd(r13, mul, r14);
     r14 = _mm256_fmadd_pd(r14, mul, r15); r15 = _mm256_fmadd_pd(r15, mul, r0);
+    #endif
+    #if AVX2_VARIANT == 3
+    // Second rotation for double daisy
+    r0 = _mm256_fmadd_pd(r0, mul, r1);   r1 = _mm256_fmadd_pd(r1, mul, r2);
+    r2 = _mm256_fmadd_pd(r2, mul, r3);   r3 = _mm256_fmadd_pd(r3, mul, r4);
+    r4 = _mm256_fmadd_pd(r4, mul, r5);   r5 = _mm256_fmadd_pd(r5, mul, r6);
+    r6 = _mm256_fmadd_pd(r6, mul, r7);   r7 = _mm256_fmadd_pd(r7, mul, r8);
+    r8 = _mm256_fmadd_pd(r8, mul, r9);   r9 = _mm256_fmadd_pd(r9, mul, r10);
+    r10 = _mm256_fmadd_pd(r10, mul, r11); r11 = _mm256_fmadd_pd(r11, mul, r12);
+    r12 = _mm256_fmadd_pd(r12, mul, r13); r13 = _mm256_fmadd_pd(r13, mul, r14);
+    r14 = _mm256_fmadd_pd(r14, mul, r15); r15 = _mm256_fmadd_pd(r15, mul, r0);
+    #endif
+    #endif // AVX2_VARIANT >= 1
     
     #undef WORK
     
-    idx = (idx + 64) & MASK;
+    idx = (idx + stride) & MASK;
   }
 
   __m256d sum = _mm256_add_pd(r0, r1);
