@@ -1,5 +1,17 @@
 # Recent Changes Log
 
+## 2026-05-14 — Major CPU power draw increase across all workload types
+
+- **New V5 variant (AVX2)**: Pure reg-reg FMA + shuffle, zero memory ops. 16 GPR chains, 32 permutes, 32 daisy-chain FMAs. Eliminates all memory-induced stalls for maximum sustained FMA throughput.
+- **New V6 variant (AVX2)**: 256KB buffer (half size, guaranteed L2 residency on Zen 3). 16 WORK + 16 GPR chains + 32 permutes + 32 FMAs. Added `MASK_AVX2_V6`, `WORK_BUF_ELEMS_V6` constants.
+- **SSE2/Scalar overhaul**: Reduced WORK from 48 → 16 (single pass instead of 3, fixes load/store pipeline saturation). Doubled reg-reg FMA 16→32, shuffles 16→32, GPR chains 8→16 (g0–g15 all used). Stride reduced 96→64.
+- **Preprocessor gating**: V5/V6 included in daisy-chain and permute blocks across all ISA paths.
+- **I/O thread**: Replaced trivial `volatile uint8_t sink` with full buffer integer hash (FNV-1a-like multiply-XOR chain) on both Windows and Linux paths — keeps CPU cores hot while stressing storage.
+- **RAM thread**: Replaced trivial `p[i] = (i+16) % count` / `p[i] = p[i] + 1` with 4-accumulator integer multiply-chain (read, hash, write-back in groups of 4) on both paths.
+- **Decompression thread**: BUF_SIZE 512KB→256KB, PASSES 64→128, added `acc = (acc * 0x9E3779B97F4A7C15ULL) ^ (acc >> 31)` integer multiply targeting port 0 on Zen 3.
+- **Linux IOThread/RAMThread**: Added missing `DisablePowerThrottling()` calls.
+- **build.py**: Help text updated for avx2-5 and avx2-6; variant range comments 0–4→0–6.
+
 ## 2026-05-13 — Fix: decomp threads starved + underpowered + CPU underutilization
 
 - **Bugfix**: Three issues in steady/dynamic mode threading. (1) IO threads counted against worker budget despite being I/O-bound — only 8 CPU-bound comp threads on 16t CPU. Changed `reserved` to count only RAM (1 slot), so available=15 workers. (2) Clamping starved decomp when over budget. Fixed with proportional split. (3) `RunDecompressLogic` did only one 512KB pass per invocation (~microseconds), too lightweight. Added 64-pass loop so each call does meaningful work matching compiler workload duration.

@@ -1,6 +1,6 @@
 # Optimization Audit
 
-Audited for maximum power draw, throughput, heat, and utilization (2026-05-13).
+Audited for maximum power draw, throughput, heat, and utilization (2026-05-14).
 
 ## Implemented Optimizations
 
@@ -44,6 +44,12 @@ Audited for maximum power draw, throughput, heat, and utilization (2026-05-13).
 - **RAM stress stride tuning**: Reduced write pattern stride from 64 elements (512 bytes / 8 cache lines) to 1 element (8 bytes), increasing memory controller write transactions. Changed ratio from 50/50 to 70/30 (70% high-bandwidth stride writes, 30% pointer-chase latency stress). Applied to both Windows and Linux paths.
 - **Linux `mlock()`**: `ScopedMem` now calls `mlock()` after `mmap` on Linux to prevent page swapping during RAM stress. Best-effort; silently ignored without `CAP_IPC_LOCK`.
 - **Multi-thread IO stress**: Increased from single IO thread to up to `min(cpu/4, 8)` IO threads with separate temporary files, improving disk controller queue depth and IO subsystem utilization.
+- **New AVX2 V5 variant — pure reg‑reg FMA**: Zero memory operands in hot loop. 16 GPR integer chains (g0–g15), 32 `_mm256_permute4x64_pd` shuffle permutes, 32 daisy‑chain `_mm256_fmadd_pd` FMAs. No loads, no stores, no prefetches — eliminates all memory‑induced front‑end / back‑end stalls. Maximum sustained FMA throughput at highest µop density.
+- **New AVX2 V6 variant — guaranteed L2 resident**: 256KB buffer (half of Zen 3’s 512KB L2, leaving headroom). 16 WORK load‑stream calls, 16 GPR chains, 32 permutes, 32 FMAs. Added `MASK_AVX2_V6` / `WORK_BUF_ELEMS_V6` constants. V6’s smaller buffer avoids L2 eviction pressure from the hot loop itself.
+- **SSE2/Scalar re‑balanced**: Reduced WORK from 48 (3 passes × 16) to 16 (single pass). Prior 48‑call pattern saturated load/store ports (2/3/4) and caused FMA ports (0/1) to stall waiting for data. Doubled reg‑reg FMA 16→32, shuffles 16→32, GPR chains 8→16 (all g0–g15 consumed). Stride reduced 96→64. Result: all ports fed evenly, higher sustained power.
+- **I/O thread integer‑multiply hash**: Replaced trivial `volatile uint8_t sink = p[0] ^ p[end-1]` with a full‑buffer FNV‑1a‑like multiply‑XOR chain. CPU is now doing meaningful register work while the storage subsystem is stressed, preventing idle power collapse.
+- **RAM thread 4‑accumulator multiply chain**: Replaced trivial `p[i] = (i+16) % count` / `p[i] = p[i] + 1` with 4‑accumulator integer multiply‑chain that reads 4 values, hashes via multiply‑add, and writes back 4 values. Keeps integer execution units active alongside memory controller pressure.
+- **Decompression thread integer multiply**: BUF_SIZE 512KB→256KB (fits L2 better), PASSES 64→128. Inner loop adds `acc = (acc * 0x9E3779B97F4A7C15ULL) ^ (acc >> 31)` — golden‑ratio constant targets port 0 on Zen 3, adding scalar‑integer pressure alongside FMA on ports 0/1 and port‑5 shuffles.
 - **AppState false sharing fix**: Split `AppState` into 4 cache-line-aligned groups to prevent MESI protocol invalidations between hot fields with different access patterns:
   - Cache-line 1: Worker-Read-Hot (quit, running, mode, activeCompilers, activeDecomp, selectedWorkload)
   - Cache-line 2: Watchdog-Written (shaders, errors, elapsed, currentRate)

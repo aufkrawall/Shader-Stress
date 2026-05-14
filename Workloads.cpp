@@ -3,30 +3,15 @@
 #include <cstring>
 #include <vector>
 
-// AVX2 workload variant selector (set via -DAVX2_VARIANT=N in build):
-//   0 = Lean:         16 WORK + 8 GPR chains only (baseline, no extras)
-//   1 = Current:      16 WORK + 8 GPR + 16 permutes + 16 daisy-chain reg-reg FMA
-//   2 = No permute:   16 WORK + 8 GPR + 16 daisy-chain reg-reg FMA only
-//   3 = Double daisy: 16 WORK + 8 GPR + 16 permutes + 32 daisy-chain reg-reg FMA
-//   4 = Wide memory:  32 WORK + 8 GPR + 16 permutes + 16 daisy-chain reg-reg FMA
-//   5 = No memory:    0 WORK + 16 GPR + 32 permutes + 32 daisy-chain reg-reg FMA  (pure compute, max power)
-//   6 = Tight L2:     16 WORK + 16 GPR + 32 permutes + 32 daisy-chain reg-reg FMA  (256KB buffer for L2 headroom)
-#ifndef AVX2_VARIANT
-#define AVX2_VARIANT 1
-#endif
-
-// Work buffer size: 512KB (65536 doubles) — exceeds L2 but fits in L3 on most
-// CPUs. Keeps the workload ALU-bound for maximum power draw.
-// V6 uses a tighter 256KB window for guaranteed L2 residency.
-constexpr size_t WORK_BUF_ELEMS = 65536;
-constexpr size_t WORK_BUF_ELEMS_V6 = 32768;
+// Work buffer size: 256KB (32768 doubles) — fits comfortably in Zen 3's 512KB
+// L2 with headroom, avoiding conflict-miss stalls that reduce power draw.
+constexpr size_t WORK_BUF_ELEMS = 32768;
 // Alignment-safe MASK values derived from buffer size (must be power-of-two):
 // SSE2/NEON: clear lowest 1 bit  → 16-byte alignment
 // AVX2:      clear lowest 2 bits → 32-byte alignment
 // AVX-512:   clear lowest 3 bits → 64-byte alignment
 constexpr int MASK_SSE2   = (WORK_BUF_ELEMS - 2);
 constexpr int MASK_AVX2   = (WORK_BUF_ELEMS - 4);
-constexpr int MASK_AVX2_V6 = (WORK_BUF_ELEMS_V6 - 4);
 constexpr int MASK_AVX512 = (WORK_BUF_ELEMS - 8);
 
 struct WorkBufferTls {
@@ -753,7 +738,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
 }
 
 // ============================================================================
-// AVX2 MAX POWER - 16 YMM registers
+// AVX2 MAX POWER - 16 YMM registers, 256KB buffer, 32 FMAs + 32 permutes
 // ============================================================================
 TARGET_AVX2
 uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
@@ -761,7 +746,6 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
 #pragma clang fp contract(off)
   (void)config;
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__AVX2__) || defined(__clang__) || defined(__GNUC__))
-  // Lazy heap allocation to avoid TLS bloat (saves 512KB per thread in binary)
   double* memPtr = GetWorkBuffer();
   for (int i = 0; i < WORK_BUF_ELEMS; i += 4) {
     _mm256_store_pd(&memPtr[i], _mm256_set1_pd((double)(seed + i) * 0.00001));
@@ -788,69 +772,29 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
 
   uint64_t g0 = seed, g1 = seed + 1, g2 = seed + 2, g3 = seed + 3;
   uint64_t g4 = seed + 4, g5 = seed + 5, g6 = seed + 6, g7 = seed + 7;
-#if AVX2_VARIANT == 5 || AVX2_VARIANT == 6
   uint64_t g8 = seed + 8, g9 = seed + 9, g10 = seed + 10, g11 = seed + 11;
   uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
-#endif
 
   int idx = 0;
-  // Ensure 32-byte alignment for AVX2 (4 doubles = 32 bytes)
-#if AVX2_VARIANT == 6
-  const int MASK = MASK_AVX2_V6;
-#else
   const int MASK = MASK_AVX2;
-#endif
   
   int iters = complexity * 180;
 
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
     
-    // Prefetch next iterations' data ahead of time
-    #if AVX2_VARIANT == 5
-    int stride = 64; // unused (no memory ops)
-    #elif AVX2_VARIANT == 4
-    int stride = 128;
-    #else
-    int stride = 64;
-    #endif
-    #if AVX2_VARIANT != 5
-    int nextIdx = (idx + stride) & MASK;
-    int nextIdx2 = (idx + stride * 2) & MASK;
+    int nextIdx = (idx + 64) & MASK;
+    int nextIdx2 = (idx + 128) & MASK;
     _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx]), _MM_HINT_T0);
     _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx + 512) & MASK]), _MM_HINT_T0);
     _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx2]), _MM_HINT_T0);
     _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx2 + 512) & MASK]), _MM_HINT_T0);
-    #endif
     
-    #if AVX2_VARIANT != 5
-    // MASK ensures the double index is always a multiple of 4, so the
-    // byte address is always 32-byte aligned – safe to use aligned load/store.
     #define WORK(r, off) \
       r = _mm256_fmadd_pd(r, mul, _mm256_load_pd(&memPtr[(idx + off) & MASK])); \
       _mm256_store_pd(&memPtr[(idx + off + 512) & MASK], r)
-    #endif
     
-    #if AVX2_VARIANT == 5
-    // V5: Pure reg-reg compute — no memory operations, maximum sustained FMA throughput
-    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
-    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
-    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
-    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
-    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
-    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
-    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
-    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
-    g8 = (g8 * 0x9E3779B97F4A7C15ULL) ^ (g9 >> 17) ^ (g10 << 13);
-    g9 = (g9 * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13);
-    g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13);
-    g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13);
-    g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13);
-    g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13);
-    g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g0 << 13);
-    g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
-    #elif AVX2_VARIANT == 6
-    // V6: Tight L2 — single memory pass with 256KB window, 16 GPR chains
+    // Single memory pass + 16 GPR chains
     WORK(r0, 0);   WORK(r1, 4);   WORK(r2, 8);   WORK(r3, 12);
     g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
     g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
@@ -871,52 +815,10 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13);
     g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g0 << 13);
     g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
-    #elif AVX2_VARIANT == 4
-    // V4: Wide memory — 2 passes of 16 WORK
-    WORK(r0, 0);   WORK(r1, 4);   WORK(r2, 8);   WORK(r3, 12);
-    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
-    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
-    WORK(r4, 16);  WORK(r5, 20);  WORK(r6, 24);  WORK(r7, 28);
-    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
-    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
-    WORK(r8, 32);  WORK(r9, 36);  WORK(r10, 40); WORK(r11, 44);
-    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
-    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
-    WORK(r12, 48); WORK(r13, 52); WORK(r14, 56); WORK(r15, 60);
-    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
-    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
-    // Second memory pass
-    WORK(r0, 64);  WORK(r1, 68);  WORK(r2, 72);  WORK(r3, 76);
-    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
-    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
-    WORK(r4, 80);  WORK(r5, 84);  WORK(r6, 88);  WORK(r7, 92);
-    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
-    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
-    WORK(r8, 96);  WORK(r9, 100); WORK(r10, 104); WORK(r11, 108);
-    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
-    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
-    WORK(r12, 112); WORK(r13, 116); WORK(r14, 120); WORK(r15, 124);
-    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
-    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
-    #else
-    // V0-V3: single memory pass
-    WORK(r0, 0);   WORK(r1, 4);   WORK(r2, 8);   WORK(r3, 12);
-    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
-    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
-    WORK(r4, 16);  WORK(r5, 20);  WORK(r6, 24);  WORK(r7, 28);
-    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
-    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
-    WORK(r8, 32);  WORK(r9, 36);  WORK(r10, 40); WORK(r11, 44);
-    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
-    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
-    WORK(r12, 48); WORK(r13, 52); WORK(r14, 56); WORK(r15, 60);
-    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
-    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
-    #endif
     
-    #if AVX2_VARIANT >= 1
-    // Permute (port 5 shuffle pressure) — skipped in V0, V2
-    #if AVX2_VARIANT != 2
+    #undef WORK
+    
+    // 32 permutes (port 5 pressure)
     r0 = _mm256_permute4x64_pd(r0, _MM_SHUFFLE(1, 0, 3, 2));
     r1 = _mm256_permute4x64_pd(r1, _MM_SHUFFLE(1, 0, 3, 2));
     r2 = _mm256_permute4x64_pd(r2, _MM_SHUFFLE(1, 0, 3, 2));
@@ -933,10 +835,6 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     r13 = _mm256_permute4x64_pd(r13, _MM_SHUFFLE(1, 0, 3, 2));
     r14 = _mm256_permute4x64_pd(r14, _MM_SHUFFLE(1, 0, 3, 2));
     r15 = _mm256_permute4x64_pd(r15, _MM_SHUFFLE(1, 0, 3, 2));
-    #endif
-    
-    // V5/V6: extra permute pass (doubles port 5 pressure to 32 total)
-    #if AVX2_VARIANT == 5 || AVX2_VARIANT == 6
     r0 = _mm256_permute4x64_pd(r0, _MM_SHUFFLE(0, 1, 2, 3));
     r1 = _mm256_permute4x64_pd(r1, _MM_SHUFFLE(0, 1, 2, 3));
     r2 = _mm256_permute4x64_pd(r2, _MM_SHUFFLE(0, 1, 2, 3));
@@ -953,9 +851,8 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     r13 = _mm256_permute4x64_pd(r13, _MM_SHUFFLE(0, 1, 2, 3));
     r14 = _mm256_permute4x64_pd(r14, _MM_SHUFFLE(0, 1, 2, 3));
     r15 = _mm256_permute4x64_pd(r15, _MM_SHUFFLE(0, 1, 2, 3));
-    #endif
-    // Daisy-chain reg-to-reg FMA — one full rotation for V1/V2/V4, two for V3/V5/V6
-    #if AVX2_VARIANT >= 2
+    
+    // 32 daisy-chain reg-reg FMAs (port 0/1 pressure)
     r0 = _mm256_fmadd_pd(r0, mul, r1);   r1 = _mm256_fmadd_pd(r1, mul, r2);
     r2 = _mm256_fmadd_pd(r2, mul, r3);   r3 = _mm256_fmadd_pd(r3, mul, r4);
     r4 = _mm256_fmadd_pd(r4, mul, r5);   r5 = _mm256_fmadd_pd(r5, mul, r6);
@@ -964,9 +861,6 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     r10 = _mm256_fmadd_pd(r10, mul, r11); r11 = _mm256_fmadd_pd(r11, mul, r12);
     r12 = _mm256_fmadd_pd(r12, mul, r13); r13 = _mm256_fmadd_pd(r13, mul, r14);
     r14 = _mm256_fmadd_pd(r14, mul, r15); r15 = _mm256_fmadd_pd(r15, mul, r0);
-    #endif
-    #if AVX2_VARIANT == 3 || AVX2_VARIANT == 5 || AVX2_VARIANT == 6
-    // Second rotation — adds another 16 reg-reg FMAs for V3/V5/V6
     r0 = _mm256_fmadd_pd(r0, mul, r1);   r1 = _mm256_fmadd_pd(r1, mul, r2);
     r2 = _mm256_fmadd_pd(r2, mul, r3);   r3 = _mm256_fmadd_pd(r3, mul, r4);
     r4 = _mm256_fmadd_pd(r4, mul, r5);   r5 = _mm256_fmadd_pd(r5, mul, r6);
@@ -975,14 +869,8 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     r10 = _mm256_fmadd_pd(r10, mul, r11); r11 = _mm256_fmadd_pd(r11, mul, r12);
     r12 = _mm256_fmadd_pd(r12, mul, r13); r13 = _mm256_fmadd_pd(r13, mul, r14);
     r14 = _mm256_fmadd_pd(r14, mul, r15); r15 = _mm256_fmadd_pd(r15, mul, r0);
-    #endif
-    #endif // AVX2_VARIANT >= 1
     
-    #undef WORK
-    
-    #if AVX2_VARIANT != 5
-    idx = (idx + stride) & MASK;
-    #endif
+    idx = (idx + 64) & MASK;
   }
 
   __m256d sum = _mm256_add_pd(r0, r1);
@@ -1001,18 +889,13 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
   sum = _mm256_add_pd(sum, r14);
   sum = _mm256_add_pd(sum, r15);
   
-  // Cross-lane merge via permute+add for extra port 5 pressure at exit
   __m256d perm = _mm256_permute4x64_pd(sum, _MM_SHUFFLE(1, 0, 3, 2));
   sum = _mm256_add_pd(sum, perm);
   
   double out[4];
   _mm256_storeu_pd(out, sum);
-#if AVX2_VARIANT == 5 || AVX2_VARIANT == 6
   uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7 ^
                   g8 ^ g9 ^ g10 ^ g11 ^ g12 ^ g13 ^ g14 ^ g15;
-#else
-  uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7;
-#endif
   double final_val = out[0] + out[1] + out[2] + out[3] + (double)gint;
   volatile double sink = final_val;
   (void)sink;

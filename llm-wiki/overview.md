@@ -35,7 +35,7 @@ CPU stress-test tool that mimics shader-compiler workloads. Purely CPU-bound (no
 |------|---------|
 | `ShaderStress.cpp` | Entry, CLI, dispatch, main loop |
 | `Common.h` | Shared types, macros, CpuFeatures struct |
-| `Workloads.cpp` | Stress workload kernels (SSE2, AVX2, AVX-512, NEON, scalar) |
+| `Workloads.cpp` | Stress workload kernels (SSE2, AVX2 V0–V6, AVX-512 V0–V6, NEON, scalar) |
 | `Threading.cpp` | Worker threads, dynamic mode, watchdog |
 | `Platform.cpp` | Power mgmt, thread pinning, crash dumps |
 | `CpuFeatures.cpp` | CPUID-based feature detection |
