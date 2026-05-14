@@ -9,19 +9,24 @@
 //   2 = No permute:   16 WORK + 8 GPR + 16 daisy-chain reg-reg FMA only
 //   3 = Double daisy: 16 WORK + 8 GPR + 16 permutes + 32 daisy-chain reg-reg FMA
 //   4 = Wide memory:  32 WORK + 8 GPR + 16 permutes + 16 daisy-chain reg-reg FMA
+//   5 = No memory:    0 WORK + 16 GPR + 32 permutes + 32 daisy-chain reg-reg FMA  (pure compute, max power)
+//   6 = Tight L2:     16 WORK + 16 GPR + 32 permutes + 32 daisy-chain reg-reg FMA  (256KB buffer for L2 headroom)
 #ifndef AVX2_VARIANT
 #define AVX2_VARIANT 1
 #endif
 
 // Work buffer size: 512KB (65536 doubles) — exceeds L2 but fits in L3 on most
 // CPUs. Keeps the workload ALU-bound for maximum power draw.
+// V6 uses a tighter 256KB window for guaranteed L2 residency.
 constexpr size_t WORK_BUF_ELEMS = 65536;
+constexpr size_t WORK_BUF_ELEMS_V6 = 32768;
 // Alignment-safe MASK values derived from buffer size (must be power-of-two):
 // SSE2/NEON: clear lowest 1 bit  → 16-byte alignment
 // AVX2:      clear lowest 2 bits → 32-byte alignment
 // AVX-512:   clear lowest 3 bits → 64-byte alignment
 constexpr int MASK_SSE2   = (WORK_BUF_ELEMS - 2);
 constexpr int MASK_AVX2   = (WORK_BUF_ELEMS - 4);
+constexpr int MASK_AVX2_V6 = (WORK_BUF_ELEMS_V6 - 4);
 constexpr int MASK_AVX512 = (WORK_BUF_ELEMS - 8);
 
 struct WorkBufferTls {
@@ -549,17 +554,14 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
     
     // Prefetch next iterations' data ahead of time
-    int nextIdx = (idx + 96) & MASK;
-    int nextIdx2 = (idx + 192) & MASK;
+    int nextIdx = (idx + 64) & MASK;
+    int nextIdx2 = (idx + 128) & MASK;
     _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx]), _MM_HINT_T0);
     _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx + 512) & MASK]), _MM_HINT_T0);
     _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx2]), _MM_HINT_T0);
     _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx2 + 512) & MASK]), _MM_HINT_T0);
     
-    // SSE2: 2-wide operations (128-bit)
-    // Load-Multiply-Add-Store pattern
-    // Use FMA when compiled with FMA support (v3/v4 builds), fall back to
-    // separate mul+add for generic x86_64 builds.
+    // SSE2: 2-wide operations (128-bit) — single memory pass, heavy compute
     #ifdef __FMA__
     #define SSE2_WORK(r, off) \
       r = _mm_fmadd_pd(r, mul, _mm_load_pd(&memPtr[(idx + off) & MASK])); \
@@ -571,65 +573,56 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
       _mm_store_pd(&memPtr[(idx + off + 512) & MASK], r)
     #endif
     
+    // Single memory pass — 16 WORK calls with all 16 GPR chains interleaved
     SSE2_WORK(r0, 0);   SSE2_WORK(r1, 2);   SSE2_WORK(r2, 4);   SSE2_WORK(r3, 6);
     g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
     g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
+    g8 = (g8 * 0x9E3779B97F4A7C15ULL) ^ (g9 >> 17) ^ (g10 << 13);
+    g9 = (g9 * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13);
     
     SSE2_WORK(r4, 8);   SSE2_WORK(r5, 10);  SSE2_WORK(r6, 12);  SSE2_WORK(r7, 14);
     g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
     g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
+    g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13);
+    g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13);
     
     SSE2_WORK(r8, 16);  SSE2_WORK(r9, 18);  SSE2_WORK(r10, 20); SSE2_WORK(r11, 22);
     g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
     g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
+    g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13);
+    g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13);
     
     SSE2_WORK(r12, 24); SSE2_WORK(r13, 26); SSE2_WORK(r14, 28); SSE2_WORK(r15, 30);
     g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
     g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
-    
-    // Second pass
-    SSE2_WORK(r0, 32);  SSE2_WORK(r1, 34);  SSE2_WORK(r2, 36);  SSE2_WORK(r3, 38);
-    g8 = (g8 * 0x9E3779B97F4A7C15ULL) ^ (g9 >> 17) ^ (g10 << 13);
-    g9 = (g9 * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13);
-    
-    SSE2_WORK(r4, 40);  SSE2_WORK(r5, 42);  SSE2_WORK(r6, 44);  SSE2_WORK(r7, 46);
-    g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13);
-    g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13);
-    
-    SSE2_WORK(r8, 48);  SSE2_WORK(r9, 50);  SSE2_WORK(r10, 52); SSE2_WORK(r11, 54);
-    g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13);
-    g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13);
-    
-    SSE2_WORK(r12, 56); SSE2_WORK(r13, 58); SSE2_WORK(r14, 60); SSE2_WORK(r15, 62);
     g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g0 << 13);
     g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
     
-    // Third pass - saturate load/store ports
-    SSE2_WORK(r0, 64);  SSE2_WORK(r1, 66);  SSE2_WORK(r2, 68);  SSE2_WORK(r3, 70);
-    SSE2_WORK(r4, 72);  SSE2_WORK(r5, 74);  SSE2_WORK(r6, 76);  SSE2_WORK(r7, 78);
-    SSE2_WORK(r8, 80);  SSE2_WORK(r9, 82);  SSE2_WORK(r10, 84); SSE2_WORK(r11, 86);
-    SSE2_WORK(r12, 88); SSE2_WORK(r13, 90); SSE2_WORK(r14, 92); SSE2_WORK(r15, 94);
+    // Port 5 shuffle pressure — first rotation
+    #define SSE2_SHUFFLE(r) r = _mm_shuffle_pd(r, r, _MM_SHUFFLE2(0, 1))
+    SSE2_SHUFFLE(r0); SSE2_SHUFFLE(r1); SSE2_SHUFFLE(r2); SSE2_SHUFFLE(r3);
+    SSE2_SHUFFLE(r4); SSE2_SHUFFLE(r5); SSE2_SHUFFLE(r6); SSE2_SHUFFLE(r7);
+    SSE2_SHUFFLE(r8); SSE2_SHUFFLE(r9); SSE2_SHUFFLE(r10); SSE2_SHUFFLE(r11);
+    SSE2_SHUFFLE(r12); SSE2_SHUFFLE(r13); SSE2_SHUFFLE(r14); SSE2_SHUFFLE(r15);
+    // Second rotation
+    SSE2_SHUFFLE(r0); SSE2_SHUFFLE(r1); SSE2_SHUFFLE(r2); SSE2_SHUFFLE(r3);
+    SSE2_SHUFFLE(r4); SSE2_SHUFFLE(r5); SSE2_SHUFFLE(r6); SSE2_SHUFFLE(r7);
+    SSE2_SHUFFLE(r8); SSE2_SHUFFLE(r9); SSE2_SHUFFLE(r10); SSE2_SHUFFLE(r11);
+    SSE2_SHUFFLE(r12); SSE2_SHUFFLE(r13); SSE2_SHUFFLE(r14); SSE2_SHUFFLE(r15);
+    #undef SSE2_SHUFFLE
     
-    // Port 5 shuffle pressure: swap double elements within each XMM register
-    r0 = _mm_shuffle_pd(r0, r0, _MM_SHUFFLE2(0, 1));
-    r1 = _mm_shuffle_pd(r1, r1, _MM_SHUFFLE2(0, 1));
-    r2 = _mm_shuffle_pd(r2, r2, _MM_SHUFFLE2(0, 1));
-    r3 = _mm_shuffle_pd(r3, r3, _MM_SHUFFLE2(0, 1));
-    r4 = _mm_shuffle_pd(r4, r4, _MM_SHUFFLE2(0, 1));
-    r5 = _mm_shuffle_pd(r5, r5, _MM_SHUFFLE2(0, 1));
-    r6 = _mm_shuffle_pd(r6, r6, _MM_SHUFFLE2(0, 1));
-    r7 = _mm_shuffle_pd(r7, r7, _MM_SHUFFLE2(0, 1));
-    r8 = _mm_shuffle_pd(r8, r8, _MM_SHUFFLE2(0, 1));
-    r9 = _mm_shuffle_pd(r9, r9, _MM_SHUFFLE2(0, 1));
-    r10 = _mm_shuffle_pd(r10, r10, _MM_SHUFFLE2(0, 1));
-    r11 = _mm_shuffle_pd(r11, r11, _MM_SHUFFLE2(0, 1));
-    r12 = _mm_shuffle_pd(r12, r12, _MM_SHUFFLE2(0, 1));
-    r13 = _mm_shuffle_pd(r13, r13, _MM_SHUFFLE2(0, 1));
-    r14 = _mm_shuffle_pd(r14, r14, _MM_SHUFFLE2(0, 1));
-    r15 = _mm_shuffle_pd(r15, r15, _MM_SHUFFLE2(0, 1));
-    
-    // Extra FMA pass: register-to-register rotating daisy chain (no memory, fills spare FMA cycles)
+    // Extra FMA passes: register-to-register rotating daisy chain (no memory, fills spare FMA cycles)
     #ifdef __FMA__
+    // First rotation
+    r0 = _mm_fmadd_pd(r0, mul, r1);   r1 = _mm_fmadd_pd(r1, mul, r2);
+    r2 = _mm_fmadd_pd(r2, mul, r3);   r3 = _mm_fmadd_pd(r3, mul, r4);
+    r4 = _mm_fmadd_pd(r4, mul, r5);   r5 = _mm_fmadd_pd(r5, mul, r6);
+    r6 = _mm_fmadd_pd(r6, mul, r7);   r7 = _mm_fmadd_pd(r7, mul, r8);
+    r8 = _mm_fmadd_pd(r8, mul, r9);   r9 = _mm_fmadd_pd(r9, mul, r10);
+    r10 = _mm_fmadd_pd(r10, mul, r11); r11 = _mm_fmadd_pd(r11, mul, r12);
+    r12 = _mm_fmadd_pd(r12, mul, r13); r13 = _mm_fmadd_pd(r13, mul, r14);
+    r14 = _mm_fmadd_pd(r14, mul, r15); r15 = _mm_fmadd_pd(r15, mul, r0);
+    // Second rotation
     r0 = _mm_fmadd_pd(r0, mul, r1);   r1 = _mm_fmadd_pd(r1, mul, r2);
     r2 = _mm_fmadd_pd(r2, mul, r3);   r3 = _mm_fmadd_pd(r3, mul, r4);
     r4 = _mm_fmadd_pd(r4, mul, r5);   r5 = _mm_fmadd_pd(r5, mul, r6);
@@ -655,15 +648,28 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
     r13 = _mm_add_pd(_mm_mul_pd(r13, mul), r14);
     r14 = _mm_add_pd(_mm_mul_pd(r14, mul), r15);
     r15 = _mm_add_pd(_mm_mul_pd(r15, mul), r0);
+    // Second rotation
+    r0 = _mm_add_pd(_mm_mul_pd(r0, mul), r1);
+    r1 = _mm_add_pd(_mm_mul_pd(r1, mul), r2);
+    r2 = _mm_add_pd(_mm_mul_pd(r2, mul), r3);
+    r3 = _mm_add_pd(_mm_mul_pd(r3, mul), r4);
+    r4 = _mm_add_pd(_mm_mul_pd(r4, mul), r5);
+    r5 = _mm_add_pd(_mm_mul_pd(r5, mul), r6);
+    r6 = _mm_add_pd(_mm_mul_pd(r6, mul), r7);
+    r7 = _mm_add_pd(_mm_mul_pd(r7, mul), r8);
+    r8 = _mm_add_pd(_mm_mul_pd(r8, mul), r9);
+    r9 = _mm_add_pd(_mm_mul_pd(r9, mul), r10);
+    r10 = _mm_add_pd(_mm_mul_pd(r10, mul), r11);
+    r11 = _mm_add_pd(_mm_mul_pd(r11, mul), r12);
+    r12 = _mm_add_pd(_mm_mul_pd(r12, mul), r13);
+    r13 = _mm_add_pd(_mm_mul_pd(r13, mul), r14);
+    r14 = _mm_add_pd(_mm_mul_pd(r14, mul), r15);
+    r15 = _mm_add_pd(_mm_mul_pd(r15, mul), r0);
     #endif
-    
-    // Light GPR reduction
-    g0 ^= g8; g1 ^= g9; g2 ^= g10; g3 ^= g11;
-    g4 ^= g12; g5 ^= g13; g6 ^= g14; g7 ^= g15;
     
     #undef SSE2_WORK
     
-    idx = (idx + 96) & MASK;
+    idx = (idx + 64) & MASK;
   }
 
   __m128d sum = _mm_add_pd(r0, r1);
@@ -782,10 +788,18 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
 
   uint64_t g0 = seed, g1 = seed + 1, g2 = seed + 2, g3 = seed + 3;
   uint64_t g4 = seed + 4, g5 = seed + 5, g6 = seed + 6, g7 = seed + 7;
+#if AVX2_VARIANT == 5 || AVX2_VARIANT == 6
+  uint64_t g8 = seed + 8, g9 = seed + 9, g10 = seed + 10, g11 = seed + 11;
+  uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
+#endif
 
   int idx = 0;
   // Ensure 32-byte alignment for AVX2 (4 doubles = 32 bytes)
+#if AVX2_VARIANT == 6
+  const int MASK = MASK_AVX2_V6;
+#else
   const int MASK = MASK_AVX2;
+#endif
   
   int iters = complexity * 180;
 
@@ -793,25 +807,71 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
     
     // Prefetch next iterations' data ahead of time
-    #if AVX2_VARIANT == 4
+    #if AVX2_VARIANT == 5
+    int stride = 64; // unused (no memory ops)
+    #elif AVX2_VARIANT == 4
     int stride = 128;
     #else
     int stride = 64;
     #endif
+    #if AVX2_VARIANT != 5
     int nextIdx = (idx + stride) & MASK;
     int nextIdx2 = (idx + stride * 2) & MASK;
     _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx]), _MM_HINT_T0);
     _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx + 512) & MASK]), _MM_HINT_T0);
     _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx2]), _MM_HINT_T0);
     _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx2 + 512) & MASK]), _MM_HINT_T0);
+    #endif
     
-    // MASK_AVX2 ensures the double index is always a multiple of 4, so the
+    #if AVX2_VARIANT != 5
+    // MASK ensures the double index is always a multiple of 4, so the
     // byte address is always 32-byte aligned – safe to use aligned load/store.
     #define WORK(r, off) \
       r = _mm256_fmadd_pd(r, mul, _mm256_load_pd(&memPtr[(idx + off) & MASK])); \
       _mm256_store_pd(&memPtr[(idx + off + 512) & MASK], r)
+    #endif
     
-    #if AVX2_VARIANT == 4
+    #if AVX2_VARIANT == 5
+    // V5: Pure reg-reg compute — no memory operations, maximum sustained FMA throughput
+    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
+    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
+    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
+    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
+    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
+    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
+    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
+    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
+    g8 = (g8 * 0x9E3779B97F4A7C15ULL) ^ (g9 >> 17) ^ (g10 << 13);
+    g9 = (g9 * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13);
+    g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13);
+    g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13);
+    g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13);
+    g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13);
+    g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g0 << 13);
+    g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
+    #elif AVX2_VARIANT == 6
+    // V6: Tight L2 — single memory pass with 256KB window, 16 GPR chains
+    WORK(r0, 0);   WORK(r1, 4);   WORK(r2, 8);   WORK(r3, 12);
+    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
+    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
+    WORK(r4, 16);  WORK(r5, 20);  WORK(r6, 24);  WORK(r7, 28);
+    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
+    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
+    WORK(r8, 32);  WORK(r9, 36);  WORK(r10, 40); WORK(r11, 44);
+    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
+    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
+    WORK(r12, 48); WORK(r13, 52); WORK(r14, 56); WORK(r15, 60);
+    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
+    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
+    g8 = (g8 * 0x9E3779B97F4A7C15ULL) ^ (g9 >> 17) ^ (g10 << 13);
+    g9 = (g9 * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13);
+    g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13);
+    g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13);
+    g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13);
+    g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13);
+    g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g0 << 13);
+    g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
+    #elif AVX2_VARIANT == 4
     // V4: Wide memory — 2 passes of 16 WORK
     WORK(r0, 0);   WORK(r1, 4);   WORK(r2, 8);   WORK(r3, 12);
     g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
@@ -839,6 +899,7 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
     g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
     #else
+    // V0-V3: single memory pass
     WORK(r0, 0);   WORK(r1, 4);   WORK(r2, 8);   WORK(r3, 12);
     g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
     g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
@@ -874,8 +935,8 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     r15 = _mm256_permute4x64_pd(r15, _MM_SHUFFLE(1, 0, 3, 2));
     #endif
     
-    // V5: extra permute pass (doubles port 5 pressure)
-    #if AVX2_VARIANT == 5
+    // V5/V6: extra permute pass (doubles port 5 pressure to 32 total)
+    #if AVX2_VARIANT == 5 || AVX2_VARIANT == 6
     r0 = _mm256_permute4x64_pd(r0, _MM_SHUFFLE(0, 1, 2, 3));
     r1 = _mm256_permute4x64_pd(r1, _MM_SHUFFLE(0, 1, 2, 3));
     r2 = _mm256_permute4x64_pd(r2, _MM_SHUFFLE(0, 1, 2, 3));
@@ -893,8 +954,7 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     r14 = _mm256_permute4x64_pd(r14, _MM_SHUFFLE(0, 1, 2, 3));
     r15 = _mm256_permute4x64_pd(r15, _MM_SHUFFLE(0, 1, 2, 3));
     #endif
-    
-    // Daisy-chain reg-to-reg FMA — one full rotation for V1/V2/V4/V5, two for V3
+    // Daisy-chain reg-to-reg FMA — one full rotation for V1/V2/V4, two for V3/V5/V6
     #if AVX2_VARIANT >= 2
     r0 = _mm256_fmadd_pd(r0, mul, r1);   r1 = _mm256_fmadd_pd(r1, mul, r2);
     r2 = _mm256_fmadd_pd(r2, mul, r3);   r3 = _mm256_fmadd_pd(r3, mul, r4);
@@ -905,8 +965,8 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     r12 = _mm256_fmadd_pd(r12, mul, r13); r13 = _mm256_fmadd_pd(r13, mul, r14);
     r14 = _mm256_fmadd_pd(r14, mul, r15); r15 = _mm256_fmadd_pd(r15, mul, r0);
     #endif
-    #if AVX2_VARIANT == 3
-    // Second rotation for double daisy
+    #if AVX2_VARIANT == 3 || AVX2_VARIANT == 5 || AVX2_VARIANT == 6
+    // Second rotation — adds another 16 reg-reg FMAs for V3/V5/V6
     r0 = _mm256_fmadd_pd(r0, mul, r1);   r1 = _mm256_fmadd_pd(r1, mul, r2);
     r2 = _mm256_fmadd_pd(r2, mul, r3);   r3 = _mm256_fmadd_pd(r3, mul, r4);
     r4 = _mm256_fmadd_pd(r4, mul, r5);   r5 = _mm256_fmadd_pd(r5, mul, r6);
@@ -920,7 +980,9 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     
     #undef WORK
     
+    #if AVX2_VARIANT != 5
     idx = (idx + stride) & MASK;
+    #endif
   }
 
   __m256d sum = _mm256_add_pd(r0, r1);
@@ -945,7 +1007,12 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
   
   double out[4];
   _mm256_storeu_pd(out, sum);
+#if AVX2_VARIANT == 5 || AVX2_VARIANT == 6
+  uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7 ^
+                  g8 ^ g9 ^ g10 ^ g11 ^ g12 ^ g13 ^ g14 ^ g15;
+#else
   uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7;
+#endif
   double final_val = out[0] + out[1] + out[2] + out[3] + (double)gint;
   volatile double sink = final_val;
   (void)sink;

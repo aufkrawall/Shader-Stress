@@ -190,7 +190,7 @@ static void RunCompilerLogic(int idx, Worker &w) {
 }
 
 static void RunDecompressLogic(int idx) {
-  const size_t BUF_SIZE = 512 * 1024;
+  const size_t BUF_SIZE = 256 * 1024;
   // Lazy heap allocation to avoid TLS bloat
   static thread_local std::vector<uint8_t> data;
   static thread_local std::mt19937 rng(idx * 777);
@@ -207,7 +207,8 @@ static void RunDecompressLogic(int idx) {
   // Multiple passes to match compiler workload duration (complexity ~12000)
   // Each pass processes BUF_SIZE bytes, repeated PASSES times to keep the
   // core busy for a meaningful per-invocation interval.
-  const int PASSES = 64;
+  // Smaller buffer (256KB) fits in L2, fewer cache misses = more sustained work.
+  const int PASSES = 128;
   uint64_t acc = 0;
   for (int p = 0; p < PASSES; ++p) {
     for (size_t i = 0; i < BUF_SIZE; i += 8) {
@@ -220,6 +221,8 @@ static void RunDecompressLogic(int idx) {
         acc ^= data[offset];
       } else
         acc += 0xDEADBEEF;
+      // Integer multiply chain adds port 0 pressure (integer multiply)
+      acc = (acc * 0x9E3779B97F4A7C15ULL) ^ (acc >> 31);
       data[i] ^= (uint8_t)acc;
     }
   }
@@ -334,7 +337,14 @@ void IOThread(int ioIdx) {
     DWORD read;
     uint8_t *p = buf.As<uint8_t>();
     if (ReadFile(hFile, p, (DWORD)IO_CHUNK_SIZE, &read, nullptr) && read > 0) {
-      volatile uint8_t sink = p[0] ^ p[read - 1];
+      // Process buffer with CPU-side hash to keep core hot alongside I/O
+      uint64_t hash = 0;
+      for (DWORD j = 0; j < read; j += 8) {
+        uint64_t val;
+        std::memcpy(&val, &p[j], 8);
+        hash = (hash * 0x9E3779B97F4A7C15ULL) ^ val;
+      }
+      volatile uint64_t sink = hash;
       (void)sink;
     }
     w.lastTick = GetTick();
@@ -398,9 +408,19 @@ void RAMThread() {
         if ((rng() % 10) < 7) {
           // High-bandwidth write pattern: stride=1 (8 bytes) saturates
           // memory controller with max possible write transactions.
-          size_t stride = 1;
-          for (size_t i = 0; i < count; i += stride) {
-            p[i] = (i + 16) % count;
+          // Mixed with integer multiply-chain to keep core hot alongside memory.
+          {
+            uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+            for (size_t i = 0; i < count; i += 4) {
+              a0 = (a0 * 0x9E3779B97F4A7C15ULL) ^ p[i];
+              a1 = (a1 * 0x9E3779B97F4A7C15ULL) ^ p[i + 1];
+              a2 = (a2 * 0x9E3779B97F4A7C15ULL) ^ p[i + 2];
+              a3 = (a3 * 0x9E3779B97F4A7C15ULL) ^ p[i + 3];
+              p[i]     = a0;
+              p[i + 1] = a1;
+              p[i + 2] = a2;
+              p[i + 3] = a3;
+            }
           }
         } else {
           volatile uint64_t idx = 0;
@@ -426,6 +446,7 @@ void RAMThread() {
 #endif
 
 void IOThread(int ioIdx) {
+  DisablePowerThrottling();
   SetFpuFlushMode();
   auto &w = *g_IOThreads[ioIdx];
 
@@ -482,7 +503,14 @@ void IOThread(int ioIdx) {
     uint8_t *p = buf.As<uint8_t>();
     ssize_t readBytes = read(hFile, p, IO_CHUNK_SIZE);
     if (readBytes > 0) {
-      volatile uint8_t sink = p[0] ^ p[readBytes - 1];
+      // Process buffer with CPU-side hash to keep core hot alongside I/O
+      uint64_t hash = 0;
+      for (ssize_t j = 0; j < readBytes; j += 8) {
+        uint64_t val;
+        std::memcpy(&val, &p[j], 8);
+        hash = (hash * 0x9E3779B97F4A7C15ULL) ^ val;
+      }
+      volatile uint64_t sink = hash;
       (void)sink;
     }
     w.lastTick = GetTick();
@@ -497,6 +525,7 @@ void IOThread(int ioIdx) {
 }
 
 void RAMThread() {
+  DisablePowerThrottling();
   SetFpuFlushMode();
   auto &w = g_RAM;
   std::mt19937_64 rng(GetTick());
@@ -568,10 +597,19 @@ void RAMThread() {
         if ((rng() % 10) < 7) {
           // High-bandwidth write pattern: stride=1 (8 bytes) saturates
           // memory controller with max possible write transactions.
-          size_t stride = 1;
-          for (size_t i = 0; i < count; i += stride) {
-            // Read/Write to properly dirty pages
-            p[i] = (p[i] + 1);
+          // Mixed with integer multiply-chain to keep core hot alongside memory.
+          {
+            uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+            for (size_t i = 0; i < count; i += 4) {
+              a0 = (a0 * 0x9E3779B97F4A7C15ULL) ^ p[i];
+              a1 = (a1 * 0x9E3779B97F4A7C15ULL) ^ p[i + 1];
+              a2 = (a2 * 0x9E3779B97F4A7C15ULL) ^ p[i + 2];
+              a3 = (a3 * 0x9E3779B97F4A7C15ULL) ^ p[i + 3];
+              p[i]     = a0;
+              p[i + 1] = a1;
+              p[i + 2] = a2;
+              p[i + 3] = a3;
+            }
           }
         } else {
           volatile uint64_t idx = 0;

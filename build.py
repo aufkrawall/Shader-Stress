@@ -103,7 +103,7 @@ def build_windows_cli_launcher(target, cpu, out_path):
 
 # PGO mode: None, "generate", or "use"
 PGO_MODE = None
-# AVX2 workload variant (0-4); None = default (V1)
+# AVX2 workload variant (0-6); None = default (V1)
 AVX2_VARIANT = None
 
 
@@ -142,7 +142,7 @@ def build_target(config):
     # Disable SEH for Zig (not supported)
     defines.append("-DDISABLE_SEH")
     
-    # AVX2 workload variant (set via avx2-0..avx2-4 targets)
+    # AVX2 workload variant (set via avx2-0..avx2-6 targets)
     if AVX2_VARIANT is not None:
         defines.append(f"-DAVX2_VARIANT={AVX2_VARIANT}")
     
@@ -381,7 +381,7 @@ def main():
         print("  macos     - macOS x64 and ARM64")
         print("  v4        - x86_64_v4 targets (AVX-512) only")
         print("  native    - Current platform only")
-        print("  avx2-0..4 - Build native x86_64 with specific AVX2 variant (0=lean, 1=current, 2=no-permute, 3=double-daisy, 4=wide-memory)")
+        print("  avx2-0..6 - Build native x86_64 with specific AVX2 variant (0=lean, 1=current, 2=no-permute, 3=double-daisy, 4=wide-memory, 5=no-memory, 6=tight-l2)")
         print("")
         print("Options:")
         print("  --pgo-gen  Build with profile generation instrumentation")
