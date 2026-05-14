@@ -3,8 +3,8 @@
 #include <cstring>
 #include <vector>
 
-// Work buffer size: 256KB (32768 doubles) — fits comfortably in Zen 3's 512KB
-// L2 with headroom, avoiding conflict-miss stalls that reduce power draw.
+// Work buffer size: 256KB (32768 doubles). SSE2 and AVX-512 paths use it for
+// WORK macro data. AVX2 only uses it for init seeding (hot loop is pure reg-reg).
 constexpr size_t WORK_BUF_ELEMS = 32768;
 // Alignment-safe MASK values derived from buffer size (must be power-of-two):
 // SSE2/NEON: clear lowest 1 bit  → 16-byte alignment
@@ -738,7 +738,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
 }
 
 // ============================================================================
-// AVX2 MAX POWER - 16 YMM registers, 256KB buffer, 32 FMAs + 32 permutes
+// AVX2 MAX POWER - 16 YMM registers, 48 FMAs + 48 permutes, pure reg-reg
 // ============================================================================
 TARGET_AVX2
 uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
@@ -774,37 +774,19 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
   uint64_t g4 = seed + 4, g5 = seed + 5, g6 = seed + 6, g7 = seed + 7;
   uint64_t g8 = seed + 8, g9 = seed + 9, g10 = seed + 10, g11 = seed + 11;
   uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
-
-  int idx = 0;
-  const int MASK = MASK_AVX2;
   
   int iters = complexity * 180;
 
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
     
-    int nextIdx = (idx + 64) & MASK;
-    int nextIdx2 = (idx + 128) & MASK;
-    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx]), _MM_HINT_T0);
-    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx + 512) & MASK]), _MM_HINT_T0);
-    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx2]), _MM_HINT_T0);
-    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx2 + 512) & MASK]), _MM_HINT_T0);
-    
-    #define WORK(r, off) \
-      r = _mm256_fmadd_pd(r, mul, _mm256_load_pd(&memPtr[(idx + off) & MASK])); \
-      _mm256_store_pd(&memPtr[(idx + off + 512) & MASK], r)
-    
-    // Single memory pass + 16 GPR chains
-    WORK(r0, 0);   WORK(r1, 4);   WORK(r2, 8);   WORK(r3, 12);
+    // 16 GPR chains (integer mul on port 0, mixed with vector workload)
     g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
     g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
-    WORK(r4, 16);  WORK(r5, 20);  WORK(r6, 24);  WORK(r7, 28);
     g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
     g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
-    WORK(r8, 32);  WORK(r9, 36);  WORK(r10, 40); WORK(r11, 44);
     g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
     g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
-    WORK(r12, 48); WORK(r13, 52); WORK(r14, 56); WORK(r15, 60);
     g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
     g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
     g8 = (g8 * 0x9E3779B97F4A7C15ULL) ^ (g9 >> 17) ^ (g10 << 13);
@@ -816,61 +798,49 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g0 << 13);
     g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
     
-    #undef WORK
+    // 48 permutes (3 rotations × 16, port 5 pressure)
+    #define PERM(r, c) r = _mm256_permute4x64_pd(r, c)
+    PERM(r0, _MM_SHUFFLE(1, 0, 3, 2)); PERM(r1, _MM_SHUFFLE(1, 0, 3, 2));
+    PERM(r2, _MM_SHUFFLE(1, 0, 3, 2)); PERM(r3, _MM_SHUFFLE(1, 0, 3, 2));
+    PERM(r4, _MM_SHUFFLE(1, 0, 3, 2)); PERM(r5, _MM_SHUFFLE(1, 0, 3, 2));
+    PERM(r6, _MM_SHUFFLE(1, 0, 3, 2)); PERM(r7, _MM_SHUFFLE(1, 0, 3, 2));
+    PERM(r8, _MM_SHUFFLE(1, 0, 3, 2)); PERM(r9, _MM_SHUFFLE(1, 0, 3, 2));
+    PERM(r10, _MM_SHUFFLE(1, 0, 3, 2)); PERM(r11, _MM_SHUFFLE(1, 0, 3, 2));
+    PERM(r12, _MM_SHUFFLE(1, 0, 3, 2)); PERM(r13, _MM_SHUFFLE(1, 0, 3, 2));
+    PERM(r14, _MM_SHUFFLE(1, 0, 3, 2)); PERM(r15, _MM_SHUFFLE(1, 0, 3, 2));
+    PERM(r0, _MM_SHUFFLE(0, 1, 2, 3)); PERM(r1, _MM_SHUFFLE(0, 1, 2, 3));
+    PERM(r2, _MM_SHUFFLE(0, 1, 2, 3)); PERM(r3, _MM_SHUFFLE(0, 1, 2, 3));
+    PERM(r4, _MM_SHUFFLE(0, 1, 2, 3)); PERM(r5, _MM_SHUFFLE(0, 1, 2, 3));
+    PERM(r6, _MM_SHUFFLE(0, 1, 2, 3)); PERM(r7, _MM_SHUFFLE(0, 1, 2, 3));
+    PERM(r8, _MM_SHUFFLE(0, 1, 2, 3)); PERM(r9, _MM_SHUFFLE(0, 1, 2, 3));
+    PERM(r10, _MM_SHUFFLE(0, 1, 2, 3)); PERM(r11, _MM_SHUFFLE(0, 1, 2, 3));
+    PERM(r12, _MM_SHUFFLE(0, 1, 2, 3)); PERM(r13, _MM_SHUFFLE(0, 1, 2, 3));
+    PERM(r14, _MM_SHUFFLE(0, 1, 2, 3)); PERM(r15, _MM_SHUFFLE(0, 1, 2, 3));
+    PERM(r0, _MM_SHUFFLE(2, 3, 0, 1)); PERM(r1, _MM_SHUFFLE(2, 3, 0, 1));
+    PERM(r2, _MM_SHUFFLE(2, 3, 0, 1)); PERM(r3, _MM_SHUFFLE(2, 3, 0, 1));
+    PERM(r4, _MM_SHUFFLE(2, 3, 0, 1)); PERM(r5, _MM_SHUFFLE(2, 3, 0, 1));
+    PERM(r6, _MM_SHUFFLE(2, 3, 0, 1)); PERM(r7, _MM_SHUFFLE(2, 3, 0, 1));
+    PERM(r8, _MM_SHUFFLE(2, 3, 0, 1)); PERM(r9, _MM_SHUFFLE(2, 3, 0, 1));
+    PERM(r10, _MM_SHUFFLE(2, 3, 0, 1)); PERM(r11, _MM_SHUFFLE(2, 3, 0, 1));
+    PERM(r12, _MM_SHUFFLE(2, 3, 0, 1)); PERM(r13, _MM_SHUFFLE(2, 3, 0, 1));
+    PERM(r14, _MM_SHUFFLE(2, 3, 0, 1)); PERM(r15, _MM_SHUFFLE(2, 3, 0, 1));
+    #undef PERM
     
-    // 32 permutes (port 5 pressure)
-    r0 = _mm256_permute4x64_pd(r0, _MM_SHUFFLE(1, 0, 3, 2));
-    r1 = _mm256_permute4x64_pd(r1, _MM_SHUFFLE(1, 0, 3, 2));
-    r2 = _mm256_permute4x64_pd(r2, _MM_SHUFFLE(1, 0, 3, 2));
-    r3 = _mm256_permute4x64_pd(r3, _MM_SHUFFLE(1, 0, 3, 2));
-    r4 = _mm256_permute4x64_pd(r4, _MM_SHUFFLE(1, 0, 3, 2));
-    r5 = _mm256_permute4x64_pd(r5, _MM_SHUFFLE(1, 0, 3, 2));
-    r6 = _mm256_permute4x64_pd(r6, _MM_SHUFFLE(1, 0, 3, 2));
-    r7 = _mm256_permute4x64_pd(r7, _MM_SHUFFLE(1, 0, 3, 2));
-    r8 = _mm256_permute4x64_pd(r8, _MM_SHUFFLE(1, 0, 3, 2));
-    r9 = _mm256_permute4x64_pd(r9, _MM_SHUFFLE(1, 0, 3, 2));
-    r10 = _mm256_permute4x64_pd(r10, _MM_SHUFFLE(1, 0, 3, 2));
-    r11 = _mm256_permute4x64_pd(r11, _MM_SHUFFLE(1, 0, 3, 2));
-    r12 = _mm256_permute4x64_pd(r12, _MM_SHUFFLE(1, 0, 3, 2));
-    r13 = _mm256_permute4x64_pd(r13, _MM_SHUFFLE(1, 0, 3, 2));
-    r14 = _mm256_permute4x64_pd(r14, _MM_SHUFFLE(1, 0, 3, 2));
-    r15 = _mm256_permute4x64_pd(r15, _MM_SHUFFLE(1, 0, 3, 2));
-    r0 = _mm256_permute4x64_pd(r0, _MM_SHUFFLE(0, 1, 2, 3));
-    r1 = _mm256_permute4x64_pd(r1, _MM_SHUFFLE(0, 1, 2, 3));
-    r2 = _mm256_permute4x64_pd(r2, _MM_SHUFFLE(0, 1, 2, 3));
-    r3 = _mm256_permute4x64_pd(r3, _MM_SHUFFLE(0, 1, 2, 3));
-    r4 = _mm256_permute4x64_pd(r4, _MM_SHUFFLE(0, 1, 2, 3));
-    r5 = _mm256_permute4x64_pd(r5, _MM_SHUFFLE(0, 1, 2, 3));
-    r6 = _mm256_permute4x64_pd(r6, _MM_SHUFFLE(0, 1, 2, 3));
-    r7 = _mm256_permute4x64_pd(r7, _MM_SHUFFLE(0, 1, 2, 3));
-    r8 = _mm256_permute4x64_pd(r8, _MM_SHUFFLE(0, 1, 2, 3));
-    r9 = _mm256_permute4x64_pd(r9, _MM_SHUFFLE(0, 1, 2, 3));
-    r10 = _mm256_permute4x64_pd(r10, _MM_SHUFFLE(0, 1, 2, 3));
-    r11 = _mm256_permute4x64_pd(r11, _MM_SHUFFLE(0, 1, 2, 3));
-    r12 = _mm256_permute4x64_pd(r12, _MM_SHUFFLE(0, 1, 2, 3));
-    r13 = _mm256_permute4x64_pd(r13, _MM_SHUFFLE(0, 1, 2, 3));
-    r14 = _mm256_permute4x64_pd(r14, _MM_SHUFFLE(0, 1, 2, 3));
-    r15 = _mm256_permute4x64_pd(r15, _MM_SHUFFLE(0, 1, 2, 3));
-    
-    // 32 daisy-chain reg-reg FMAs (port 0/1 pressure)
-    r0 = _mm256_fmadd_pd(r0, mul, r1);   r1 = _mm256_fmadd_pd(r1, mul, r2);
-    r2 = _mm256_fmadd_pd(r2, mul, r3);   r3 = _mm256_fmadd_pd(r3, mul, r4);
-    r4 = _mm256_fmadd_pd(r4, mul, r5);   r5 = _mm256_fmadd_pd(r5, mul, r6);
-    r6 = _mm256_fmadd_pd(r6, mul, r7);   r7 = _mm256_fmadd_pd(r7, mul, r8);
-    r8 = _mm256_fmadd_pd(r8, mul, r9);   r9 = _mm256_fmadd_pd(r9, mul, r10);
-    r10 = _mm256_fmadd_pd(r10, mul, r11); r11 = _mm256_fmadd_pd(r11, mul, r12);
-    r12 = _mm256_fmadd_pd(r12, mul, r13); r13 = _mm256_fmadd_pd(r13, mul, r14);
-    r14 = _mm256_fmadd_pd(r14, mul, r15); r15 = _mm256_fmadd_pd(r15, mul, r0);
-    r0 = _mm256_fmadd_pd(r0, mul, r1);   r1 = _mm256_fmadd_pd(r1, mul, r2);
-    r2 = _mm256_fmadd_pd(r2, mul, r3);   r3 = _mm256_fmadd_pd(r3, mul, r4);
-    r4 = _mm256_fmadd_pd(r4, mul, r5);   r5 = _mm256_fmadd_pd(r5, mul, r6);
-    r6 = _mm256_fmadd_pd(r6, mul, r7);   r7 = _mm256_fmadd_pd(r7, mul, r8);
-    r8 = _mm256_fmadd_pd(r8, mul, r9);   r9 = _mm256_fmadd_pd(r9, mul, r10);
-    r10 = _mm256_fmadd_pd(r10, mul, r11); r11 = _mm256_fmadd_pd(r11, mul, r12);
-    r12 = _mm256_fmadd_pd(r12, mul, r13); r13 = _mm256_fmadd_pd(r13, mul, r14);
-    r14 = _mm256_fmadd_pd(r14, mul, r15); r15 = _mm256_fmadd_pd(r15, mul, r0);
-    
-    idx = (idx + 64) & MASK;
+    // 48 daisy-chain reg-reg FMAs (3 rotations, port 0/1 pressure)
+    #define FMA(r, s) r = _mm256_fmadd_pd(r, mul, s)
+    FMA(r0, r1);  FMA(r1, r2);  FMA(r2, r3);  FMA(r3, r4);
+    FMA(r4, r5);  FMA(r5, r6);  FMA(r6, r7);  FMA(r7, r8);
+    FMA(r8, r9);  FMA(r9, r10); FMA(r10, r11); FMA(r11, r12);
+    FMA(r12, r13); FMA(r13, r14); FMA(r14, r15); FMA(r15, r0);
+    FMA(r0, r1);  FMA(r1, r2);  FMA(r2, r3);  FMA(r3, r4);
+    FMA(r4, r5);  FMA(r5, r6);  FMA(r6, r7);  FMA(r7, r8);
+    FMA(r8, r9);  FMA(r9, r10); FMA(r10, r11); FMA(r11, r12);
+    FMA(r12, r13); FMA(r13, r14); FMA(r14, r15); FMA(r15, r0);
+    FMA(r0, r1);  FMA(r1, r2);  FMA(r2, r3);  FMA(r3, r4);
+    FMA(r4, r5);  FMA(r5, r6);  FMA(r6, r7);  FMA(r7, r8);
+    FMA(r8, r9);  FMA(r9, r10); FMA(r10, r11); FMA(r11, r12);
+    FMA(r12, r13); FMA(r13, r14); FMA(r14, r15); FMA(r15, r0);
+    #undef FMA
   }
 
   __m256d sum = _mm256_add_pd(r0, r1);

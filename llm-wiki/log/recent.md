@@ -1,5 +1,12 @@
 # Recent Changes Log
 
+## 2026-05-14 — Removed AVX2 V0–V5 workload variants; single unified AVX2 workload
+
+- **AVX2 V0–V5 eliminated**: All variant infrastructure (`AVX2_VARIANT`, `MASK_AVX2_V*`, `WORK_BUF_ELEMS_V*`) removed from codebase and build system.
+- **build.py cleaned up**: No variant build targets, no AVX2_VARIANT preprocessor switching. 10 clean targets.
+- **Single unified AVX2 workload**: `RunHyperStress_AVX2` now always runs the optimal configuration — 256KB buffer (32768 doubles, guaranteed L2 residency on Zen 3), 16 WORK calls (single memory pass, no load/store port saturation), 16 GPR chains (g0–g15, golden-ratio multiply-XOR), 32 permutes (16+16, saturates port 5), 32 daisy-chain FMAs (16+16, saturates ports 0/1). This was previously the V6 variant; all other variants (reg-reg-only V5, V4, etc.) removed as inferior.
+- **`MASK_AVX2` and `WORK_BUF_ELEMS`**: Only one constant each; `MASK_AVX2 = (WORK_BUF_ELEMS - 4)` with `WORK_BUF_ELEMS = 32768`.
+
 ## 2026-05-14 — Major CPU power draw increase across all workload types
 
 - **New V5 variant (AVX2)**: Pure reg-reg FMA + shuffle, zero memory ops. 16 GPR chains, 32 permutes, 32 daisy-chain FMAs. Eliminates all memory-induced stalls for maximum sustained FMA throughput.
