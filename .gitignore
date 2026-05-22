@@ -2,8 +2,9 @@
 bin/
 dist/
 
-# Vendored toolchain
+# Vendored toolchains
 zig-*/
+llvm-mingw-*/
 
 # Runtime artifacts
 *.log

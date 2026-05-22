@@ -12,7 +12,7 @@ Shader Stress is a CPU stress tool tuned to look more like shader and compiler w
 - ISA selection with automatic fallback across AVX-512, AVX2, and scalar paths
 - Benchmark hash generation and validation
 - Crash dump support on Windows and crash logging on Unix platforms
-- Cross-compilation and archive packaging via Zig
+- Cross-compilation via LLVM MinGW (Windows) and Zig (Linux/macOS)
 
 ## Supported Binaries
 
@@ -62,12 +62,15 @@ The full command-line contract, platform behavior, exit codes, and examples are 
 
 ## Build
 
-Shader Stress uses Zig for all builds and packaging.
+Shader Stress uses:
+- **LLVM MinGW** (mstorsjo/llvm-mingw) for Windows builds — `clang++` / `lld`
+- **Zig 0.15.2** for Linux and macOS cross-compilation
 
 ### Requirements
 
 - Python 3
-- Zig 0.15.2 extracted under `zig-x86_64-windows-0.15.2/`
+- Windows: LLVM MinGW 20260519+ extracted under `llvm-mingw-*-ucrt-x86_64/`
+- Linux/macOS: Zig 0.15.2 extracted under `zig-x86_64-windows-0.15.2/`
 
 ### Build Commands
 

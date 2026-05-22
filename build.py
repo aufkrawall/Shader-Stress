@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-ShaderStress Build Script - Zig-only, maximum parallelism
-Builds for all platforms using Zig cross-compilation
+ShaderStress Build Script
+Windows: LLVM MinGW (clang++ / lld)
+Linux/macOS: Zig cross-compilation
 """
 import os
 import sys
@@ -16,6 +17,8 @@ from pathlib import Path
 BASE_DIR = Path.cwd()
 ZIG_DIR = BASE_DIR / "zig-x86_64-windows-0.15.2"
 ZIG_EXE = ZIG_DIR / "zig.exe"
+LLVM_MINGW_DIR = BASE_DIR / "llvm-mingw-20260519-ucrt-x86_64" / "llvm-mingw-20260519-ucrt-x86_64"
+LLVM_MINGW_BIN = LLVM_MINGW_DIR / "bin"
 VERSION_FILE = BASE_DIR / "VERSION"
 CLI_LAUNCHER_SOURCE = BASE_DIR / "cli_launcher.c"
 
@@ -47,12 +50,14 @@ SRC_FILES_UNIX = [
 ]
 
 # Build configurations
+# (target, out_dir, cpu, is_windows, archive_name)
 BUILD_CONFIGS = [
-    # (target, out_dir, cpu, is_windows, archive_name)
-    ("x86_64-windows-gnu", "bin/x64-zig", "x86_64", True, "ShaderStress-Windows-x64-Zig.7z"),
-    ("x86_64-windows-gnu", "bin/x64-zig-v3", "x86_64_v3", True, "ShaderStress-Windows-x64-v3.7z"),
-    ("x86_64-windows-gnu", "bin/x64-zig-v4", "x86_64_v4", True, "ShaderStress-Windows-x64-v4.7z"),
-    ("aarch64-windows-gnu", "bin/arm64-zig", "generic", True, "ShaderStress-Windows-ARM64-Zig.7z"),
+    # Windows (LLVM MinGW)
+    ("x86_64-windows-gnu", "bin/x64-llvm", "x86_64", True, "ShaderStress-Windows-x64.7z"),
+    ("x86_64-windows-gnu", "bin/x64-llvm-v3", "x86_64_v3", True, "ShaderStress-Windows-x64-v3.7z"),
+    ("x86_64-windows-gnu", "bin/x64-llvm-v4", "x86_64_v4", True, "ShaderStress-Windows-x64-v4.7z"),
+    ("aarch64-windows-gnu", "bin/arm64-llvm", "generic", True, "ShaderStress-Windows-ARM64.7z"),
+    # Linux (Zig)
     ("x86_64-linux-gnu", "bin/linux-x64", "x86_64", False, "ShaderStress-Linux-x64.7z"),
     ("x86_64-linux-gnu", "bin/linux-x64-v3", "x86_64_v3", False, "ShaderStress-Linux-x64-v3.7z"),
     ("x86_64-linux-gnu", "bin/linux-x64-v4", "x86_64_v4", False, "ShaderStress-Linux-x64-v4.7z"),
@@ -60,6 +65,20 @@ BUILD_CONFIGS = [
     ("x86_64-macos", "bin/macos-x64", "x86_64", False, "ShaderStress-macOS-x64.7z"),
     ("aarch64-macos", "bin/macos-arm64", "generic", False, "ShaderStress-macOS-ARM64.7z"),
 ]
+
+# Map Zig-style CPU levels to Clang -march flags (Windows/LLVM MinGW only)
+CPU_ARCH_MAP = {
+    "x86_64": None,        # baseline is default for x86_64-w64-windows-gnu
+    "x86_64_v3": "x86-64-v3",
+    "x86_64_v4": "x86-64-v4",
+    "generic": None,
+}
+
+# Map target triples to LLVM MinGW toolchain prefix
+MINGW_ARCH_MAP = {
+    "x86_64-windows-gnu": "x86_64",
+    "aarch64-windows-gnu": "aarch64",
+}
 
 
 def log(msg):
@@ -70,33 +89,65 @@ APP_VERSION_TEXT, APP_VERSION_MAJOR, APP_VERSION_MINOR, APP_VERSION_PATCH = load
 
 
 def check_zig():
-    """Verify Zig is available"""
+    """Verify Zig is available (needed for Linux/macOS builds)"""
     if not ZIG_EXE.exists():
         log(f"ERROR: Zig not found at {ZIG_EXE}")
         log("Please download Zig 0.15.2 and extract to zig-x86_64-windows-0.15.2/")
         sys.exit(1)
 
 
+def check_llvm_mingw():
+    """Verify LLVM MinGW toolchain is available (needed for Windows builds)"""
+    clang = LLVM_MINGW_BIN / "x86_64-w64-mingw32-clang++.exe"
+    if not clang.exists():
+        log(f"ERROR: LLVM MinGW not found at {LLVM_MINGW_DIR}")
+        log("Please download llvm-mingw and extract to llvm-mingw-*/")
+        sys.exit(1)
+
+
+def build_windows_resource(out_path):
+    """Compile .rc resource file using llvm-windres"""
+    res_file = out_path / "resource.res"
+    rc_src = BASE_DIR / "resource.rc"
+    if not rc_src.exists():
+        log("Warning: resource.rc not found, skipping resource compilation")
+        return None
+
+    windres = LLVM_MINGW_BIN / "llvm-windres.exe"
+    try:
+        subprocess.run([str(windres), str(rc_src), "-o", str(res_file)],
+                       check=True, capture_output=True)
+        return str(res_file)
+    except subprocess.CalledProcessError as e:
+        log(f"Warning: Could not compile resource.rc: {e}")
+        return None
+
+
 def build_windows_cli_launcher(target, cpu, out_path):
+    """Build the tiny CLI launcher (.com) using LLVM MinGW"""
     launcher_path = out_path / "ShaderStress.com"
+    arch = MINGW_ARCH_MAP.get(target, "x86_64")
+    clang_exe = LLVM_MINGW_BIN / f"{arch}-w64-mingw32-clang.exe"
+
     cmd = [
-        str(ZIG_EXE), "cc",
-        "-target", target,
-    ]
-
-    if cpu != "generic":
-        cmd.extend(["-mcpu=" + cpu])
-
-    cmd.extend([
+        str(clang_exe),
         "-Oz", "-s",
         "-ffunction-sections", "-fdata-sections",
         "-fno-asynchronous-unwind-tables",
         "-fno-ident",
         "-municode",
+    ]
+
+    # Map CPU level for the launcher
+    march = CPU_ARCH_MAP.get(cpu)
+    if march:
+        cmd.append(f"-march={march}")
+
+    cmd.extend([
         str(CLI_LAUNCHER_SOURCE),
         "-o", str(launcher_path),
-        "-Xlinker", "--subsystem", "-Xlinker", "console",
-        "-Xlinker", "--gc-sections",
+        "-Wl,--subsystem,console",
+        "-Wl,--gc-sections",
     ])
     subprocess.run(cmd, check=True, capture_output=True)
 
@@ -105,25 +156,27 @@ def build_windows_cli_launcher(target, cpu, out_path):
 PGO_MODE = None
 
 
-def build_target(config):
-    """Build a single target"""
+def build_windows_target(config):
+    """Build a Windows target using LLVM MinGW"""
     target, out_dir, cpu, is_windows, archive_name = config
-    
     out_path = BASE_DIR / out_dir
     out_path.mkdir(parents=True, exist_ok=True)
 
-    if is_windows:
-        for stale_name in ["ShaderStress.com", "ShaderStressCli.exe", "ShaderStressGui.exe", "ShaderStressCli.cmd"]:
-            stale_path = out_path / stale_name
-            if stale_path.exists():
-                stale_path.unlink()
-    
-    log(f"Starting {target} (cpu={cpu})...")
-    
-    src_files = SRC_FILES_WINDOWS[:] if is_windows else SRC_FILES_UNIX[:]
-    defines = ["-DUNICODE", "-D_UNICODE"] if is_windows else ["-DPLATFORM_LINUX" if "linux" in target else "-DPLATFORM_MACOS"]
-    
-    if is_windows and "arm64" in target:
+    # Clean stale outputs
+    for stale_name in ["ShaderStress.com", "ShaderStressCli.exe", "ShaderStressGui.exe", "ShaderStressCli.cmd"]:
+        stale_path = out_path / stale_name
+        if stale_path.exists():
+            stale_path.unlink()
+
+    arch = MINGW_ARCH_MAP.get(target, "x86_64")
+    clang_exe = LLVM_MINGW_BIN / f"{arch}-w64-mingw32-clang++.exe"
+
+    log(f"Starting {target} (cpu={cpu}) using {clang_exe.name}...")
+
+    src_files = SRC_FILES_WINDOWS[:]
+    defines = ["-DUNICODE", "-D_UNICODE", "-D_WIN32_WINNT=0x0A00"]
+
+    if "arm64" in target:
         defines.extend(["-D_M_ARM64", "-D_WIN64"])
 
     defines.extend([
@@ -132,80 +185,156 @@ def build_target(config):
         f"-DAPP_VERSION_MINOR_NUM={APP_VERSION_MINOR}",
         f"-DAPP_VERSION_PATCH_NUM={APP_VERSION_PATCH}",
     ])
-    
-    # Disable SEH for Zig (not supported)
+
     defines.append("-DDISABLE_SEH")
-    
-    exe_name = "ShaderStress.exe" if is_windows else "shaderstress"
+
+    exe_name = "ShaderStress.exe"
     exe_path = out_path / exe_name
-    
+
     try:
-        # Compile resource file for Windows (icon)
-        if is_windows:
-            res_file = out_path / "resource.res"
-            rc_cmd = [
-                str(ZIG_EXE), "rc",
-                str(BASE_DIR / "resource.rc"),
-                str(res_file)
-            ]
-            try:
-                subprocess.run(rc_cmd, check=True, capture_output=True)
-                src_files.append(str(res_file))
-            except subprocess.CalledProcessError as e:
-                log(f"Warning: Could not compile resource.rc for {target}: {e}")
-        
-        # Main build command
-        # LTO supported on all targets except macOS (system linker ld doesn't support LLVM bitcode).
-        # macOS builds skip LTO since Zig falls back to the system linker on that platform.
-        use_lto = "macos" not in target
-        
-        base_cmd = [
-            str(ZIG_EXE), "c++",
-            "-target", target,
-        ]
-        
-        # Add CPU target for architecture-specific optimizations BEFORE source files
-        # This is crucial for v3 builds to enable AVX2, BMI, etc.
-        if cpu != "generic":
-            base_cmd.extend(["-mcpu=" + cpu])
-        
-        # Force 512-bit ZMM vector width on x86_64_v4 targets for maximum
-        # power draw via wider auto-vectorization of init loops and non-hot code.
+        # Compile resource file
+        res_file = build_windows_resource(out_path)
+        if res_file:
+            src_files.append(res_file)
+
+        # Base compiler flags
+        base_cmd = [str(clang_exe)]
+
+        # CPU architecture selection
+        march = CPU_ARCH_MAP.get(cpu)
+        if march:
+            base_cmd.append(f"-march={march}")
+
+        # Force 512-bit ZMM vector width on x86_64_v4 targets
         if cpu == "x86_64_v4":
             base_cmd.append("-mprefer-vector-width=512")
 
-        # Note: We do NOT add -mpopcnt/-mlzcnt/-mbmi for generic x86_64 builds
-        # to maintain compatibility with older CPUs (pre-Haswell, pre-Nehalem).
-        # The realistic workload may be slower on generic builds, but that's
-        # the trade-off for broader compatibility. v3 builds target modern CPUs
-        # and will automatically use these features via x86_64_v3.
-        
         base_cmd.extend([
             "-std=c++20", "-O3",
             "-ffast-math", "-funroll-loops", "-funroll-all-loops", "-fpeel-loops",
             "-fno-rtti",
-            # Disable C++ exceptions entirely (no try/catch in code, SEH compiled out)
             "-fno-exceptions",
-            # Prevent symbol interposition allowing more aggressive inlining
-            "-fno-semantic-interposition",
-            # Register allocation improvements for better ILP
             "-frename-registers", "-fweb",
-            # Remove stack canary checks (acceptable for stress tool)
             "-fno-stack-protector",
-            # Free RBP as general-purpose register on x86-64
             "-fomit-frame-pointer",
-            # Size optimizations - remove unused code/data
             "-ffunction-sections", "-fdata-sections",
-            # Remove exception handling overhead (not used)
             "-fno-asynchronous-unwind-tables",
-            # Remove compiler identification section
             "-fno-ident",
         ])
-        
+
+        # LTO is supported on Windows/LLVM MinGW
+        base_cmd.append("-flto")
+
+        # PGO support
+        if PGO_MODE == "generate":
+            base_cmd.append("-fprofile-generate")
+        elif PGO_MODE == "use":
+            profdata = BASE_DIR / "default.profdata"
+            if profdata.exists():
+                base_cmd.append(f"-fprofile-use={profdata}")
+            else:
+                log(f"WARNING: {profdata} not found, skipping PGO for {target}")
+
+        base_cmd.extend([
+            "-s",
+            "-static-libstdc++",
+            "-static",
+            "-Wno-macro-redefined",
+            "-Wno-ignored-optimization-argument",
+            "-Wno-ignored-attributes",
+            "-Wno-writable-strings",
+            "-municode",
+        ])
+
+        # Control Flow Guard on x86_64 Windows
+        if "aarch64" not in target:
+            base_cmd.append("-fcf-protection=full")
+
+        base_cmd.extend(defines)
+        base_cmd.extend(src_files)
+
+        # Linker flags
+        cmd = base_cmd[:] + [
+            "-o", str(exe_path),
+            "-Wl,--subsystem,windows",
+            "-Wl,--gc-sections",
+            "-luser32", "-lgdi32", "-ldwmapi", "-lshcore",
+            "-lshell32", "-lole32", "-ldbghelp",
+        ]
+
+        cmd = [c for c in cmd if c]
+        subprocess.run(cmd, check=True, capture_output=True)
+
+        # Build the CLI launcher
+        build_windows_cli_launcher(target, cpu, out_path)
+
+        return (True, target, out_dir, archive_name)
+
+    except subprocess.CalledProcessError as e:
+        error_msg = f"Exit {e.returncode}"
+        if e.stderr:
+            try:
+                error_msg += f": {e.stderr.decode('utf-8', errors='ignore')[:200]}"
+            except:
+                pass
+        return (False, target, out_dir, error_msg)
+
+
+def build_zig_target(config):
+    """Build a Linux/macOS target using Zig"""
+    target, out_dir, cpu, is_windows, archive_name = config
+    out_path = BASE_DIR / out_dir
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    log(f"Starting {target} (cpu={cpu}) using Zig...")
+
+    src_files = SRC_FILES_UNIX[:]
+    defines = ["-DPLATFORM_LINUX" if "linux" in target else "-DPLATFORM_MACOS"]
+
+    defines.extend([
+        f'-DAPP_VERSION_TEXT="{APP_VERSION_TEXT}"',
+        f"-DAPP_VERSION_MAJOR_NUM={APP_VERSION_MAJOR}",
+        f"-DAPP_VERSION_MINOR_NUM={APP_VERSION_MINOR}",
+        f"-DAPP_VERSION_PATCH_NUM={APP_VERSION_PATCH}",
+    ])
+
+    defines.append("-DDISABLE_SEH")
+
+    exe_name = "shaderstress"
+    exe_path = out_path / exe_name
+
+    try:
+        # Main build command
+        use_lto = "macos" not in target
+
+        base_cmd = [
+            str(ZIG_EXE), "c++",
+            "-target", target,
+        ]
+
+        if cpu != "generic":
+            base_cmd.extend(["-mcpu=" + cpu])
+
+        if cpu == "x86_64_v4":
+            base_cmd.append("-mprefer-vector-width=512")
+
+        base_cmd.extend([
+            "-std=c++20", "-O3",
+            "-ffast-math", "-funroll-loops", "-funroll-all-loops", "-fpeel-loops",
+            "-fno-rtti",
+            "-fno-exceptions",
+            "-fno-semantic-interposition",
+            "-frename-registers", "-fweb",
+            "-fno-stack-protector",
+            "-fomit-frame-pointer",
+            "-ffunction-sections", "-fdata-sections",
+            "-fno-asynchronous-unwind-tables",
+            "-fno-ident",
+        ])
+
         if use_lto:
             base_cmd.append("-flto")
-        
-        # PGO: instrument for profile generation or use pre-generated profile
+
         if PGO_MODE == "generate":
             base_cmd.append("-fprofile-generate")
         elif PGO_MODE == "use":
@@ -220,46 +349,22 @@ def build_target(config):
             "-Wno-macro-redefined",
             "-Wno-ignored-optimization-argument",
         ])
-        
-        if is_windows:
-            base_cmd.append("-municode")
-            # Enable Control Flow Guard on x86_64 Windows (defense-in-depth exploit mitigation).
-            # ARM64 Windows does not support -fcf-protection in Zig 0.15.2.
-            if "aarch64" not in target:
-                base_cmd.append("-fcf-protection=full")
-        
+
         base_cmd.extend(defines)
         base_cmd.extend(src_files)
 
-        # Platform-specific link flags
-        if is_windows:
-            cmd = base_cmd[:] + [
-                "-o", str(exe_path),
-                "-Xlinker", "--subsystem", "-Xlinker", "windows",
-                # Remove unused sections (requires -ffunction-sections/-fdata-sections)
-                "-Xlinker", "--gc-sections",
-                "-luser32", "-lgdi32", "-ldwmapi", "-lshcore",
-                "-lshell32", "-lole32", "-ldbghelp"
-            ]
+        cmd = base_cmd[:] + [
+            "-o", str(exe_path),
+            "-lpthread",
+            "-Wl,--sort-common,--sort-section=alignment",
+            "-Wl,--gc-sections",
+        ]
 
-            cmd = [c for c in cmd if c]
-            subprocess.run(cmd, check=True, capture_output=True)
-            build_windows_cli_launcher(target, cpu, out_path)
-        else:
-            cmd = base_cmd[:] + [
-                "-o", str(exe_path),
-                "-lpthread",
-                # Sort common symbols and sections for improved cache locality
-                "-Wl,--sort-common,--sort-section=alignment",
-                # Remove unused sections (requires -ffunction-sections/-fdata-sections)
-                "-Wl,--gc-sections",
+        cmd = [c for c in cmd if c]
+        subprocess.run(cmd, check=True, capture_output=True)
 
-            ]
-            cmd = [c for c in cmd if c]
-            subprocess.run(cmd, check=True, capture_output=True)
-        
         return (True, target, out_dir, archive_name)
-        
+
     except subprocess.CalledProcessError as e:
         error_msg = f"Exit {e.returncode}"
         if e.stderr:
@@ -270,59 +375,65 @@ def build_target(config):
         return (False, target, out_dir, error_msg)
 
 
+def build_target(config):
+    """Build a single target – dispatch to the right toolchain"""
+    _, _, _, is_windows, _ = config
+    if is_windows:
+        return build_windows_target(config)
+    else:
+        return build_zig_target(config)
+
+
 def create_archives(results):
     """Create distribution archives in parallel"""
     log("Creating distribution archives...")
-    
+
     dist_dir = BASE_DIR / "dist"
     dist_dir.mkdir(exist_ok=True)
-    
+
     # Find 7z
     sevenzip = None
     for path in [r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe"]:
         if os.path.exists(path):
             sevenzip = path
             break
-    
+
     def create_archive(result):
         success, target, out_dir, archive_name = result
         if not success:
             return False
-        
+
         archive_path = dist_dir / archive_name
         src_dir = BASE_DIR / out_dir
-        
+
         files = ["ShaderStress.exe", "ShaderStress.com"] if "windows" in target else ["shaderstress"]
         src_files = [src_dir / f for f in files]
-        
-        # Check files exist
+
         if not all(f.exists() for f in src_files):
             return False
-        
+
         try:
             if archive_path.exists():
                 archive_path.unlink()
-            
+
             if sevenzip:
                 cmd = [sevenzip, "a", "-mx=9", str(archive_path)] + [str(f) for f in src_files]
                 subprocess.run(cmd, check=True, capture_output=True)
             else:
-                # Fallback to zip
                 import zipfile
                 zip_path = archive_path.with_suffix(".zip")
                 with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
                     for f in src_files:
                         zf.write(f, f.name)
-            
+
             return True
         except Exception as e:
             log(f"Failed to create {archive_name}: {e}")
             return False
-    
-    # Create archives in parallel
+
     with ThreadPoolExecutor(max_workers=4) as executor:
         archive_results = list(executor.map(create_archive, results))
-    
+
     successful = sum(archive_results)
     log(f"Created {successful}/{len(archive_results)} archives")
     write_checksums(dist_dir)
@@ -348,12 +459,11 @@ def write_checksums(dist_dir):
 
 def main():
     global PGO_MODE
-    check_zig()
     log(f"Version: {APP_VERSION_TEXT}")
-    
+
     # Parse arguments
     targets_requested = sys.argv[1:] if len(sys.argv) > 1 else ["all"]
-    
+
     # Extract PGO flags before other parsing
     if "--pgo-gen" in targets_requested:
         PGO_MODE = "generate"
@@ -361,7 +471,7 @@ def main():
     if "--pgo-use" in targets_requested:
         PGO_MODE = "use"
         targets_requested.remove("--pgo-use")
-    
+
     if "help" in targets_requested or "-h" in targets_requested or "--help" in targets_requested:
         print("Usage: python build.py [targets...] [options]")
         print("Targets:")
@@ -370,6 +480,7 @@ def main():
         print("  linux     - Linux x64 and ARM64")
         print("  macos     - macOS x64 and ARM64")
         print("  v4        - x86_64_v4 targets (AVX-512) only")
+        print("  v3        - x86_64_v3 targets (AVX2+FMA) only")
         print("  native    - Current platform only")
         print("Options:")
         print("  --pgo-gen  Build with profile generation instrumentation")
@@ -381,11 +492,15 @@ def main():
         print("  3. llvm-profdata merge -output=default.profdata *.profraw")
         print("  4. python build.py --pgo-use native")
         print("")
+        print("Toolchains:")
+        print("  Windows: LLVM MinGW (clang++/lld) - llvm-mingw-*/")
+        print("  Linux/macOS: Zig cross-compilation - zig-x86_64-windows-0.15.2/zig.exe")
+        print("")
         print("Examples:")
         print("  python build.py")
         print("  python build.py windows linux")
         return
-    
+
     # Filter configs based on requested targets
     if "all" in targets_requested:
         configs = BUILD_CONFIGS
@@ -400,14 +515,15 @@ def main():
                 configs.extend([c for c in BUILD_CONFIGS if "macos" in c[0]])
             elif t == "v4":
                 configs.extend([c for c in BUILD_CONFIGS if "v4" in c[1]])
+            elif t == "v3":
+                configs.extend([c for c in BUILD_CONFIGS if "v3" in c[1]])
             elif t == "native":
-                # Detect current platform and prefer highest CPU variant
                 import platform
                 machine = platform.machine().lower()
                 system = platform.system().lower()
                 if system == "windows":
                     candidates = [c for c in BUILD_CONFIGS if "windows" in c[0] and "x86_64" in c[0]]
-                    for pref in ["v4", "v3", "zig"]:
+                    for pref in ["v4", "v3", "llvm"]:
                         match = [c for c in candidates if pref in c[1]]
                         if match:
                             configs.append(match[0])
@@ -424,11 +540,11 @@ def main():
                         configs.append([c for c in BUILD_CONFIGS if "macos" in c[0] and "aarch64" in c[0]][0])
                     else:
                         configs.append([c for c in BUILD_CONFIGS if "macos" in c[0] and "x86_64" in c[0]][0])
-    
+
     if not configs:
         log("No targets to build")
         return
-    
+
     # Remove duplicates while preserving order
     seen = set()
     unique_configs = []
@@ -438,16 +554,25 @@ def main():
             seen.add(key)
             unique_configs.append(c)
     configs = unique_configs
-    
+
+    # Check toolchain availability
+    has_windows = any(c[3] for c in configs)
+    has_unix = any(not c[3] for c in configs)
+
+    if has_windows:
+        check_llvm_mingw()
+    if has_unix:
+        check_zig()
+
     log(f"Building {len(configs)} targets with {min(len(configs), multiprocessing.cpu_count())} parallel jobs...")
-    
+
     # Build all targets in parallel
     results = []
     max_workers = min(len(configs), multiprocessing.cpu_count())
-    
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_config = {executor.submit(build_target, config): config for config in configs}
-        
+
         for future in as_completed(future_to_config):
             config = future_to_config[future]
             try:
@@ -461,11 +586,11 @@ def main():
             except Exception as e:
                 log(f"ERROR {config[0]}: {e}")
                 results.append((False, config[0], config[1], str(e)))
-    
+
     # Summary
     successful = sum(1 for r in results if r[0])
     log(f"Build complete: {successful}/{len(results)} targets succeeded")
-    
+
     # Create archives
     create_archives(results)
 

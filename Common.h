@@ -1,6 +1,14 @@
 // Common.h - Shared types
 #pragma once
 
+// Define _WIN32_WINNT before ANY system includes to prevent _mingw.h from
+// setting it to 0x601 (Win7) prematurely. 0x0A00 = Windows 10.
+#if defined(_WIN32) || defined(_WIN64)
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
+#endif
+
 #include <cstdint>
 
 #if defined(__linux__) || defined(__linux) || defined(linux)
@@ -12,12 +20,10 @@
 #endif
 
 #ifdef PLATFORM_WINDOWS
-#ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0A00
-#endif
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+
 #include <cstdio>
 #include <dwmapi.h>
 #include <processthreadsapi.h>

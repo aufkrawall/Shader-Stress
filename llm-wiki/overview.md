@@ -6,7 +6,8 @@ CPU stress-test tool that mimics shader-compiler workloads. Purely CPU-bound (no
 
 ### Build System (build.py)
 
-- Zig 0.15.2 cross-compiler (`zig c++` / `zig cc`)
+- **Windows**: LLVM MinGW 20260519 (LLVM 22.1.6) — `clang++` / `lld` via mstorsjo/llvm-mingw
+- **Linux/macOS**: Zig 0.15.2 cross-compiler (`zig c++` / `zig cc`)
 - C++20, `-O3`, `-ffast-math`, `-funroll-loops`, `-funroll-all-loops`, `-fpeel-loops`, `-flto` (all except macOS)
 - `-mprefer-vector-width=512` on x86_64_v4 targets (forces ZMM for auto-vectorized code)
 - PGO support via `--pgo-gen` / `--pgo-use` flags (2-pass profile-guided optimization)
@@ -16,12 +17,14 @@ CPU stress-test tool that mimics shader-compiler workloads. Purely CPU-bound (no
 
 ### Build Configs (as of v3.5.4)
 
-| CPU Level | Features | Windows | Linux | macOS |
-|-----------|----------|---------|-------|-------|
+| CPU Level | Features | Windows (LLVM MinGW) | Linux (Zig) | macOS (Zig) |
+|-----------|----------|---------------------|-------------|-------------|
 | x86_64 | Baseline x86-64 | ✓ | ✓ | ✓ |
 | x86_64_v3 | AVX2, BMI, FMA, POPCNT | ✓ | ✓ | — |
 | x86_64_v4 | AVX-512F/BW/CD/DQ/VL | ✓ | ✓ | — |
 | ARM64 | Generic AArch64 | ✓ | ✓ | ✓ |
+
+Output directories: `bin/x64-llvm/`, `bin/x64-llvm-v3/`, `bin/x64-llvm-v4/`, `bin/arm64-llvm/` (Windows) and `bin/linux-x64/`, `bin/linux-arm64/`, `bin/macos-*/` (Zig).
 
 ### Test System
 

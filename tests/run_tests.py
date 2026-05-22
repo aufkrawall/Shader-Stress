@@ -28,8 +28,8 @@ GOLDEN_FILE = os.path.join(os.path.dirname(__file__), "golden_values.json")
 
 def find_binary():
     candidates = [
-        os.path.join(PROJECT_ROOT, "bin", "x64-zig", "ShaderStress.com"),
-        os.path.join(PROJECT_ROOT, "bin", "x64-zig-v3", "ShaderStress.com"),
+        os.path.join(PROJECT_ROOT, "bin", "x64-llvm", "ShaderStress.com"),
+        os.path.join(PROJECT_ROOT, "bin", "x64-llvm-v3", "ShaderStress.com"),
     ]
     for c in candidates:
         if os.path.exists(c):

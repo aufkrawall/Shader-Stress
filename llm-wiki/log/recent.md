@@ -1,5 +1,22 @@
 # Recent Changes Log
 
+## 2026-05-22 — Windows builds switched from Zig to LLVM MinGW
+
+- **Windows compiler replaced**: All Windows build targets now use LLVM MinGW 20260519 (LLVM 22.1.6, UCRT) via mstorsjo/llvm-mingw instead of `zig c++`.
+- **build.py restructured**: `build_target()` now dispatches to `build_windows_target()` (LLVM MinGW, `clang++`/`lld`) or `build_zig_target()` (Zig, Linux/macOS).
+- **Flag translation**: Zig `-mcpu=x86_64_v3` → Clang `-march=x86-64-v3`; Zig `-Xlinker` pairs → Clang `-Wl,` flags; `zig rc` → `llvm-windres`.
+- **New toolchain**: `llvm-mingw-20260519-ucrt-x86_64/` with `x86_64-w64-mingw32-clang++.exe`, `aarch64-w64-mingw32-clang++.exe`, `llvm-windres.exe`.
+- **Output dirs renamed**: `bin/x64-zig*` → `bin/x64-llvm*`, `bin/arm64-zig` → `bin/arm64-llvm`.
+- **Archive names shortened**: Removed `-Zig` suffix from Windows archives.
+- **tests/run_tests.py**: Updated binary search paths to `bin/x64-llvm*`.
+- **Zig retained** for Linux/macOS cross-compilation.
+
+## 2026-05-14 — AVX2 workload switched from mixed memory+compute to pure reg-reg
+
+- **AVX2 hot loop redesigned**: Replaced the previous V6-style 256KB buffer workload (16 WORK calls, load+FMA+store per iteration) with a pure reg-reg design: zero memory traffic in the hot loop. Buffer is now only used for initial seeding and remains untouched during the stress loop.
+- **New hot loop composition**: 48 FMAs (3 rotations of 16 daisy-chained FMAs), 48 permutes (3 rotations of 16 cross-lane shuffles), and 16 GPR chains (g0–g15). No idx, no stride, no prefetch, no WORK macro.
+- **Rationale**: On Zen 3, the previous memory-heavy workload had lower power draw than the scalar synthetic workload. Root cause analysis suggests memory pipeline stalls caused FMA ports (0/1) to be underutilized, and/or the mixed memory+compute pattern didn't compensate for AVX2 frequency reduction on Zen 3. Pure reg-reg eliminates all memory-induced stalls for maximum sustained FMA throughput.
+
 ## 2026-05-14 — Removed AVX2 V0–V5 workload variants; single unified AVX2 workload
 
 - **AVX2 V0–V5 eliminated**: All variant infrastructure (`AVX2_VARIANT`, `MASK_AVX2_V*`, `WORK_BUF_ELEMS_V*`) removed from codebase and build system.

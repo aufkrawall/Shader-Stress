@@ -111,7 +111,13 @@ LONG WINAPI WriteCrashDump(PEXCEPTION_POINTERS pExceptionInfo, uint64_t seed,
 
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
 #define TARGET_AVX2 __attribute__((target("avx2,fma"), noinline))
+// Clang 22+ (llvm-mingw): evex512 unsupported in target attribute (ignored).
+// Clang <22 (Zig's clang 20) and GCC: evex512 required for AVX-512 intrinsics.
+#if defined(__clang__) && __clang_major__ >= 22
+#define TARGET_AVX512 __attribute__((target("avx512f"), noinline))
+#else
 #define TARGET_AVX512 __attribute__((target("avx512f,evex512"), noinline))
+#endif
 #else
 #define TARGET_AVX2
 #define TARGET_AVX512
@@ -738,7 +744,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
 }
 
 // ============================================================================
-// AVX2 MAX POWER - 16 YMM registers, 48 FMAs + 48 permutes, pure reg-reg
+// AVX2 MAX POWER - 16 YMM registers, 8 memory WORK, 48 FMAs, 48 permutes
 // ============================================================================
 TARGET_AVX2
 uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
@@ -774,15 +780,33 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
   uint64_t g4 = seed + 4, g5 = seed + 5, g6 = seed + 6, g7 = seed + 7;
   uint64_t g8 = seed + 8, g9 = seed + 9, g10 = seed + 10, g11 = seed + 11;
   uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
+
+  int idx = 0;
+  const int MASK = MASK_AVX2;
   
   int iters = complexity * 180;
 
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
     
-    // 16 GPR chains (integer mul on port 0, mixed with vector workload)
+    // Prefetch next iteration's data ahead of time
+    int nextIdx = (idx + 64) & MASK;
+    int nextIdx2 = (idx + 128) & MASK;
+    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx]), _MM_HINT_T0);
+    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx + 512) & MASK]), _MM_HINT_T0);
+    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx2]), _MM_HINT_T0);
+    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx2 + 512) & MASK]), _MM_HINT_T0);
+    
+    #define WORK(r, off) \
+      r = _mm256_fmadd_pd(r, mul, _mm256_load_pd(&memPtr[(idx + off) & MASK])); \
+      _mm256_store_pd(&memPtr[(idx + off + 512) & MASK], r)
+    
+    // 8 memory WORK calls — enough to keep cache/memory controller active
+    // without saturating the store pipeline or causing L2 misses
+    WORK(r0, 0);  WORK(r2, 8);  WORK(r4, 16); WORK(r6, 24);
     g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
     g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
+    WORK(r8, 32); WORK(r10, 40); WORK(r12, 48); WORK(r14, 56);
     g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
     g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
     g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
@@ -797,6 +821,8 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13);
     g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g0 << 13);
     g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
+    
+    #undef WORK
     
     // 48 permutes (3 rotations × 16, port 5 pressure)
     #define PERM(r, c) r = _mm256_permute4x64_pd(r, c)
@@ -841,6 +867,8 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     FMA(r8, r9);  FMA(r9, r10); FMA(r10, r11); FMA(r11, r12);
     FMA(r12, r13); FMA(r13, r14); FMA(r14, r15); FMA(r15, r0);
     #undef FMA
+    
+    idx = (idx + 64) & MASK;
   }
 
   __m256d sum = _mm256_add_pd(r0, r1);
