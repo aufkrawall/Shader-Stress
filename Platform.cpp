@@ -108,16 +108,17 @@ static HybridCpuMap BuildHybridCpuMap() {
     auto *current = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(ptr);
     if (current->Relationship == RelationProcessorCore) {
       BYTE effClass = current->Processor.EfficiencyClass;
-      // Count the logical processors in this core (HT siblings)
+      // Intel/AMD document: higher efficiency class = more performant core (P-core).
+      // EfficiencyClass 0 = E-core (efficient), class 1+ = P-core (performance).
       WORD groupCount = current->Processor.GroupCount;
       for (WORD g = 0; g < groupCount; ++g) {
         KAFFINITY mask = current->Processor.GroupMask[g].Mask;
         for (int b = 0; b < (int)(sizeof(KAFFINITY) * 8); ++b) {
           if (mask & ((KAFFINITY)1 << b)) {
             if (effClass == 0)
-              map.pCoreLps.push_back(lpIndex);
-            else
               map.eCoreLps.push_back(lpIndex);
+            else
+              map.pCoreLps.push_back(lpIndex);
             lpIndex++;
           }
         }
@@ -205,7 +206,9 @@ void PinThreadToCore(int coreIdx) {
   // Full hybrid enumeration via sysfs is complex; this simple heuristic works
   // on most Intel hybrid systems where P-cores are enumerated first.
   if (g_Cpu.isHybrid && g_Cpu.numPcores > 0) {
-    int actualCpu = (coreIdx < g_Cpu.numPcores) ? coreIdx : coreIdx;
+    // Prefer first numPcores CPUs as P-cores (enumerated first on hybrid Linux),
+    // fall back to remaining CPUs for E-cores.
+    int actualCpu = (coreIdx < g_Cpu.numPcores) ? coreIdx : (g_Cpu.numPcores + (coreIdx - g_Cpu.numPcores));
     CPU_SET(actualCpu, &cpuset);
   } else {
     CPU_SET(coreIdx, &cpuset);

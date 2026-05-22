@@ -154,6 +154,8 @@ def build_windows_cli_launcher(target, cpu, out_path):
 
 # PGO mode: None, "generate", or "use"
 PGO_MODE = None
+# Sanitizer mode: None, "undefined", "address", or "thread"
+SANITIZER_MODE = None
 
 
 def build_windows_target(config):
@@ -222,8 +224,17 @@ def build_windows_target(config):
             "-fno-ident",
         ])
 
+        # Sanitizer build mode (development only)
+        if SANITIZER_MODE == "undefined":
+            base_cmd.extend(["-fsanitize=undefined", "-fno-sanitize-recover=undefined"])
+        elif SANITIZER_MODE == "address":
+            base_cmd.extend(["-fsanitize=address", "-fno-omit-frame-pointer", "-fsanitize-address-use-after-scope"])
+        elif SANITIZER_MODE == "thread":
+            base_cmd.append("-fsanitize=thread")
+
         # LTO is supported on Windows/LLVM MinGW
-        base_cmd.append("-flto")
+        if SANITIZER_MODE is None:
+            base_cmd.append("-flto")
 
         # PGO support
         if PGO_MODE == "generate":
@@ -332,7 +343,15 @@ def build_zig_target(config):
             "-fno-ident",
         ])
 
-        if use_lto:
+        # Sanitizer build mode (development only)
+        if SANITIZER_MODE == "undefined":
+            base_cmd.extend(["-fsanitize=undefined", "-fno-sanitize-recover=undefined"])
+        elif SANITIZER_MODE == "address":
+            base_cmd.extend(["-fsanitize=address", "-fno-omit-frame-pointer"])
+        elif SANITIZER_MODE == "thread":
+            base_cmd.append("-fsanitize=thread")
+
+        if use_lto and SANITIZER_MODE is None:
             base_cmd.append("-flto")
 
         if PGO_MODE == "generate":
@@ -464,13 +483,22 @@ def main():
     # Parse arguments
     targets_requested = sys.argv[1:] if len(sys.argv) > 1 else ["all"]
 
-    # Extract PGO flags before other parsing
+    # Extract PGO and sanitizer flags before other parsing
     if "--pgo-gen" in targets_requested:
         PGO_MODE = "generate"
         targets_requested.remove("--pgo-gen")
     if "--pgo-use" in targets_requested:
         PGO_MODE = "use"
         targets_requested.remove("--pgo-use")
+    if "--sanitize" in targets_requested:
+        SANITIZER_MODE = "undefined"
+        targets_requested.remove("--sanitize")
+    if "--sanitize=address" in targets_requested:
+        SANITIZER_MODE = "address"
+        targets_requested.remove("--sanitize=address")
+    if "--sanitize=thread" in targets_requested:
+        SANITIZER_MODE = "thread"
+        targets_requested.remove("--sanitize=thread")
 
     if "help" in targets_requested or "-h" in targets_requested or "--help" in targets_requested:
         print("Usage: python build.py [targets...] [options]")
@@ -483,8 +511,11 @@ def main():
         print("  v3        - x86_64_v3 targets (AVX2+FMA) only")
         print("  native    - Current platform only")
         print("Options:")
-        print("  --pgo-gen  Build with profile generation instrumentation")
-        print("  --pgo-use  Build with profile-guided optimization (needs default.profdata)")
+        print("  --pgo-gen      Build with profile generation instrumentation")
+        print("  --pgo-use      Build with profile-guided optimization (needs default.profdata)")
+        print("  --sanitize     Build with UndefinedBehaviorSanitizer (development only)")
+        print("  --sanitize=address  Build with AddressSanitizer (development only)")
+        print("  --sanitize=thread   Build with ThreadSanitizer (development only)")
         print("")
         print("PGO workflow:")
         print("  1. python build.py --pgo-gen native")

@@ -72,13 +72,19 @@ int wmain(void) {
   wchar_t *dot = wcsrchr(exePath, L'.');
   wchar_t *slash = wcsrchr(exePath, L'\\');
   if (!dot || (slash && dot < slash)) {
-    return PrintLauncherError(L"ERROR: Invalid launcher path.", exePath);
+    // No .com extension found; append .exe to the whole path instead.
+    wchar_t *end = exePath + wcslen(exePath);
+    if (end < exePath + MAX_PATH - 5) {
+      wcscpy(end, L".exe");
+    } else {
+      return PrintLauncherError(L"ERROR: Invalid launcher path.", exePath);
+    }
+  } else {
+    dot[1] = L'e';
+    dot[2] = L'x';
+    dot[3] = L'e';
+    dot[4] = L'\0';
   }
-
-  dot[1] = L'e';
-  dot[2] = L'x';
-  dot[3] = L'e';
-  dot[4] = L'\0';
 
   DWORD attrs = GetFileAttributesW(exePath);
   if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY)) {

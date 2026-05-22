@@ -48,13 +48,13 @@ void EnumerateHybridTopology(CpuFeatures &f) {
     SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *current =
         reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(ptr);
     if (current->Relationship == RelationProcessorCore) {
-      // EfficiencyClass 0 = Performance core, higher = Efficient core.
-      // On Intel hybrid (Alder Lake+): P-cores have class 0, E-cores have class 1+
+      // Intel/AMD document: higher efficiency class = more performant core (P-core).
+      // EfficiencyClass 0 = E-core (efficient), class 1+ = P-core (performance).
       BYTE effClass = current->Processor.EfficiencyClass;
       if (effClass == 0)
-        f.numPcores++;
-      else
         f.numEcores++;
+      else
+        f.numPcores++;
     }
     ptr += current->Size;
   }
@@ -132,15 +132,11 @@ std::wstring GetCpuBrand() {
   char brand[48] = {0};
 
   if (__get_cpuid(0x80000000, &eax, &ebx, &ecx, &edx) && eax >= 0x80000004) {
-    __get_cpuid(0x80000002, (unsigned int *)&brand[0],
-                (unsigned int *)&brand[4], (unsigned int *)&brand[8],
-                (unsigned int *)&brand[12]);
-    __get_cpuid(0x80000003, (unsigned int *)&brand[16],
-                (unsigned int *)&brand[20], (unsigned int *)&brand[24],
-                (unsigned int *)&brand[28]);
-    __get_cpuid(0x80000004, (unsigned int *)&brand[32],
-                (unsigned int *)&brand[36], (unsigned int *)&brand[40],
-                (unsigned int *)&brand[44]);
+    unsigned int buf[12];
+    __get_cpuid(0x80000002, &buf[0], &buf[1], &buf[2], &buf[3]);
+    __get_cpuid(0x80000003, &buf[4], &buf[5], &buf[6], &buf[7]);
+    __get_cpuid(0x80000004, &buf[8], &buf[9], &buf[10], &buf[11]);
+    std::memcpy(&brand[0], buf, sizeof(buf));
   }
 
   std::string s(brand);

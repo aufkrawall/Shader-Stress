@@ -172,6 +172,22 @@ def test_repro_partial_args(binary):
     check(ret == 2, "--repro (partial args)")
 
 
+def test_repro_scalar_quick(binary):
+    ret, out, err = run(binary, ["--repro", "42", "100", "--isa", "scalar", "--quiet"])
+    check(ret == 0, "--repro scalar quick")
+
+
+def test_repro_scalar_sim_quick(binary):
+    ret, out, err = run(binary, ["--repro", "42", "100", "--isa", "scalar-sim", "--quiet"])
+    check(ret == 0, "--repro scalar-sim quick")
+
+
+def test_repro_high_complexity(binary):
+    """Boundary test: complexity near overflow threshold (7.6M) should not crash."""
+    ret, out, err = run(binary, ["--repro", "1", "8000000", "--isa", "scalar", "--quiet"], timeout=60)
+    check(ret == 0, "--repro high complexity (boundary)")
+
+
 LIGHTWEIGHT_TESTS = [
     test_help,
     test_version,

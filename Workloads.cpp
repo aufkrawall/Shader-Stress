@@ -309,7 +309,7 @@ uint64_t RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
                         vr[dst] = tree[vr[src1] & (TREE_NODES - 1)].payload;)
         default:
           vr[dst] =
-              (vr[src1] << (src2 & 31)) | (vr[src1] >> (32 - (src2 & 31)));
+              (vr[src1] << (src2 & 63)) | (vr[src1] >> (64 - (src2 & 63)));
           break;
         }
       }
@@ -389,7 +389,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   int idx = 0;
   // Ensure 16-byte alignment for NEON (2 doubles = 16 bytes)
   const int MASK = MASK_SSE2;
-  int iters = complexity * 280;
+  int iters = (int)std::min<uint64_t>((uint64_t)complexity * 280u, 2000000000u);
   
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
@@ -539,7 +539,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   // MASK must ensure 16-byte (2 double) alignment for SSE2 _mm_load_pd/_mm_store_pd
   const int MASK = MASK_SSE2;
   
-  int iters = complexity * 280;
+  int iters = (int)std::min<uint64_t>((uint64_t)complexity * 280u, 2000000000u);
 
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
@@ -707,7 +707,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
   int idx = 0;
   const int MASK = (int)(WORK_BUF_ELEMS - 1);
-  for (int i = 0; i < complexity * 280; ++i) {
+  for (int i = 0; i < (int)std::min<uint64_t>((uint64_t)complexity * 280u, 2000000000u); ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
     r0 = r0 * 1.000001 + memPtr[(idx + 0) & MASK];
     r1 = r1 * 1.000001 + memPtr[(idx + 1) & MASK];
@@ -784,7 +784,7 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
   int idx = 0;
   const int MASK = MASK_AVX2;
   
-  int iters = complexity * 180;
+  int iters = (int)std::min<uint64_t>((uint64_t)complexity * 180u, 2000000000u);
 
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
@@ -965,7 +965,7 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
   const int MASK = MASK_AVX512;
   
   // Higher iteration count for 512-bit throughput
-  int iters = complexity * 150;
+  int iters = (int)std::min<uint64_t>((uint64_t)complexity * 150u, 2000000000u);
 
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;

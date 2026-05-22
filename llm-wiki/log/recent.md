@@ -1,5 +1,20 @@
 # Recent Changes Log
 
+## 2026-05-22 — Code quality sweep: UB fixes, security hardening, binary quality, test expansion
+
+- **F-01-001 (Critical)**: Fixed efficiency class inversion on Windows hybrid CPUs. `effClass == 0` was mapped to P-core (should be E-core), causing workers to run on slow cores on Intel Alder Lake+ / AMD hybrid systems. Swapped pCoreLps/eCoreLps in `BuildHybridCpuMap` (Platform.cpp) and `EnumerateHybridTopology` (CpuFeatures.cpp). Higher efficiency class = more performant core per Intel/AMD docs.
+- **F-02-002 (High)**: Fixed default opcode rotate in `RunRealisticCompilerSim_V3`. Was using 32-bit shift amounts (`src2 & 31`, `32 - (src2 & 31)`) on 64-bit values. Now uses 64-bit (`src2 & 63`, `64 - (src2 & 63)`). All golden values regenerated.
+- **F-03-003 (High)**: Fixed predictable temp file paths in IOThread. Added random suffix to filenames to prevent symlink attacks. Windows uses `FILE_FLAG_OPEN_REPARSE_POINT` and `FILE_FLAG_DELETE_ON_CLOSE`. Linux uses `O_NOFOLLOW` and `O_CREAT | O_EXCL`.
+- **F-04-004 (High)**: Fixed UB from interleaving `std::cout` and `std::wcout`. Converted all output to narrow `std::cout` with `ToNarrow()` helper. Removed all `std::wcout`/`std::wcerr` calls from ShaderStress.cpp.
+- **F-05-005 (High)**: Fixed strict-aliasing violation in `GetCpuBrand` (CpuFeatures.cpp). Replaced `unsigned int*` pointer cast with `unsigned int buf[12]` + `std::memcpy`.
+- **F-06-006 (High)**: Fixed signed integer overflow in workload complexity multipliers. All 4 `int iters = complexity * N` now use `(int)std::min<uint64_t>((uint64_t)complexity * Nu, 2000000000u)`.
+- **F-08-008 (Medium)**: Fixed Linux hybrid pinning no-op ternary in `PinThreadToCore`. Now maps `coreIdx < numPcores` to P-cores, remaining to E-cores.
+- **F-09-009 (Medium)**: Moved `SetConsoleCtrlHandler` registration before thread creation to close Ctrl+C race window.
+- **F-10-010/F-14-014 (Medium)**: Fixed cli_launcher.c NULL deref when filename has no `.com` extension. Added graceful `.exe` append fallback. Reverted `bInheritHandles=FALSE` change (breaks console output for GUI-subsystem .exe).
+- **F-12-012 (Medium)**: Added workload regression tests: `test_repro_scalar_quick`, `test_repro_scalar_sim_quick`, `test_repro_high_complexity` (boundary test near overflow threshold).
+- **F-13-013 (Medium)**: Added `--sanitize`, `--sanitize=address`, `--sanitize=thread` flags to build.py for development UBSan/ASan/TSan builds.
+- **Build verification**: 4/4 Windows targets build clean, 25/25 tests pass (19 CLI + 4 stress + 2 golden value) on x64 baseline and v3. v4 = STATUS_ILLEGAL_INSTRUCTION on non-AVX-512 CPU (expected).
+
 ## 2026-05-22 — Windows builds switched from Zig to LLVM MinGW
 
 - **Windows compiler replaced**: All Windows build targets now use LLVM MinGW 20260519 (LLVM 22.1.6, UCRT) via mstorsjo/llvm-mingw instead of `zig c++`.

@@ -2,6 +2,9 @@
 bin/
 dist/
 
+# Audit reports
+audit/
+
 # Vendored toolchains
 zig-*/
 llvm-mingw-*/

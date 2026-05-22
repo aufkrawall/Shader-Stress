@@ -167,6 +167,10 @@ static std::wstring ToWide(const char *value) {
 }
 #endif
 
+static std::string ToNarrow(const std::wstring &value) {
+  return std::string(value.begin(), value.end());
+}
+
 static std::optional<uint64_t> ParseUint64(const std::wstring &text) {
   if (text.empty())
     return std::nullopt;
@@ -283,61 +287,61 @@ static std::wstring GetRuntimeOsName() {
 }
 
 static void PrintCliVersion() {
-  std::wcout << L"ShaderStress " << APP_VERSION << std::endl;
+  std::cout << "ShaderStress " << ToNarrow(APP_VERSION) << '\n';
 }
 
 static void PrintCliHelp() {
   PrintCliVersion();
-  std::wcout << L"\nUsage:\n";
-  std::wcout << L"  " << kProgramInvocation << L"\n";
-  std::wcout << L"  " << kProgramInvocation << L" --wizard [options]\n";
-  std::wcout << L"  " << kProgramInvocation
-             << L" --mode <dynamic|steady|benchmark> [options]\n";
-  std::wcout << L"  " << kProgramInvocation << L" --benchmark\n";
-  std::wcout << L"  " << kProgramInvocation << L" --verify <hash>\n";
-  std::wcout << L"  " << kProgramInvocation
-             << L" --repro <seed> <complexity> [options]\n";
-  std::wcout << L"\nLaunch behavior:\n";
+  std::cout << "\nUsage:\n";
+  std::cout << "  " << ToNarrow(kProgramInvocation) << "\n";
+  std::cout << "  " << ToNarrow(kProgramInvocation) << " --wizard [options]\n";
+  std::cout << "  " << ToNarrow(kProgramInvocation)
+            << " --mode <dynamic|steady|benchmark> [options]\n";
+  std::cout << "  " << ToNarrow(kProgramInvocation) << " --benchmark\n";
+  std::cout << "  " << ToNarrow(kProgramInvocation) << " --verify <hash>\n";
+  std::cout << "  " << ToNarrow(kProgramInvocation)
+            << " --repro <seed> <complexity> [options]\n";
+  std::cout << "\nLaunch behavior:\n";
 #ifdef PLATFORM_WINDOWS
-  std::wcout << L"  - No arguments from Explorer or a shortcut open the GUI.\n";
-  std::wcout << L"  - Use ShaderStress.com from a terminal to open the interactive CLI wizard.\n";
-  std::wcout << L"  - Use ShaderStress.com for explicit Windows CLI commands.\n";
+  std::cout << "  - No arguments from Explorer or a shortcut open the GUI.\n";
+  std::cout << "  - Use ShaderStress.com from a terminal to open the interactive CLI wizard.\n";
+  std::cout << "  - Use ShaderStress.com for explicit Windows CLI commands.\n";
 #else
-  std::wcout << L"  - No arguments open the interactive CLI wizard.\n";
-  std::wcout << L"  - If launched without a terminal and the wizard is needed,\n";
-  std::wcout << L"    ShaderStress will try to spawn one unless --force-no-spawn is used.\n";
+  std::cout << "  - No arguments open the interactive CLI wizard.\n";
+  std::cout << "  - If launched without a terminal and the wizard is needed,\n";
+  std::cout << "    ShaderStress will try to spawn one unless --force-no-spawn is used.\n";
 #endif
-  std::wcout << L"\nCommands and options:\n";
-  std::wcout << L"  --wizard                 Force the interactive CLI wizard.\n";
-  std::wcout << L"  --mode <name>            Run without prompts. Values: dynamic, steady, benchmark.\n";
-  std::wcout << L"  --isa <name>             Select ISA. Values: auto, avx512, avx2, scalar, scalar-sim.\n";
-  std::wcout << L"  --duration <sec>         Stop after N seconds.\n";
-  std::wcout << L"  --max-duration <sec>     CLI alias of --duration.\n";
-  std::wcout << L"  --benchmark              Shortcut for --mode benchmark. Benchmark is always 180 seconds and defaults to scalar-sim unless --isa is provided.\n";
-  std::wcout << L"  --verify <hash>          Decode and validate a benchmark hash.\n";
-  std::wcout << L"  --repro <seed> <complexity>\n";
-  std::wcout << L"                           Run one reproducible workload case.\n";
-  std::wcout << L"  --no-avx512              Disable AVX-512 use.\n";
-  std::wcout << L"  --no-avx2                Disable AVX2 use.\n";
-  std::wcout << L"  --quiet                  Suppress the live dashboard and startup banner.\n";
-  std::wcout << L"  --version                Print version and exit.\n";
-  std::wcout << L"  --help                   Print this help text and exit.\n";
+  std::cout << "\nCommands and options:\n";
+  std::cout << "  --wizard                 Force the interactive CLI wizard.\n";
+  std::cout << "  --mode <name>            Run without prompts. Values: dynamic, steady, benchmark.\n";
+  std::cout << "  --isa <name>             Select ISA. Values: auto, avx512, avx2, scalar, scalar-sim.\n";
+  std::cout << "  --duration <sec>         Stop after N seconds.\n";
+  std::cout << "  --max-duration <sec>     CLI alias of --duration.\n";
+  std::cout << "  --benchmark              Shortcut for --mode benchmark. Benchmark is always 180 seconds and defaults to scalar-sim unless --isa is provided.\n";
+  std::cout << "  --verify <hash>          Decode and validate a benchmark hash.\n";
+  std::cout << "  --repro <seed> <complexity>\n";
+  std::cout << "                           Run one reproducible workload case.\n";
+  std::cout << "  --no-avx512              Disable AVX-512 use.\n";
+  std::cout << "  --no-avx2                Disable AVX2 use.\n";
+  std::cout << "  --quiet                  Suppress the live dashboard and startup banner.\n";
+  std::cout << "  --version                Print version and exit.\n";
+  std::cout << "  --help                   Print this help text and exit.\n";
 #if !defined(PLATFORM_WINDOWS)
-  std::wcout << L"  --force-no-spawn         Do not auto-spawn a terminal for the wizard.\n";
+  std::cout << "  --force-no-spawn         Do not auto-spawn a terminal for the wizard.\n";
 #endif
-  std::wcout << L"\nExit codes:\n";
-  std::wcout << L"  0   Success\n";
-  std::wcout << L"  2   Invalid arguments\n";
-  std::wcout << L"  3   Environment/setup problem\n";
-  std::wcout << L"  4   Hash verification failed\n";
-  std::wcout << L"  130 Interrupted by Ctrl+C or a termination signal\n";
-  std::wcout << L"\nExamples:\n";
-  std::wcout << L"  " << kProgramInvocation << L" --wizard\n";
-  std::wcout << L"  " << kProgramInvocation
-             << L" --mode steady --isa avx2 --duration 60\n";
-  std::wcout << L"  " << kProgramInvocation << L" --benchmark\n";
-  std::wcout << L"  " << kProgramInvocation
-             << L" --repro 12345 1000 --isa scalar\n";
+  std::cout << "\nExit codes:\n";
+  std::cout << "  0   Success\n";
+  std::cout << "  2   Invalid arguments\n";
+  std::cout << "  3   Environment/setup problem\n";
+  std::cout << "  4   Hash verification failed\n";
+  std::cout << "  130 Interrupted by Ctrl+C or a termination signal\n";
+  std::cout << "\nExamples:\n";
+  std::cout << "  " << ToNarrow(kProgramInvocation) << " --wizard\n";
+  std::cout << "  " << ToNarrow(kProgramInvocation)
+            << " --mode steady --isa avx2 --duration 60\n";
+  std::cout << "  " << ToNarrow(kProgramInvocation) << " --benchmark\n";
+  std::cout << "  " << ToNarrow(kProgramInvocation)
+            << " --repro 12345 1000 --isa scalar\n";
 }
 
 static void AddError(std::vector<std::wstring> &errors, const std::wstring &msg) {
@@ -706,7 +710,7 @@ static void InitializeRuntime(bool quiet) {
 
   g_App.log.open("ShaderStress.log", std::ios::out | std::ios::trunc);
   if (!g_App.log.is_open() && !quiet) {
-    std::wcerr << L"Warning: failed to open ShaderStress.log for writing." << std::endl;
+    std::cerr << "Warning: failed to open ShaderStress.log for writing." << '\n';
   }
 
   g_App.LogRaw(L"--- Session Start (v" + std::wstring(APP_VERSION) + L") ---");
@@ -747,20 +751,20 @@ static void CleanupWorkers() {
 
 static void PrintVerifyResult(const std::wstring &hash, const HashResult &result) {
   if (!result.valid) {
-    std::cout << "=== INVALID HASH ===" << std::endl;
-    std::wcout << L"Hash: " << hash << std::endl;
+    std::cout << "=== INVALID HASH ===" << '\n';
+    std::cout << "Hash: " << ToNarrow(hash) << '\n';
     return;
   }
 
-  std::cout << "=== VALID HASH ===" << std::endl;
+  std::cout << "=== VALID HASH ===" << '\n';
   std::cout << "Version: ShaderStress " << (int)result.versionMajor << "."
-            << (int)result.versionMinor << std::endl;
-  std::wcout << L"OS: " << GetOsName(result.os) << std::endl;
-  std::wcout << L"Arch: " << GetArchNameFromCode(result.arch) << std::endl;
-  std::cout << "CPU Hash: " << (int)result.cpuHash << std::endl;
-  std::cout << "R0: " << result.r0 << " jobs/s" << std::endl;
-  std::cout << "R1: " << result.r1 << " jobs/s" << std::endl;
-  std::cout << "R2: " << result.r2 << " jobs/s" << std::endl;
+            << (int)result.versionMinor << '\n';
+  std::cout << "OS: " << ToNarrow(GetOsName(result.os)) << '\n';
+  std::cout << "Arch: " << ToNarrow(GetArchNameFromCode(result.arch)) << '\n';
+  std::cout << "CPU Hash: " << (int)result.cpuHash << '\n';
+  std::cout << "R0: " << result.r0 << " jobs/s" << '\n';
+  std::cout << "R1: " << result.r1 << " jobs/s" << '\n';
+  std::cout << "R2: " << result.r2 << " jobs/s" << '\n';
 }
 
 static int RunVerifyCommand(const CliOptions &options) {
@@ -779,11 +783,11 @@ static int RunReproCommand(const CliOptions &options) {
 
   if (!options.quiet) {
     PrintCliVersion();
-    std::wcout << L"CPU: " << g_Cpu.brand << std::endl;
-    std::cout << "Seed: " << options.reproSeed << std::endl;
-    std::cout << "Complexity: " << options.reproComplexity << std::endl;
-    std::wcout << L"ISA: "
-               << GetResolvedISAName(g_App.selectedWorkload.load()) << std::endl;
+    std::cout << "CPU: " << ToNarrow(g_Cpu.brand) << '\n';
+    std::cout << "Seed: " << options.reproSeed << '\n';
+    std::cout << "Complexity: " << options.reproComplexity << '\n';
+    std::cout << "ISA: "
+               << ToNarrow(GetResolvedISAName(g_App.selectedWorkload.load())) << '\n';
   }
 
   g_App.Log(L"Repro Mode: seed=" + std::to_wstring(options.reproSeed) +
@@ -809,68 +813,68 @@ static int RunReproCommand(const CliOptions &options) {
 
 static void PrintLiveDashboard() {
   std::cout << "\033[2J\033[H" << std::flush;
-  std::wcout << L"ShaderStress " << APP_VERSION << L"\n";
-  std::wcout << L"OS: " << GetRuntimeOsName() << L" (" << GetArchName() << L")\n";
-  std::wcout << L"Mode: " << GetModeName(g_App.mode.load()) << L"\n";
-  std::wcout << L"Active ISA: "
-             << GetResolvedISAName(g_App.selectedWorkload.load()) << L"\n";
-  std::wcout << L"Jobs Done: " << FmtNum(g_App.shaders.load()) << L"\n\n";
-  std::wcout << L"--- Performance ---\n";
-  std::wcout << L"Rate (Jobs/s): " << FmtNum(g_App.currentRate.load()) << L"\n";
-  std::wcout << L"Time: " << FmtTime(g_App.elapsed.load()) << L"\n";
+  std::cout << "ShaderStress " << ToNarrow(APP_VERSION) << "\n";
+  std::cout << "OS: " << ToNarrow(GetRuntimeOsName()) << " (" << ToNarrow(GetArchName()) << ")\n";
+  std::cout << "Mode: " << ToNarrow(GetModeName(g_App.mode.load())) << "\n";
+  std::cout << "Active ISA: "
+            << ToNarrow(GetResolvedISAName(g_App.selectedWorkload.load())) << "\n";
+  std::cout << "Jobs Done: " << ToNarrow(FmtNum(g_App.shaders.load())) << "\n\n";
+  std::cout << "--- Performance ---\n";
+  std::cout << "Rate (Jobs/s): " << ToNarrow(FmtNum(g_App.currentRate.load())) << "\n";
+  std::cout << "Time: " << ToNarrow(FmtTime(g_App.elapsed.load())) << "\n";
 
   if (g_App.mode == 2) {
-    std::wcout << L"Phase: " << g_App.currentPhase.load() << L" / 16\n";
-    std::wcout << L"Loop: " << g_App.loops.load() << L"\n";
+    std::cout << "Phase: " << g_App.currentPhase.load() << " / 16\n";
+    std::cout << "Loop: " << g_App.loops.load() << "\n";
   } else if (g_App.mode == 0) {
-    std::wcout << L"\n--- Benchmark Rounds ---\n";
-    std::wcout << L"1st Minute: "
-               << (g_App.benchRates[0] > 0 ? FmtNum(g_App.benchRates[0].load())
-                                          : L"-")
-               << L"\n";
-    std::wcout << L"2nd Minute: "
-               << (g_App.benchRates[1] > 0 ? FmtNum(g_App.benchRates[1].load())
-                                          : L"-")
-               << L"\n";
-    std::wcout << L"3rd Minute: "
-               << (g_App.benchRates[2] > 0 ? FmtNum(g_App.benchRates[2].load())
-                                          : L"-")
-               << L"\n";
+    std::cout << "\n--- Benchmark Rounds ---\n";
+    std::cout << "1st Minute: "
+              << (g_App.benchRates[0] > 0 ? ToNarrow(FmtNum(g_App.benchRates[0].load()))
+                                          : "-")
+              << "\n";
+    std::cout << "2nd Minute: "
+              << (g_App.benchRates[1] > 0 ? ToNarrow(FmtNum(g_App.benchRates[1].load()))
+                                          : "-")
+              << "\n";
+    std::cout << "3rd Minute: "
+              << (g_App.benchRates[2] > 0 ? ToNarrow(FmtNum(g_App.benchRates[2].load()))
+                                          : "-")
+              << "\n";
 
     std::wstring hash = g_App.GetBenchHash();
     if (!hash.empty()) {
-      std::wcout << L"Hash: " << hash << L" (v" << APP_VERSION << L")\n";
+      std::cout << "Hash: " << ToNarrow(hash) << " (v" << ToNarrow(APP_VERSION) << ")\n";
     }
 
     if (g_App.benchComplete) {
-      std::wcout << L"WINNER: Interval " << (g_App.benchWinner.load() + 1)
-                 << L"\n";
+      std::cout << "WINNER: Interval " << (g_App.benchWinner.load() + 1)
+                << "\n";
     }
   }
 
-  std::wcout << L"\n--- Stress Status ---\n";
-  std::wcout << L"Workers: "
-             << (g_App.activeCompilers.load() + g_App.activeDecomp.load())
-             << L"\n";
-  std::wcout << L"Sim Compilers: " << g_App.activeCompilers.load() << L"\n";
-  std::wcout << L"Decompressors: " << g_App.activeDecomp.load() << L"\n";
-  std::wcout << L"RAM Thread: " << (g_App.ramActive ? L"ACTIVE" : L"Idle")
-             << L"\n";
-  std::wcout << L"I/O Threads: " << (g_App.ioActive ? L"ACTIVE" : L"Idle")
-             << L"\n";
+  std::cout << "\n--- Stress Status ---\n";
+  std::cout << "Workers: "
+            << (g_App.activeCompilers.load() + g_App.activeDecomp.load())
+            << "\n";
+  std::cout << "Sim Compilers: " << g_App.activeCompilers.load() << "\n";
+  std::cout << "Decompressors: " << g_App.activeDecomp.load() << "\n";
+  std::cout << "RAM Thread: " << (g_App.ramActive ? "ACTIVE" : "Idle")
+            << "\n";
+  std::cout << "I/O Threads: " << (g_App.ioActive ? "ACTIVE" : "Idle")
+            << "\n";
 
   if (g_App.errors > 0) {
-    std::wcout << L"\nErrors: " << FmtNum(g_App.errors.load()) << L" !!!\n";
+    std::cout << "\nErrors: " << ToNarrow(FmtNum(g_App.errors.load())) << " !!!\n";
   } else {
-    std::wcout << L"\nErrors: 0\n";
+    std::cout << "\nErrors: 0\n";
   }
 
-  std::wcout << L"\n[Press Ctrl+C to abort]" << std::flush;
+  std::cout << "\n[Press Ctrl+C to abort]" << std::flush;
 }
 
 static void WriteDashboardField(int row, int col, const std::wstring &value) {
   std::cout << "\033[" << row << ';' << col << "H";
-  std::wcout << value;
+  std::cout << ToNarrow(value);
   std::cout << "\033[K";
 }
 
@@ -879,47 +883,47 @@ static CliDashboardLayout RenderCompactDashboardFrame() {
   layout.benchmark = g_App.mode == 0;
 
   std::cout << "\033[2J\033[H\033[?25l";
-  std::wcout << L"ShaderStress " << APP_VERSION << L"\n";
-  std::wcout << L"OS: " << GetRuntimeOsName() << L" (" << GetArchName() << L")\n";
-  std::wcout << L"Mode: " << GetModeName(g_App.mode.load()) << L"\n";
-  std::wcout << L"Active ISA: "
-             << GetResolvedISAName(g_App.selectedWorkload.load()) << L"\n";
-  std::wcout << L"Jobs Done: \n\n";
-  std::wcout << L"--- Performance ---\n";
-  std::wcout << L"Rate (Jobs/s): \n";
-  std::wcout << L"Time: \n";
+  std::cout << "ShaderStress " << ToNarrow(APP_VERSION) << "\n";
+  std::cout << "OS: " << ToNarrow(GetRuntimeOsName()) << " (" << ToNarrow(GetArchName()) << ")\n";
+  std::cout << "Mode: " << ToNarrow(GetModeName(g_App.mode.load())) << "\n";
+  std::cout << "Active ISA: "
+            << ToNarrow(GetResolvedISAName(g_App.selectedWorkload.load())) << "\n";
+  std::cout << "Jobs Done: \n\n";
+  std::cout << "--- Performance ---\n";
+  std::cout << "Rate (Jobs/s): \n";
+  std::cout << "Time: \n";
 
   if (layout.benchmark) {
-    std::wcout << L"\n--- Benchmark Rounds ---\n";
-    std::wcout << L"1st Minute: \n";
-    std::wcout << L"2nd Minute: \n";
-    std::wcout << L"3rd Minute: \n";
-    std::wcout << L"Hash: \n";
-    std::wcout << L"Winner: \n\n";
-    std::wcout << L"--- Stress Status ---\n";
-    std::wcout << L"Workers: \n";
-    std::wcout << L"Sim Compilers: \n";
-    std::wcout << L"Decompressors: \n";
-    std::wcout << L"RAM Thread: \n";
-    std::wcout << L"I/O Threads: \n";
-    std::wcout << L"Errors: \n\n";
-    std::wcout << L"[Press Ctrl+C to abort]";
+    std::cout << "\n--- Benchmark Rounds ---\n";
+    std::cout << "1st Minute: \n";
+    std::cout << "2nd Minute: \n";
+    std::cout << "3rd Minute: \n";
+    std::cout << "Hash: \n";
+    std::cout << "Winner: \n\n";
+    std::cout << "--- Stress Status ---\n";
+    std::cout << "Workers: \n";
+    std::cout << "Sim Compilers: \n";
+    std::cout << "Decompressors: \n";
+    std::cout << "RAM Thread: \n";
+    std::cout << "I/O Threads: \n";
+    std::cout << "Errors: \n\n";
+    std::cout << "[Press Ctrl+C to abort]";
     layout.finalLine = 25;
   } else {
-    std::wcout << L"Phase: \n";
-    std::wcout << L"Loop: \n\n";
-    std::wcout << L"--- Stress Status ---\n";
-    std::wcout << L"Workers: \n";
-    std::wcout << L"Sim Compilers: \n";
-    std::wcout << L"Decompressors: \n";
-    std::wcout << L"RAM Thread: \n";
-    std::wcout << L"I/O Threads: \n";
-    std::wcout << L"Errors: \n\n";
-    std::wcout << L"[Press Ctrl+C to abort]";
+    std::cout << "Phase: \n";
+    std::cout << "Loop: \n\n";
+    std::cout << "--- Stress Status ---\n";
+    std::cout << "Workers: \n";
+    std::cout << "Sim Compilers: \n";
+    std::cout << "Decompressors: \n";
+    std::cout << "RAM Thread: \n";
+    std::cout << "I/O Threads: \n";
+    std::cout << "Errors: \n\n";
+    std::cout << "[Press Ctrl+C to abort]";
     layout.finalLine = 20;
   }
 
-  std::wcout.flush();
+  std::cout.flush();
   return layout;
 }
 
@@ -931,21 +935,21 @@ static void UpdateCompactDashboard(const CliDashboardLayout &layout) {
   if (layout.benchmark) {
     WriteDashboardField(12, 13,
                         g_App.benchRates[0] > 0 ? FmtNum(g_App.benchRates[0].load())
-                                               : L"-");
+                                               : std::wstring(L"-"));
     WriteDashboardField(13, 13,
                         g_App.benchRates[1] > 0 ? FmtNum(g_App.benchRates[1].load())
-                                               : L"-");
+                                               : std::wstring(L"-"));
     WriteDashboardField(14, 13,
                         g_App.benchRates[2] > 0 ? FmtNum(g_App.benchRates[2].load())
-                                               : L"-");
+                                               : std::wstring(L"-"));
 
     std::wstring hash = g_App.GetBenchHash();
     WriteDashboardField(15, 7,
-                        !hash.empty() ? hash + L" (v" + APP_VERSION + L')' : L"");
+                        !hash.empty() ? hash + L" (v" + APP_VERSION + L')' : std::wstring());
 
     WriteDashboardField(16, 9,
                         g_App.benchComplete ? (L"Interval " + std::to_wstring(g_App.benchWinner.load() + 1))
-                                            : L"");
+                                            : std::wstring());
 
     WriteDashboardField(19, 10,
                         std::to_wstring(g_App.activeCompilers.load() +
@@ -979,7 +983,7 @@ static void UpdateCompactDashboard(const CliDashboardLayout &layout) {
                                          : L"0");
   }
 
-  std::wcout.flush();
+  std::cout.flush();
 }
 
 static void PrintFinalResults() {
@@ -993,7 +997,7 @@ static void PrintFinalResults() {
   if (g_App.mode == 0) {
     std::wstring finalHash = g_App.GetBenchHash();
     if (!finalHash.empty()) {
-      std::wcout << L"Benchmark Hash: " << finalHash << L"\n";
+      std::cout << "Benchmark Hash: " << ToNarrow(finalHash) << "\n";
     }
   }
 }
@@ -1015,20 +1019,21 @@ static int RunStressCommand(const CliOptions &options,
 
   if (!options.quiet) {
     PrintCliVersion();
-    std::wcout << L"CPU: " << g_Cpu.brand << std::endl;
-    std::wcout << L"Mode: " << GetModeName(g_App.mode.load()) << std::endl;
-    std::wcout << L"ISA: "
-               << GetResolvedISAName(g_App.selectedWorkload.load()) << std::endl;
+    std::cout << "CPU: " << ToNarrow(g_Cpu.brand) << '\n';
+    std::cout << "Mode: " << ToNarrow(GetModeName(g_App.mode.load())) << '\n';
+    std::cout << "ISA: "
+              << ToNarrow(GetResolvedISAName(g_App.selectedWorkload.load())) << '\n';
     if (g_App.maxDuration > 0) {
       std::cout << "Duration: " << (unsigned long long)g_App.maxDuration.load()
-                << "s" << std::endl;
+                << "s\n";
     }
-    std::cout << "Starting stress test with " << cpu << " threads..."
-              << std::endl;
+    std::cout << "Starting stress test with " << cpu << " threads...\n";
   }
 
 #ifdef PLATFORM_WINDOWS
   g_WindowsInterrupted = false;
+  // Register Ctrl+C handler BEFORE starting threads to avoid a race window
+  // where a termination signal could arrive before the handler is installed.
   SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
 #endif
 
@@ -1095,13 +1100,13 @@ static int RunCliCommand(CliOptions options, const CliEnvironment &environment,
   const bool needsWizard = options.forceWizard || implicitWizard;
   if (needsWizard) {
     if (!environment.canPrompt) {
-      std::wcerr << L"Interactive CLI requires a real terminal for both input and output.\n";
-      std::wcerr << L"Use --wizard from a terminal, or run a non-interactive command such as --help or --mode.\n";
+      std::cerr << "Interactive CLI requires a real terminal for both input and output.\n";
+      std::cerr << "Use --wizard from a terminal, or run a non-interactive command such as --help or --mode.\n";
       return (int)CliExitCode::EnvironmentError;
     }
     ApplyCliDefaults(options);
     if (!RunCliWizard(options)) {
-      std::wcerr << L"Interactive CLI aborted because input closed unexpectedly.\n";
+      std::cerr << "Interactive CLI aborted because input closed unexpectedly.\n";
       return (int)CliExitCode::EnvironmentError;
     }
   }
@@ -1119,9 +1124,9 @@ static int RunCliCommand(CliOptions options, const CliEnvironment &environment,
   }
 
   if (environment.canPrompt) {
-    std::wcerr << L"No command was selected. Use --wizard or run without redirection from a terminal.\n";
+    std::cerr << "No command was selected. Use --wizard or run without redirection from a terminal.\n";
   } else {
-    std::wcerr << L"No command was selected. Use --help to see available commands.\n";
+    std::cerr << "No command was selected. Use --help to see available commands.\n";
   }
   return (int)CliExitCode::EnvironmentError;
 }
@@ -1217,8 +1222,6 @@ static void PrepareStreamBuffers() {
   std::wcin.clear();
   std::cout.clear();
   std::cerr.clear();
-  std::wcout.clear();
-  std::wcerr.clear();
   setvbuf(stdout, nullptr, _IONBF, 0);
   setvbuf(stderr, nullptr, _IONBF, 0);
 }
@@ -1264,8 +1267,6 @@ static void ConfigureWindowsConsoleForCli() {
   std::wcin.clear();
   std::cout.clear();
   std::cerr.clear();
-  std::wcout.clear();
-  std::wcerr.clear();
 
   HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
   DWORD mode = 0;
@@ -1283,7 +1284,7 @@ static int PrintWindowsCliRedirectNotice() {
     FILE *fp = nullptr;
     freopen_s(&fp, "CONOUT$", "w", stdout);
     freopen_s(&fp, "CONOUT$", "w", stderr);
-    std::wcerr << message << std::endl;
+    std::cerr << ToNarrow(message) << '\n';
     FreeConsole();
   } else {
     MessageBoxW(nullptr, message.c_str(), L"Use ShaderStress.com",
@@ -1380,8 +1381,8 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
 
   if (!parsed.errors.empty()) {
     for (const auto &error : parsed.errors)
-      std::wcerr << L"Error: " << error << std::endl;
-    std::wcerr << L"Use --help to see the supported command line options." << std::endl;
+      std::cerr << "Error: " << ToNarrow(error) << '\n';
+    std::cerr << "Use --help to see the supported command line options." << '\n';
     return (int)CliExitCode::InvalidArguments;
   }
 
@@ -1422,8 +1423,8 @@ int main(int argc, char *argv[]) {
 
   if (!parsed.errors.empty()) {
     for (const auto &error : parsed.errors)
-      std::wcerr << L"Error: " << error << std::endl;
-    std::wcerr << L"Use --help to see the supported command line options." << std::endl;
+      std::cerr << "Error: " << ToNarrow(error) << '\n';
+    std::cerr << "Use --help to see the supported command line options." << '\n';
     return (int)CliExitCode::InvalidArguments;
   }
 

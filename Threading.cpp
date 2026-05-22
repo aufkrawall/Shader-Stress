@@ -285,8 +285,12 @@ void IOThread(int ioIdx) {
 
   wchar_t path[MAX_PATH];
   GetTempPathW(MAX_PATH, path);
+  // Include a random value in the filename to prevent symlink attacks.
+  // Predictable filenames allow an attacker to pre-create a reparse point
+  // pointing to an arbitrary target file.
   std::wstring fpath =
-      std::wstring(path) + L"stress_" + std::to_wstring(ioIdx) + L".tmp";
+      std::wstring(path) + L"stress_" + std::to_wstring(ioIdx) +
+      L"_" + std::to_wstring(GetTick() ^ ((uint64_t)ioIdx * 0x9E3779B97F4A7C15ULL)) + L".tmp";
 
   bool fileCreated = false;
   HANDLE hFile = INVALID_HANDLE_VALUE;
@@ -301,9 +305,11 @@ void IOThread(int ioIdx) {
 
     // Create temp file on first activation (deferred from startup)
     if (!fileCreated) [[unlikely]] {
-      // Use CreateFileW to avoid narrow-string conversion (handles non-ASCII paths)
+      // Use CreateFileW with FILE_FLAG_OPEN_REPARSE_POINT to avoid following
+      // symlinks/junctions, preventing TOCTOU attacks. DELETE_ON_CLOSE ensures
+      // cleanup even on abnormal exit.
       HANDLE hCreate = CreateFileW(fpath.c_str(), GENERIC_WRITE, 0, nullptr,
-                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                                   CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
       if (hCreate != INVALID_HANDLE_VALUE) {
         // Fill with pseudo-random data so the volatile-xor sink is non-deterministic.
         std::vector<char> junk(1024 * 1024);
@@ -316,7 +322,7 @@ void IOThread(int ioIdx) {
       }
 
       hFile = CreateFileW(fpath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                          OPEN_EXISTING, FILE_FLAG_NO_BUFFERING, nullptr);
+                          OPEN_EXISTING, FILE_FLAG_NO_BUFFERING | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
       fileCreated = true;
     }
 
@@ -450,7 +456,9 @@ void IOThread(int ioIdx) {
   SetFpuFlushMode();
   auto &w = *g_IOThreads[ioIdx];
 
-  std::string fpath = "/tmp/stress_" + std::to_string(ioIdx) + ".tmp";
+  // Include a random value in the filename to prevent symlink attacks.
+  uint64_t randSuffix = (uint64_t)GetTick() ^ ((uint64_t)ioIdx * 0x9E3779B97F4A7C15ULL);
+  std::string fpath = "/tmp/stress_" + std::to_string(ioIdx) + "_" + std::to_string(randSuffix) + ".tmp";
 
   bool fileCreated = false;
   int hFile = -1;
@@ -469,13 +477,17 @@ void IOThread(int ioIdx) {
       std::vector<char> junk(1024 * 1024);
       for (size_t j = 0; j < junk.size(); ++j)
         junk[j] = (char)((j * 0x9E3779B97F4A7C15ull) & 0xFF);
-      std::ofstream f(fpath, std::ios::binary);
-      for (size_t i = 0; i < (IO_FILE_SIZE / (1024 * 1024)); ++i)
-        f.write(junk.data(), junk.size());
-      f.close();
+      // Use open() with O_CREAT | O_EXCL to fail on existing paths,
+      // preventing symlink/hardlink TOCTOU.
+      int fd = open(fpath.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+      if (fd != -1) {
+        for (size_t i = 0; i < (IO_FILE_SIZE / (1024 * 1024)); ++i)
+          write(fd, junk.data(), junk.size());
+        close(fd);
+      }
 
       // O_DIRECT is Linux specific, on macOS use F_NOCACHE
-      int flags = O_RDONLY;
+      int flags = O_RDONLY | O_NOFOLLOW;
 #ifdef PLATFORM_LINUX
       flags |= O_DIRECT;
 #endif
