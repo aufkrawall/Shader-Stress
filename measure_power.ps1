@@ -51,22 +51,78 @@ function Start-OHM {
   } catch { Write-Host "OHM download failed: $_" }
 }
 
-# --- find power sensor ---
-function Find-PowerSensor {
-  for ($i = 0; $i -lt 15; $i++) {
-    try {
-      $sensors = Get-WmiObject -Namespace "root\openhardwaremonitor" -Class Sensor -ErrorAction Stop 2>$null
-      foreach ($s in $sensors) {
-        if ($s.SensorType -eq "Power" -and $s.Name -match "CPU|Package") { return $s }
-      }
-      # fallback: any power sensor
-      foreach ($s in $sensors) {
-        if ($s.SensorType -eq "Power") { return $s }
-      }
-    } catch { }
-    Start-Sleep -Seconds 1
-  }
+# --- try Core Temp shared memory ---
+function Read-CoreTemp {
+  try {
+    $map = [System.IO.MemoryMappedFiles.MemoryMappedFile]::OpenExisting("CoreTempMappingObject", [System.IO.MemoryMappedFiles.MemoryMappedFileRights]::Read)
+    $acc = $map.CreateViewAccessor()
+    $buf = New-Object byte[] 512
+    $acc.ReadArray(0, $buf, 0, 512)
+    $acc.Dispose(); $map.Dispose()
+    # Core Temp struct: offset 132 = TDP, offset 140 = CPU Power (float)
+    $tdp = [BitConverter]::ToSingle($buf, 132)
+    $power = [BitConverter]::ToSingle($buf, 140)
+    if ($power -gt 0 -and $power -lt 1000) { return $power }
+    return $null
+  } catch { return $null }
+}
+
+# --- try OHM WMI ---
+function Read-OHM {
+  try {
+    $vals = Get-WmiObject -Namespace "root\openhardwaremonitor" -Class Sensor -ErrorAction Stop 2>$null
+    foreach ($v in $vals) {
+      if ($v.SensorType -eq "Power" -and $v.Name -match "CPU|Package|Socket|Core|Total") { return [double]$v.Value }
+    }
+  } catch { }
   return $null
+}
+
+# --- try LibreHardwareMonitor WMI ---
+function Read-LHM {
+  try {
+    $vals = Get-WmiObject -Namespace "root\librehardwaremonitor" -Class Sensor -ErrorAction Stop 2>$null
+    foreach ($v in $vals) {
+      if ($v.SensorType -eq "Power" -and $v.Name -match "CPU|Package|Socket|Core|Total") { return [double]$v.Value }
+    }
+  } catch { }
+  return $null
+}
+
+# --- dump all sensors (debug) ---
+function Dump-AllSensors {
+  try {
+    $sensors = Get-WmiObject -Namespace "root\openhardwaremonitor" -Class Sensor -ErrorAction SilentlyContinue 2>$null
+    if (-not $sensors) { $sensors = Get-WmiObject -Namespace "root\librehardwaremonitor" -Class Sensor -ErrorAction SilentlyContinue 2>$null }
+    if ($sensors) {
+      $sensors | Select-Object Name, Value, SensorType, Index | Format-Table -AutoSize | Out-String | ForEach-Object { Write-Host $_ }
+    } else {
+      Write-Host "  No WMI sensors available from OHM or LHM."
+      Write-Host "  Core Temp shared memory: $(if (Read-CoreTemp) { 'available' } else { 'not available' })"
+    }
+  } catch {
+    Write-Host "  Cannot query WMI sensors: $_"
+  }
+}
+
+# --- poll any available power source ---
+function Poll-PowerW {
+  # Try all sources, return first success
+  $w = Read-CoreTemp; if ($w) { return $w }
+  $w = Read-OHM;      if ($w) { return $w }
+  $w = Read-LHM;      if ($w) { return $w }
+  return $null
+}
+
+# --- detect which power source is available ---
+function Detect-PowerSource {
+  $w = Read-CoreTemp; if ($w) { return "Core Temp ($w W)" }
+  $w = Read-OHM;      if ($w) { return "OHM ($w W)" }
+  $w = Read-LHM;      if ($w) { return "LHM ($w W)" }
+  return $null
+}
+if (-not (Detect-PowerSource)) {
+  Write-Host "No power sensor detected at startup (will retry during workload)."
 }
 
 # --- run one workload ---
@@ -78,12 +134,8 @@ function Measure-Workload {
 
   for ($i = 0; $i -lt [math]::Floor($Duration / 0.4); $i++) {
     if ($proc.HasExited) { break }
-    try {
-      $vals = Get-WmiObject -Namespace "root\openhardwaremonitor" -Class Sensor -ErrorAction SilentlyContinue 2>$null
-      foreach ($v in $vals) {
-        if ($v.SensorType -eq "Power" -and $v.Name -match "CPU|Package|Socket|Core") { $samples += [double]$v.Value }
-      }
-    } catch { }
+    $w = Poll-PowerW
+    if ($w) { $samples += $w }
     Start-Sleep -Milliseconds 400
   }
   if (-not $proc.HasExited) { $proc.Kill() }
@@ -92,7 +144,8 @@ function Measure-Workload {
   if ($samples.Count -gt 0) {
     $avg = [math]::Round(($samples | Measure-Object -Average).Average, 1)
     $max = [math]::Round(($samples | Measure-Object -Maximum).Maximum, 1)
-    Write-Host "  $($label.PadRight(10)) ($isa)  avg: ${avg}W  max: ${max}W  ($($samples.Count) samples)"
+    $jobsLine = ($proc.StandardOutput | Select-String "Avg Rate" | Select-Object -Last 1).ToString()
+    Write-Host "  $($label.PadRight(10)) ($isa)  avg: ${avg}W  max: ${max}W  jobs: $jobsLine  ($($samples.Count) samples)"
   } else {
     Write-Host "  $($label.PadRight(10)) ($isa)  no power sensor data"
   }
@@ -103,18 +156,23 @@ Write-Host "=== Power Measurement ==="
 Write-Host "Binary: $bin"
 Write-Host ""
 
-$sensor = Find-PowerSensor
-if (-not $sensor) { Start-OHM; $sensor = Find-PowerSensor }
-
-if ($sensor) {
-  Write-Host "Found sensor: $($sensor.Name) (index $($sensor.Index), type $($sensor.SensorType))"
+Start-OHM
+Start-Sleep -Seconds 2
+$src = Detect-PowerSource
+if ($src) {
+  Write-Host "Power source: $src"
 } else {
-  Write-Host "No CPU Package Power sensor found on this system."
-  Write-Host "  Install OpenHardwareMonitor or LibreHardwareMonitor and run it elevated."
-  Write-Host "  On Zen 3 you may need to run Core Temp or Ryzen Master as admin first."
+  Write-Host "No power sensor found. Available sources:"
+  Dump-AllSensors
+  Write-Host ""
+  Write-Host "Tips for Zen 3:"
+  Write-Host "  1. Run Core Temp as administrator (it bundles MSR driver)"
+  Write-Host "  2. Or run OpenHardwareMonitor as administrator"
+  Write-Host "  3. Or install AMD Ryzen Master driver"
+  Write-Host "  4. Then re-run this script (no elevation needed for the script)"
+  Write-Host ""
 }
 
-Write-Host ""
 Write-Host "--- Workloads ---"
 Measure-Workload "scalar" "scalar"
 Measure-Workload "avx2"   "avx2"
