@@ -10,15 +10,13 @@ Audited for maximum power draw, throughput, heat, and utilization (2026-05-14).
 - **Linux/macOS**: Zig 0.15.2 cross-compiler still used for non-Windows targets.
 - **x86_64_v4 targets**: `bin/x64-llvm-v4` and `bin/linux-x64-v4` build configs enabling AVX-512F/BW/CD/DQ/VL for compiler auto-vectorization of non-hot code paths. Native builds auto-select highest variant (v4 > v3 > baseline).
 - **Output directories renamed**: `bin/x64-zig*` → `bin/x64-llvm*`, `bin/arm64-zig` → `bin/arm64-llvm`.
-- **`-frename-registers`**: Better register allocation for improved ILP.
-- **`-fweb`**: More SSA temporaries for register allocation quality.
 - **`-fno-stack-protector`**: Removes stack canary checks from every function (acceptable for stress tool).
 - **`-fomit-frame-pointer`**: Frees RBP as GP register on x86-64.
 - **`-fno-exceptions`**: Disables C++ exception handling entirely (no try/catch/throwing code in codebase). Removes personality functions, landing pads, and exception tables — improves icache density. Zero risk.
 - **`-fno-semantic-interposition`**: Prevents symbol interposition, allowing more aggressive inlining (complementary to LTO).
 - **Linux linker flags**: `-Wl,--sort-common,--sort-section=alignment` for better cache locality; `-Wl,--gc-sections` to remove unreferenced sections (requires `-ffunction-sections`/`-fdata-sections`).
-- **`-funroll-all-loops` / `-fpeel-loops`**: Unrolls all loops aggressively; peels prologue/epilogue for better vector alignment.
 - **`-mprefer-vector-width=512`**: Forces 512-bit ZMM register usage on x86_64_v4 targets for all auto-vectorized loops (init, golden verify).
+- **REMOVED 2026-05-23**: `-frename-registers`, `-fweb`, `-funroll-all-loops`, `-fpeel-loops`, `-fcf-protection=full`. These flags made the code too efficient (fewer cycles/iteration), reducing sustained power draw. The online release uses vanilla `-O3` without these. For a stress test, less efficient code draws more power.
 - **PGO build support**: `--pgo-gen` and `--pgo-use` flags for profile-guided optimization workflow (2-pass build).
 - **Help text**: Added `v4` target listing and PGO workflow documentation.
 

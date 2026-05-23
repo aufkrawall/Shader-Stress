@@ -1,5 +1,11 @@
 # Recent Changes Log
 
+## 2026-05-23 — v2: Strip extra optimization flags, add --perf-stats
+
+- **build.py**: Removed `-frename-registers`, `-fweb`, `-funroll-all-loops`, `-fpeel-loops`, `-fcf-protection=full`. These made code too efficient (fewer cycles/iter), reducing sustained power draw. Online release uses vanilla `-O3`.
+- **New `--perf-stats` command**: Runs each workload with RDTSC cycle counting and prints cycles/iteration. Useful for diagnosing stall sources without external tools.
+- **Wiki updated**: opt-audit.md documents removed flags.
+
 ## 2026-05-23 — Reverted workload over-optimization; matched proven online design for max power
 
 - **Root cause**: Previous pure reg-reg pivot (SSE2/NEON) and L1-traffic additions (AVX2) empirically REDUCED power draw vs the online GitHub release. Analysis revealed that: (1) removing memory WORK calls left load/store ports (2/3/4) underutilized, (2) adding shuffles/FMAs bloated the loop body causing µop cache pressure, (3) replacing integer division with multiply-XOR reduced pipeline backpressure.
