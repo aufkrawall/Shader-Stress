@@ -911,7 +911,7 @@ static bool StartLHM() {
   GetModuleFileNameW(NULL, ourPath, MAX_PATH);
   wchar_t* lastSlash = wcsrchr(ourPath, L'\\');
   if (!lastSlash) return false;
-  wcscpy(lastSlash + 1, L"vendor\\lhm\\LibreHardwareMonitor.exe");
+  wcscpy(lastSlash + 1, L"LibreHardwareMonitor.exe");
 
   // Check if already running
   HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
