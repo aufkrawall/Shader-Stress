@@ -431,6 +431,7 @@ uint64_t UnsafeRunWorkload(uint64_t seed, int complexity,
 uint64_t SafeRunWorkload(uint64_t seed, int complexity,
                           const StressConfig &config, int threadIdx);
 void RunPerfStats();
+void RunMeasurePower();
 
 struct GoldenValues {
   uint64_t values[5] = {}; // indexed by WorkloadType (0=auto unused, 1-4)

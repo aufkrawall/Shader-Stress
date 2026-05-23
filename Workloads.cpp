@@ -887,6 +887,121 @@ void RunPerfStats() {
 #endif
 }
 
+// ============================================================================
+// Power Measurement — reads MSR_PKG_ENERGY_STATUS via WinRing0 driver
+// Works when Core Temp (or any WinRing0-based tool) is running elevated.
+// ============================================================================
+#if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+// AMD MSR for package energy (Zen 3)
+#define MSR_PKG_ENERGY 0xC001029BU
+
+// Attempt to open WinRing0 device with multiple known device names
+static HANDLE OpenWinRing0() {
+  const wchar_t* devices[] = {
+    L"\\\\.\\WinRing0_1_2_0",
+    L"\\\\.\\WinRing0x64",
+    L"\\\\.\\WinRing0",
+  };
+  for (auto d : devices) {
+    HANDLE h = CreateFileW(d, GENERIC_READ | GENERIC_WRITE, 0, NULL,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h != INVALID_HANDLE_VALUE) return h;
+  }
+  return INVALID_HANDLE_VALUE;
+}
+
+// Read MSR via WinRing0 IOCTL. Tries multiple known IOCTL codes.
+static bool ReadMsr(HANDLE h, uint32_t reg, uint64_t* val) {
+  // IOCTL variants used by different WinRing0 versions
+  DWORD codes[] = { 0x80002040, 0x80002084, 0x00222084 };
+  struct { uint32_t reg; uint32_t hi; uint32_t lo; } buf = { reg, 0, 0 };
+  for (auto code : codes) {
+    DWORD ret = 0;
+    if (DeviceIoControl(h, code, &buf, sizeof(buf),
+                        &buf, sizeof(buf), &ret, NULL)) {
+      *val = ((uint64_t)buf.hi << 32) | buf.lo;
+      return true;
+    }
+  }
+  return false;
+}
+#endif
+
+NOINLINE
+void RunMeasurePower() {
+#if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
+  HANDLE h = OpenWinRing0();
+  bool hasDriver = (h != INVALID_HANDLE_VALUE);
+
+  if (!hasDriver) {
+    printf("WinRing0 driver not found.\n");
+    printf("Run Core Temp as administrator first to load the MSR driver.\n");
+    printf("Falling back to perf-stats (no power data).\n\n");
+    RunPerfStats();
+    return;
+  }
+
+  StressConfig cfg = {};
+  uint64_t seed = 42;
+  int complexity = 50000;
+
+  struct { const char* name; uint64_t (*func)(uint64_t, int, const StressConfig&); bool needsAVX512; }
+  tests[] = {
+    {"scalar-sim", RunRealisticCompilerSim_V3, false},
+    {"scalar",     RunHyperStress_Scalar,       false},
+    {"avx2",       RunHyperStress_AVX2,         false},
+    {"avx512",     RunHyperStress_AVX512,       true},
+  };
+
+  // Read energy counter: power = delta_energy / delta_time
+  // AMD MSR_PKG_ENERGY_STATUS: each unit = 15.3 uJ / (2^power_unit)
+  // power_unit is typically 3 → unit = 1.9125 uJ
+  // We read twice to compute delta, sampling for ~4 seconds per workload
+  constexpr int SAMPLES = 8;
+  constexpr int SAMPLE_MS = 500;
+  constexpr double ENERGY_PER_UNIT = 15.3e-6 / (double)(1 << 3); // ~1.9125 uJ
+
+  for (auto& t : tests) {
+    if (t.needsAVX512 && !g_Cpu.hasAVX512F) {
+      printf("  %-10s: skipped (no AVX-512)\n", t.name);
+      continue;
+    }
+
+    t.func(seed, 10, cfg);
+
+    double watts = 0;
+    int validSamples = 0;
+
+    for (int s = 0; s < SAMPLES; s++) {
+      uint64_t e0 = 0, e1 = 0;
+      if (!ReadMsr(h, MSR_PKG_ENERGY, &e0)) break;
+      Sleep(SAMPLE_MS);
+      if (!ReadMsr(h, MSR_PKG_ENERGY, &e1)) break;
+
+      uint64_t delta = (e1 - e0) & 0xFFFFFFFFULL;
+      double joules = (double)delta * ENERGY_PER_UNIT;
+      double w = joules / (SAMPLE_MS / 1000.0);
+      if (w > 0 && w < 1000) { watts += w; validSamples++; }
+    }
+
+    if (validSamples > 0) {
+      printf("  %-10s: %.1f W avg (%d samples)\n", t.name,
+             watts / validSamples, validSamples);
+    } else {
+      printf("  %-10s: power reading failed\n", t.name);
+    }
+    fflush(stdout);
+  }
+
+  CloseHandle(h);
+#else
+  printf("  --measure only supported on x86-64 Windows with WinRing0\n");
+#endif
+}
+
 // --- Workload Dispatcher ---
 // noinline prevents LTO from inlining target-specific workloads into shared code
 NOINLINE

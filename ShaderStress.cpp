@@ -34,6 +34,7 @@ using namespace std::chrono_literals;
 
 static int RunHashRoundtripCommand();
 static int RunPerfStatsCommand();
+static int RunMeasureCommand();
 
 namespace {
 
@@ -57,6 +58,7 @@ struct CliOptions {
   bool reproRequested = false;
   bool hashRoundtripRequested = false;
   bool perfStatsRequested = false;
+  bool measureRequested = false;
   bool hasMode = false;
   bool hasIsa = false;
   bool hasDuration = false;
@@ -328,6 +330,7 @@ static void PrintCliHelp() {
   std::cout << "                           Run one reproducible workload case.\n";
   std::cout << "  --hash-roundtrip         Internal: verify hash encode/decode roundtrip.\n";
   std::cout << "  --perf-stats             Run all workloads and print RDTSC cycle counts.\n";
+  std::cout << "  --measure                Measure CPU package power (needs WinRing0 driver, e.g. from Core Temp).\n";
   std::cout << "  --no-avx512              Disable AVX-512 use.\n";
   std::cout << "  --no-avx2                Disable AVX2 use.\n";
   std::cout << "  --quiet                  Suppress the live dashboard and startup banner.\n";
@@ -479,6 +482,11 @@ static CliParseResult ParseCliArgs(const std::vector<std::wstring> &args) {
     }
     if (lowered == L"--perf-stats") {
       result.options.perfStatsRequested = true;
+      result.options.runRequested = true;
+      continue;
+    }
+    if (lowered == L"--measure") {
+      result.options.measureRequested = true;
       result.options.runRequested = true;
       continue;
     }
@@ -786,6 +794,15 @@ static void PrintVerifyResult(const std::wstring &hash, const HashResult &result
 static int RunPerfStatsCommand() {
   printf("Performance statistics (complexity=1000, seed=42):\n");
   RunPerfStats();
+  return (int)CliExitCode::Success;
+}
+
+static int RunMeasureCommand() {
+#if defined(_WIN32)
+  RunMeasurePower();
+#else
+  printf("--measure is Windows-only (needs WinRing0 MSR driver)\n");
+#endif
   return (int)CliExitCode::Success;
 }
 
@@ -1155,6 +1172,9 @@ static int RunCliCommand(CliOptions options, const CliEnvironment &environment,
   }
   if (options.perfStatsRequested) {
     return RunPerfStatsCommand();
+  }
+  if (options.measureRequested) {
+    return RunMeasureCommand();
   }
   if (options.verifyRequested) {
     return RunVerifyCommand(options);
