@@ -302,8 +302,8 @@ def build_windows_target(config):
             "-o", str(exe_path),
             "-Wl,--subsystem,windows",
             "-Wl,--gc-sections",
-            "-luser32", "-lgdi32", "-ldwmapi", "-lshcore",
-            "-lshell32", "-lole32", "-ldbghelp",
+        "-luser32", "-lgdi32", "-ldwmapi", "-lshcore",
+        "-lshell32", "-lole32", "-loleaut32", "-lwbemuuid", "-ldbghelp",
         ]
 
         cmd = [c for c in cmd if c]

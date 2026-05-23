@@ -888,136 +888,124 @@ void RunPerfStats() {
 }
 
 // ============================================================================
-// CPU Package Power Sampling
-// Tries: (1) Windows Energy Meter API, (2) WinRing0 DLL (from Core Temp)
-// Non-blocking: returns -1.0 on first call, then power in watts on subsequent.
+// CPU Package Power Sampling via LibreHardwareMonitor WMI
+// Starts LHM in background (auto-installs PawnIO driver on admin), queries
+// its WMI namespace for CPU Package Power.
 // ============================================================================
-#if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
+#if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <tlhelp32.h>
+#include <comdef.h>
+#include <Wbemidl.h>
+#pragma comment(lib, "wbemuuid.lib")
 
-#define MSR_PKG_ENERGY 0xC001029BU
-
-// Lazy-init state
-static bool g_powerInited = false;
-static bool g_useEnergyApi = false;
-static bool g_useWinRing0 = false;
-
-// Energy Meter API function pointers
-typedef DWORD (WINAPI *OpenMeter_t)(HANDLE, LPCWSTR, PHANDLE);
-typedef DWORD (WINAPI *GetEnergy_t)(HANDLE, PULONGLONG);
-typedef DWORD (WINAPI *CloseMeter_t)(HANDLE);
-static OpenMeter_t  pOpenMeter  = NULL;
-static GetEnergy_t  pGetEnergy  = NULL;
-static CloseMeter_t pCloseMeter = NULL;
-
-// WinRing0 cached function pointer
-static BOOL (WINAPI *g_Rdmsr)(DWORD, DWORD*, DWORD*) = NULL;
-
-// Cached energy/timestamp for delta calculation
-static uint64_t g_lastEnergy = 0;
+static bool g_lhmInited = false;
+static bool g_lhmOk = false;
+static IWbemServices* g_pSvc = NULL;
+static HANDLE g_lhmProcess = NULL;
 static uint64_t g_lastTick = 0;
-static bool g_hasLast = false;
 
-static void InitPowerMeasurement() {
-  // Try Energy Meter API first
-  HMODULE m = LoadLibraryW(L"powrprof.dll");
-  if (m) {
-    pOpenMeter  = (OpenMeter_t)GetProcAddress(m, "PowerOpenEnergyMeter");
-    pGetEnergy  = (GetEnergy_t)GetProcAddress(m, "PowerGetActualEnergy");
-    pCloseMeter = (CloseMeter_t)GetProcAddress(m, "PowerCloseEnergyMeter");
-    if (pOpenMeter && pGetEnergy && pCloseMeter) g_useEnergyApi = true;
-  }
-  if (g_useEnergyApi) { g_powerInited = true; return; }
+static bool StartLHM() {
+  wchar_t ourPath[MAX_PATH];
+  GetModuleFileNameW(NULL, ourPath, MAX_PATH);
+  wchar_t* lastSlash = wcsrchr(ourPath, L'\\');
+  if (!lastSlash) return false;
+  wcscpy(lastSlash + 1, L"vendor\\lhm\\LibreHardwareMonitor.exe");
 
-  // Fallback: find WinRing0 DLL by scanning all loaded modules
-  HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
+  // Check if already running
+  HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
   if (snap != INVALID_HANDLE_VALUE) {
-    MODULEENTRY32W me = { sizeof(me) };
-    if (Module32FirstW(snap, &me)) do {
-      if (wcsstr(me.szModule, L"WinRing0") || wcsstr(me.szModule, L"WinRing")) {
-        HMODULE dll = LoadLibraryW(me.szExePath);
-        if (dll) {
-          g_Rdmsr = (BOOL (WINAPI*)(DWORD, DWORD*, DWORD*))GetProcAddress(dll, "ReadMsr");
-          if (g_Rdmsr) { g_useWinRing0 = true; break; }
-          FreeLibrary(dll);
-        }
+    PROCESSENTRY32W pe = { sizeof(pe) };
+    if (Process32FirstW(snap, &pe)) do {
+      if (wcsstr(pe.szExeFile, L"LibreHardwareMonitor")) {
+        CloseHandle(snap); return true;
       }
-    } while (Module32NextW(snap, &me));
+    } while (Process32NextW(snap, &pe));
     CloseHandle(snap);
   }
 
-  // Last resort: try by path
-  if (!g_useWinRing0) {
-    const wchar_t* paths[] = {
-      L"WinRing0x64.dll", L"WinRing0.dll",
-      L"C:\\Program Files\\Core Temp\\WinRing0x64.dll",
-      L"C:\\Program Files (x86)\\Core Temp\\WinRing0x64.dll",
-    };
-    for (auto p : paths) {
-      HMODULE dll = LoadLibraryW(p);
-      if (dll) {
-        g_Rdmsr = (BOOL (WINAPI*)(DWORD, DWORD*, DWORD*))GetProcAddress(dll, "ReadMsr");
-        if (g_Rdmsr) { g_useWinRing0 = true; break; }
-        FreeLibrary(dll);
-      }
-    }
+  STARTUPINFOW si = { sizeof(si), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+  si.dwFlags = STARTF_USESHOWWINDOW;
+  si.wShowWindow = SW_HIDE;
+  PROCESS_INFORMATION pi;
+  if (CreateProcessW(ourPath, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+    g_lhmProcess = pi.hProcess; CloseHandle(pi.hThread);
+    return true;
   }
-  g_powerInited = true;
+  return false;
+}
+
+static bool ConnectWmi() {
+  HRESULT hr = CoInitializeEx(0, COINIT_MULTITHREADED);
+  if (FAILED(hr)) return false;
+
+  IWbemLocator* pLoc = NULL;
+  hr = CoCreateInstance(CLSID_WbemLocator, 0, CLSCTX_INPROC_SERVER,
+                         IID_IWbemLocator, (void**)&pLoc);
+  if (FAILED(hr)) { CoUninitialize(); return false; }
+
+  hr = pLoc->ConnectServer(_bstr_t(L"root\\librehardwaremonitor"), NULL, NULL,
+                            0, NULL, 0, 0, &g_pSvc);
+  pLoc->Release();
+  return SUCCEEDED(hr);
+}
+
+static void InitPowerMeasurement() {
+  if (g_lhmInited) return;
+  g_lhmInited = true;
+
+  if (!StartLHM()) return;
+  // Poll WMI up to 8 seconds for sensors
+  for (int i = 0; i < 40 && !g_lhmOk; i++) {
+    if (!g_pSvc && !ConnectWmi()) { Sleep(200); continue; }
+    IEnumWbemClassObject* pEnum = NULL;
+    HRESULT hr = g_pSvc->ExecQuery(_bstr_t(L"WQL"),
+      _bstr_t(L"SELECT * FROM Sensor WHERE SensorType='Power'"),
+      WBEM_FLAG_FORWARD_ONLY, NULL, &pEnum);
+    if (SUCCEEDED(hr)) {
+      IWbemClassObject* pObj = NULL;
+      ULONG ret = 0;
+      if (SUCCEEDED(pEnum->Next(WBEM_INFINITE, 1, &pObj, &ret)) && ret > 0) {
+        g_lhmOk = true;
+        pObj->Release();
+      }
+      pEnum->Release();
+    }
+    if (!g_lhmOk) Sleep(200);
+  }
 }
 #endif
 
 double SampleCpuPackagePower() {
-#if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
-  if (!g_powerInited) InitPowerMeasurement();
+#if defined(_WIN32)
+  if (!g_lhmInited) InitPowerMeasurement();
+  if (!g_lhmOk || !g_pSvc) return -1.0;
 
   uint64_t tick = GetTickCount64();
+  if (tick - g_lastTick < 250) return -1.0;
+  g_lastTick = tick;
 
-  // Energy Meter API: non-blocking via stored delta
-  if (g_useEnergyApi) {
-    if (!g_hasLast || tick - g_lastTick >= 250) {
-      HANDLE hMeter = NULL;
-      if (pOpenMeter(NULL, NULL, &hMeter) == ERROR_SUCCESS) {
-        ULONGLONG e = 0;
-        if (pGetEnergy(hMeter, &e) == ERROR_SUCCESS) {
-          if (g_hasLast && tick > g_lastTick) {
-            int64_t delta = (int64_t)(e - g_lastEnergy);
-            double secs = (double)(tick - g_lastTick) / 1000.0;
-            if (secs > 0.1 && delta >= 0) {
-              double wh = (double)delta / 3600000.0;
-              double w = wh * 3600.0 / secs;
-              if (w > 0 && w < 1000) { g_lastEnergy = e; g_lastTick = tick; return w; }
-            }
-          }
-          g_lastEnergy = e; g_lastTick = tick; g_hasLast = true;
-        }
-        pCloseMeter(hMeter);
-      }
-    }
-    return -1.0;
-  }
+  IEnumWbemClassObject* pEnum = NULL;
+  HRESULT hr = g_pSvc->ExecQuery(_bstr_t(L"WQL"),
+    _bstr_t(L"SELECT * FROM Sensor WHERE SensorType='Power' AND "
+            L"(Name LIKE '%CPU%' OR Name LIKE '%Package%')"),
+    WBEM_FLAG_FORWARD_ONLY, NULL, &pEnum);
+  if (FAILED(hr)) return -1.0;
 
-  // WinRing0: non-blocking via stored MSR energy delta
-  if (g_useWinRing0 && g_Rdmsr) {
-    if (!g_hasLast || tick - g_lastTick >= 250) {
-      DWORD lo = 0, hi = 0;
-      if (g_Rdmsr(MSR_PKG_ENERGY, &lo, &hi)) {
-        uint64_t energy = ((uint64_t)hi << 32) | lo;
-        if (g_hasLast && tick > g_lastTick) {
-          uint64_t delta = (energy - g_lastEnergy) & 0xFFFFFFFFULL;
-          double secs = (double)(tick - g_lastTick) / 1000.0;
-          if (secs > 0.1 && delta > 0) {
-            double joules = (double)delta * 15.3e-6 / 8.0;
-            double w = joules / secs;
-            if (w > 0 && w < 1000) { g_lastEnergy = energy; g_lastTick = tick; return w; }
-          }
-        }
-        g_lastEnergy = energy; g_lastTick = tick; g_hasLast = true;
-      }
+  IWbemClassObject* pObj = NULL;
+  ULONG ret = 0;
+  double watts = -1.0;
+  if (SUCCEEDED(pEnum->Next(WBEM_INFINITE, 1, &pObj, &ret)) && ret > 0) {
+    VARIANT vt; VariantInit(&vt);
+    if (SUCCEEDED(pObj->Get(L"Value", 0, &vt, NULL, NULL)) && vt.vt == VT_R8) {
+      watts = vt.dblVal;
     }
-    return -1.0;
+    VariantClear(&vt);
+    pObj->Release();
   }
+  pEnum->Release();
+  if (watts > 0 && watts < 1000) return watts;
 #endif
   return -1.0;
 }
