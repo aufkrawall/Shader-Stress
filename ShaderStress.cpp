@@ -32,6 +32,9 @@
 
 using namespace std::chrono_literals;
 
+static int RunHashRoundtripCommand();
+static int RunPerfStatsCommand();
+
 namespace {
 
 enum class CliExitCode : int {
@@ -53,6 +56,7 @@ struct CliOptions {
   bool verifyRequested = false;
   bool reproRequested = false;
   bool hashRoundtripRequested = false;
+  bool perfStatsRequested = false;
   bool hasMode = false;
   bool hasIsa = false;
   bool hasDuration = false;
@@ -323,6 +327,7 @@ static void PrintCliHelp() {
   std::cout << "  --repro <seed> <complexity>\n";
   std::cout << "                           Run one reproducible workload case.\n";
   std::cout << "  --hash-roundtrip         Internal: verify hash encode/decode roundtrip.\n";
+  std::cout << "  --perf-stats             Run all workloads and print RDTSC cycle counts.\n";
   std::cout << "  --no-avx512              Disable AVX-512 use.\n";
   std::cout << "  --no-avx2                Disable AVX2 use.\n";
   std::cout << "  --quiet                  Suppress the live dashboard and startup banner.\n";
@@ -472,6 +477,11 @@ static CliParseResult ParseCliArgs(const std::vector<std::wstring> &args) {
       result.options.hashRoundtripRequested = true;
       continue;
     }
+    if (lowered == L"--perf-stats") {
+      result.options.perfStatsRequested = true;
+      result.options.runRequested = true;
+      continue;
+    }
     if (lowered == L"--repro") {
       if (i + 2 >= args.size()) {
         AddError(result.errors, L"--repro requires both <seed> and <complexity>.");
@@ -499,10 +509,6 @@ static CliParseResult ParseCliArgs(const std::vector<std::wstring> &args) {
   }
 
   if (result.options.showHelp || result.options.showVersion) {
-    return result;
-  }
-
-  if (result.options.hashRoundtripRequested) {
     return result;
   }
 
@@ -775,6 +781,12 @@ static void PrintVerifyResult(const std::wstring &hash, const HashResult &result
   std::cout << "R0: " << result.r0 << " jobs/s" << '\n';
   std::cout << "R1: " << result.r1 << " jobs/s" << '\n';
   std::cout << "R2: " << result.r2 << " jobs/s" << '\n';
+}
+
+static int RunPerfStatsCommand() {
+  printf("Performance statistics (complexity=1000, seed=42):\n");
+  RunPerfStats();
+  return (int)CliExitCode::Success;
 }
 
 static int RunHashRoundtripCommand() {
@@ -1140,6 +1152,9 @@ static int RunCliCommand(CliOptions options, const CliEnvironment &environment,
 
   if (options.hashRoundtripRequested) {
     return RunHashRoundtripCommand();
+  }
+  if (options.perfStatsRequested) {
+    return RunPerfStatsCommand();
   }
   if (options.verifyRequested) {
     return RunVerifyCommand(options);

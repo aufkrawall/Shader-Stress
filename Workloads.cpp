@@ -837,6 +837,51 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
 #endif
 }
 
+// ============================================================================
+// Performance Statistics — runs each workload and prints RDTSC-based timing
+// ============================================================================
+NOINLINE
+void RunPerfStats() {
+#if defined(__x86_64__) || defined(_M_X64)
+  StressConfig cfg = {};
+  uint64_t seed = 42;
+  int complexity = 1000;
+
+  struct { const char* name; uint64_t (*func)(uint64_t, int, const StressConfig&); }
+  tests[] = {
+    {"scalar-sim", RunRealisticCompilerSim_V3},
+    {"scalar",     RunHyperStress_Scalar},
+    {"avx2",       RunHyperStress_AVX2},
+    {"avx512",     RunHyperStress_AVX512},
+  };
+
+  for (auto& t : tests) {
+    t.func(seed, 10, cfg);
+
+#if defined(_MSC_VER)
+    uint64_t tsc0 = __rdtsc();
+#else
+    uint64_t tsc0 = __builtin_ia32_rdtsc();
+#endif
+    uint64_t result = t.func(seed, complexity, cfg);
+#if defined(_MSC_VER)
+    uint64_t tsc1 = __rdtsc();
+#else
+    uint64_t tsc1 = __builtin_ia32_rdtsc();
+#endif
+
+    uint64_t total = tsc1 - tsc0;
+    uint64_t per_iter = total / (uint64_t)complexity;
+    printf("  %-10s: %llu cycles (%llu/iter), result=%016llx\n",
+           t.name, (unsigned long long)total, (unsigned long long)per_iter,
+           (unsigned long long)result);
+    fflush(stdout);
+  }
+#else
+  printf("  --perf-stats only supported on x86-64\n");
+#endif
+}
+
 // --- Workload Dispatcher ---
 // noinline prevents LTO from inlining target-specific workloads into shared code
 NOINLINE

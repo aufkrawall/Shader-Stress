@@ -249,10 +249,9 @@ def build_windows_target(config):
 
         base_cmd.extend([
             "-std=c++20", "-O3",
-            "-ffast-math", "-funroll-loops", "-funroll-all-loops", "-fpeel-loops",
+            "-ffast-math",
             "-fno-rtti",
             "-fno-exceptions",
-            "-frename-registers", "-fweb",
             "-fno-stack-protector",
             "-fomit-frame-pointer",
             "-ffunction-sections", "-fdata-sections",
@@ -293,9 +292,7 @@ def build_windows_target(config):
             "-municode",
         ])
 
-        # Control Flow Guard on x86_64 Windows
-        if "aarch64" not in target:
-            base_cmd.append("-fcf-protection=full")
+        # NOTE: -fcf-protection=full removed (extra branch checks reduce power draw)
 
         base_cmd.extend(defines)
         base_cmd.extend(src_files)
@@ -373,11 +370,10 @@ def build_zig_target(config):
 
         base_cmd.extend([
             "-std=c++20", "-O3",
-            "-ffast-math", "-funroll-loops", "-funroll-all-loops", "-fpeel-loops",
+            "-ffast-math",
             "-fno-rtti",
             "-fno-exceptions",
             "-fno-semantic-interposition",
-            "-frename-registers", "-fweb",
             "-fno-stack-protector",
             "-fomit-frame-pointer",
             "-ffunction-sections", "-fdata-sections",
