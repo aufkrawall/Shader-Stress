@@ -895,15 +895,17 @@ void RunPerfStats() {
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-// AMD MSR for package energy (Zen 3)
+// AMD MSR for package energy (Zen 3: MSR_PKG_ENERGY_STATUS)
 #define MSR_PKG_ENERGY 0xC001029BU
 
-// Attempt to open WinRing0 device with multiple known device names
-static HANDLE OpenWinRing0() {
+// Attempt to open MSR driver device (WinRing0 or Core Temp variants)
+static HANDLE OpenMsrDriver() {
   const wchar_t* devices[] = {
     L"\\\\.\\WinRing0_1_2_0",
     L"\\\\.\\WinRing0x64",
     L"\\\\.\\WinRing0",
+    L"\\\\.\\CoreTempDriver",
+    L"\\\\.\\CoreTempDrv",
   };
   for (auto d : devices) {
     HANDLE h = CreateFileW(d, GENERIC_READ | GENERIC_WRITE, 0, NULL,
@@ -913,16 +915,41 @@ static HANDLE OpenWinRing0() {
   return INVALID_HANDLE_VALUE;
 }
 
-// Read MSR via WinRing0 IOCTL. Tries multiple known IOCTL codes.
+// Read MSR via driver IOCTL. The canonical WinRing0 interface:
+//   Input:  DWORD - MSR address     (4 bytes)
+//   Output: QWORD - MSR value       (8 bytes, lo then hi)
+// Tries multiple IOCTL codes and byte-ordering variants.
 static bool ReadMsr(HANDLE h, uint32_t reg, uint64_t* val) {
-  // IOCTL variants used by different WinRing0 versions
-  DWORD codes[] = { 0x80002040, 0x80002084, 0x00222084 };
-  struct { uint32_t reg; uint32_t hi; uint32_t lo; } buf = { reg, 0, 0 };
+  // IOCTL variants: CTL_CODE(devtype, 0x821, METHOD_BUFFERED, FILE_ANY_ACCESS)
+  // devtype=0x22 → 0x00222084, devtype=0x800 → 0x08002084, devtype=0x8000 → 0x80002084
+  DWORD codes[] = { 0x00222084, 0x08002084, 0x80002084, 0x80002040 };
+  DWORD ret = 0;
+
+  // Variant A: input = 4-byte MSR address, output = 8-byte QWORD
   for (auto code : codes) {
-    DWORD ret = 0;
-    if (DeviceIoControl(h, code, &buf, sizeof(buf),
-                        &buf, sizeof(buf), &ret, NULL)) {
-      *val = ((uint64_t)buf.hi << 32) | buf.lo;
+    uint32_t inout[3] = { reg, 0, 0 }; // [reg, lo, hi]
+    ret = 0;
+    if (DeviceIoControl(h, code, inout, 4, inout, 12, &ret, NULL)) {
+      *val = ((uint64_t)inout[2] << 32) | inout[1];
+      return true;
+    }
+  }
+  // Variant B: same but 12-byte in/out
+  for (auto code : codes) {
+    uint32_t inout[3] = { reg, 0, 0 };
+    ret = 0;
+    if (DeviceIoControl(h, code, inout, 12, inout, 12, &ret, NULL)) {
+      *val = ((uint64_t)inout[1] << 32) | inout[2];
+      return true;
+    }
+  }
+  // Variant C: reversed byte order
+  for (auto code : codes) {
+    uint32_t inout[3] = { reg, 0, 0 };
+    ret = 0;
+    if (DeviceIoControl(h, code, inout, 12, inout, 12, &ret, NULL)) {
+      *val = ((uint64_t)inout[2] << 32) | inout[1];
+      *val = _byteswap_uint64(*val);
       return true;
     }
   }
@@ -933,7 +960,7 @@ static bool ReadMsr(HANDLE h, uint32_t reg, uint64_t* val) {
 NOINLINE
 void RunMeasurePower() {
 #if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
-  HANDLE h = OpenWinRing0();
+  HANDLE h = OpenMsrDriver();
   bool hasDriver = (h != INVALID_HANDLE_VALUE);
 
   if (!hasDriver) {
