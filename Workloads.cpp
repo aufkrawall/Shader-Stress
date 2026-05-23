@@ -942,27 +942,37 @@ static uint32_t MakeIoctl(uint16_t devType, uint16_t func, uint8_t method) {
 }
 
 static bool ReadMsrViaDevice(uint32_t reg, uint64_t* val) {
-  const wchar_t* devs[] = { L"\\\\.\\WinRing0_1_2_0", L"\\\\.\\WinRing0x64", L"\\\\.\\WinRing0" };
+  // Common DeviceType values used by WinRing0/CoreTemp drivers
+  DWORD devTypes[] = { 0x22, 0x800, 0x8000, 0x00, 0x07, 0x08, 0x09, 0x0A };
+  // Function codes covering WinRing0 (0x821) and CoreTemp (0x901) ranges
+  int fnStart = 0x800, fnEnd = 0x920;
+
+  const wchar_t* devs[] = {
+    L"\\\\.\\WinRing0_1_2_0", L"\\\\.\\WinRing0x64", L"\\\\.\\WinRing0",
+    L"\\\\.\\CoreTempDrv",    L"\\\\.\\CoreTempDriver",
+  };
   for (auto d : devs) {
     HANDLE h = CreateFileW(d, GENERIC_READ | GENERIC_WRITE, 0, NULL,
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) continue;
 
-    // Try device types 0x00-0xFF and function codes 0x000-0x3FF
-    for (int dt = 0; dt < 0x100 && h != INVALID_HANDLE_VALUE; dt++) {
-      for (int fn = 0; fn < 0x400 && h != INVALID_HANDLE_VALUE; fn++) {
+    for (auto dt : devTypes) {
+      for (int fn = fnStart; fn <= fnEnd; fn++) {
         for (int mt = 0; mt < 4; mt++) {
           DWORD code = MakeIoctl(dt, fn, mt);
           DWORD ret = 0;
-          struct { uint32_t reg; uint32_t lo; uint32_t hi; } io = { reg, 0, 0 };
-          if (DeviceIoControl(h, code, &io, 12, &io, 12, &ret, NULL) && ret >= 8) {
-            *val = ((uint64_t)io.hi << 32) | io.lo;
-            CloseHandle(h); return true;
+          // 8-byte in (addr+pad), 8-byte out (lo+hi)
+          uint64_t io = 0;
+          if (DeviceIoControl(h, code, &reg, 4, &io, 8, &ret, NULL) && ret >= 8) {
+            *val = io; CloseHandle(h); return true;
           }
-          uint64_t out = 0;
-          struct { uint32_t r; uint32_t p; } in8 = { reg, 0 };
-          if (DeviceIoControl(h, code, &in8, 8, &out, 8, &ret, NULL) && ret >= 8) {
-            *val = out; CloseHandle(h); return true;
+          if (DeviceIoControl(h, code, &reg, 8, &io, 8, &ret, NULL) && ret >= 8) {
+            *val = io; CloseHandle(h); return true;
+          }
+          // 12-byte in/out (reg+hi+lo)
+          struct { uint32_t r; uint32_t lo; uint32_t hi; } b = { reg, 0, 0 };
+          if (DeviceIoControl(h, code, &b, 12, &b, 12, &ret, NULL) && ret >= 8) {
+            *val = ((uint64_t)b.hi << 32) | b.lo; CloseHandle(h); return true;
           }
         }
       }
