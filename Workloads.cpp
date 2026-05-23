@@ -847,15 +847,20 @@ void RunPerfStats() {
   uint64_t seed = 42;
   int complexity = 1000;
 
-  struct { const char* name; uint64_t (*func)(uint64_t, int, const StressConfig&); }
+  struct { const char* name; uint64_t (*func)(uint64_t, int, const StressConfig&); bool needsAVX512; }
   tests[] = {
-    {"scalar-sim", RunRealisticCompilerSim_V3},
-    {"scalar",     RunHyperStress_Scalar},
-    {"avx2",       RunHyperStress_AVX2},
-    {"avx512",     RunHyperStress_AVX512},
+    {"scalar-sim", RunRealisticCompilerSim_V3, false},
+    {"scalar",     RunHyperStress_Scalar,       false},
+    {"avx2",       RunHyperStress_AVX2,         false},
+    {"avx512",     RunHyperStress_AVX512,       true},
   };
 
   for (auto& t : tests) {
+    if (t.needsAVX512 && !g_Cpu.hasAVX512F) {
+      printf("  %-10s: skipped (no AVX-512)\n", t.name);
+      fflush(stdout);
+      continue;
+    }
     t.func(seed, 10, cfg);
 
 #if defined(_MSC_VER)
