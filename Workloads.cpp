@@ -915,42 +915,41 @@ static HANDLE OpenMsrDriver() {
   return INVALID_HANDLE_VALUE;
 }
 
-// Read MSR via driver IOCTL. The canonical WinRing0 interface:
-//   Input:  DWORD - MSR address     (4 bytes)
-//   Output: QWORD - MSR value       (8 bytes, lo then hi)
-// Tries multiple IOCTL codes and byte-ordering variants.
+// Read MSR via driver IOCTL. Tries many variants.
 static bool ReadMsr(HANDLE h, uint32_t reg, uint64_t* val) {
-  // IOCTL variants: CTL_CODE(devtype, 0x821, METHOD_BUFFERED, FILE_ANY_ACCESS)
-  // devtype=0x22 → 0x00222084, devtype=0x800 → 0x08002084, devtype=0x8000 → 0x80002084
-  DWORD codes[] = { 0x00222084, 0x08002084, 0x80002084, 0x80002040 };
+  // IOCTL variants to try
+  DWORD codes[] = {
+    0x00222084, 0x08002084, 0x80002084, 0x80002040,
+    0x00222040, 0x08002040, 0x00222088, 0x08002088,
+    0x80002088, 0x00222080, 0x08002080, 0x80002080,
+    0x00222000, 0x08002000, 0x80002000,
+  };
   DWORD ret = 0;
 
-  // Variant A: input = 4-byte MSR address, output = 8-byte QWORD
+  // Buffer patterns to try: [reg, pad, pad], [reg, 0, 0, 0], etc.
+  struct { uint32_t reg; uint32_t pad; }     b8  = { reg, 0 };
+  struct { uint32_t reg; uint32_t lo; uint32_t hi; } b12 = { reg, 0, 0 };
+  uint64_t out8  = 0;
+  uint64_t out12[2] = { 0, 0 };
+
   for (auto code : codes) {
-    uint32_t inout[3] = { reg, 0, 0 }; // [reg, lo, hi]
-    ret = 0;
-    if (DeviceIoControl(h, code, inout, 4, inout, 12, &ret, NULL)) {
-      *val = ((uint64_t)inout[2] << 32) | inout[1];
-      return true;
+    // Pattern 1: 4-byte input, 8-byte output
+    b8.reg = reg; out8 = 0;
+    if (DeviceIoControl(h, code, &b8, 4, &out8, 8, &ret, NULL)) {
+      *val = out8; return true;
     }
-  }
-  // Variant B: same but 12-byte in/out
-  for (auto code : codes) {
-    uint32_t inout[3] = { reg, 0, 0 };
-    ret = 0;
-    if (DeviceIoControl(h, code, inout, 12, inout, 12, &ret, NULL)) {
-      *val = ((uint64_t)inout[1] << 32) | inout[2];
-      return true;
+    // Pattern 2: 8-byte input, 8-byte output
+    if (DeviceIoControl(h, code, &b8, 8, &out8, 8, &ret, NULL)) {
+      *val = out8; return true;
     }
-  }
-  // Variant C: reversed byte order
-  for (auto code : codes) {
-    uint32_t inout[3] = { reg, 0, 0 };
-    ret = 0;
-    if (DeviceIoControl(h, code, inout, 12, inout, 12, &ret, NULL)) {
-      *val = ((uint64_t)inout[2] << 32) | inout[1];
-      *val = _byteswap_uint64(*val);
-      return true;
+    // Pattern 3: 12-byte in/out (WinRing0 style: reg/hi/lo)
+    b12.reg = reg; b12.lo = 0; b12.hi = 0; out12[0] = 0; out12[1] = 0;
+    if (DeviceIoControl(h, code, &b12, 12, &b12, 12, &ret, NULL)) {
+      *val = ((uint64_t)b12.hi << 32) | b12.lo; return true;
+    }
+    // Pattern 4: 12-byte in/out swapped (reg/lo/hi)
+    if (DeviceIoControl(h, code, &b12, 12, &b12, 12, &ret, NULL)) {
+      *val = ((uint64_t)b12.lo << 32) | b12.hi; return true;
     }
   }
   return false;
@@ -964,12 +963,20 @@ void RunMeasurePower() {
   bool hasDriver = (h != INVALID_HANDLE_VALUE);
 
   if (!hasDriver) {
-    printf("WinRing0 driver not found.\n");
+    printf("MSR driver not found. Tried: WinRing0, CoreTempDriver.\n");
     printf("Run Core Temp as administrator first to load the MSR driver.\n");
     printf("Falling back to perf-stats (no power data).\n\n");
     RunPerfStats();
     return;
   }
+
+  printf("MSR driver opened OK (handle=%p). Testing MSR read ...\n", (void*)h);
+  uint64_t testVal = 0;
+  bool msrOk = ReadMsr(h, MSR_PKG_ENERGY, &testVal);
+  printf("  ReadMsr(0xC001029B): %s", msrOk ? "OK" : "FAILED");
+  if (msrOk) printf(" value=0x%llx\n", (unsigned long long)testVal);
+  else       printf(" (last error=%lu)\n", GetLastError());
+  fflush(stdout);
 
   StressConfig cfg = {};
   uint64_t seed = 42;
