@@ -34,7 +34,6 @@ using namespace std::chrono_literals;
 
 static int RunHashRoundtripCommand();
 static int RunPerfStatsCommand();
-static int RunMeasureCommand();
 
 namespace {
 
@@ -58,7 +57,7 @@ struct CliOptions {
   bool reproRequested = false;
   bool hashRoundtripRequested = false;
   bool perfStatsRequested = false;
-  bool measureRequested = false;
+
   bool hasMode = false;
   bool hasIsa = false;
   bool hasDuration = false;
@@ -330,7 +329,6 @@ static void PrintCliHelp() {
   std::cout << "                           Run one reproducible workload case.\n";
   std::cout << "  --hash-roundtrip         Internal: verify hash encode/decode roundtrip.\n";
   std::cout << "  --perf-stats             Run all workloads and print RDTSC cycle counts.\n";
-  std::cout << "  --measure                Measure CPU package power (needs WinRing0 driver, e.g. from Core Temp).\n";
   std::cout << "  --no-avx512              Disable AVX-512 use.\n";
   std::cout << "  --no-avx2                Disable AVX2 use.\n";
   std::cout << "  --quiet                  Suppress the live dashboard and startup banner.\n";
@@ -482,11 +480,6 @@ static CliParseResult ParseCliArgs(const std::vector<std::wstring> &args) {
     }
     if (lowered == L"--perf-stats") {
       result.options.perfStatsRequested = true;
-      result.options.runRequested = true;
-      continue;
-    }
-    if (lowered == L"--measure") {
-      result.options.measureRequested = true;
       result.options.runRequested = true;
       continue;
     }
@@ -797,15 +790,6 @@ static int RunPerfStatsCommand() {
   return (int)CliExitCode::Success;
 }
 
-static int RunMeasureCommand() {
-#if defined(_WIN32)
-  RunMeasurePower();
-#else
-  printf("--measure is Windows-only (needs WinRing0 MSR driver)\n");
-#endif
-  return (int)CliExitCode::Success;
-}
-
 static int RunHashRoundtripCommand() {
   // Verify that GenerateBenchmarkHash -> ValidateBenchmarkHash roundtrips correctly.
   const uint64_t r0 = 12345, r1 = 23456, r2 = 34567;
@@ -984,7 +968,12 @@ static CliDashboardLayout RenderCompactDashboardFrame() {
 static void UpdateCompactDashboard(const CliDashboardLayout &layout) {
   WriteDashboardField(5, 12, FmtNum(g_App.shaders.load()));
   WriteDashboardField(8, 16, FmtNum(g_App.currentRate.load()));
-  WriteDashboardField(9, 7, FmtTime(g_App.elapsed.load()));
+
+  double cpuW = SampleCpuPackagePower();
+  if (cpuW > 0) {
+    WriteDashboardField(9, 16, std::to_wstring((int)cpuW) + L" W");
+  }
+  WriteDashboardField(10, 7, FmtTime(g_App.elapsed.load()));
 
   if (layout.benchmark) {
     WriteDashboardField(12, 13,
@@ -1045,7 +1034,10 @@ static void PrintFinalResults() {
   std::cout << "Total Jobs: " << (unsigned long long)g_App.shaders.load()
             << "\n";
   std::cout << "Avg Rate: " << (unsigned long long)g_App.currentRate.load()
-            << " jobs/s\n";
+             << " jobs/s\n";
+  double cpuW = SampleCpuPackagePower();
+  if (cpuW > 0)
+    std::cout << "CPU Package Power: " << (int)cpuW << " W\n";
   std::cout << "Errors: " << (unsigned long long)g_App.errors.load() << "\n";
 
   if (g_App.mode == 0) {
@@ -1172,9 +1164,6 @@ static int RunCliCommand(CliOptions options, const CliEnvironment &environment,
   }
   if (options.perfStatsRequested) {
     return RunPerfStatsCommand();
-  }
-  if (options.measureRequested) {
-    return RunMeasureCommand();
   }
   if (options.verifyRequested) {
     return RunVerifyCommand(options);
