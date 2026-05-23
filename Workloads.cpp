@@ -888,64 +888,86 @@ void RunPerfStats() {
 }
 
 // ============================================================================
-// Power Measurement — reads CPU package power via WinRing0 MSR driver
+// Power Measurement — reads CPU package power via WinRing0 or Windows Energy API
 // ============================================================================
 #if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-
 // AMD MSR for package energy (Zen 3: MSR_PKG_ENERGY_STATUS)
 #define MSR_PKG_ENERGY 0xC001029BU
 
-// Try to open MSR driver (WinRing0 or Core Temp variants)
-static HANDLE g_DebugDevice = INVALID_HANDLE_VALUE;
-static wchar_t g_DebugName[64] = L"";
+// --- Windows Energy Meter API (no driver needed) ---
+// Functions: PowerOpenEnergyMeter, PowerGetActualEnergy, PowerCloseEnergyMeter
+// Available on Windows 10 1903+ via powrprof.dll/powerbase.h
+typedef DWORD (WINAPI *OpenMeter_t)(HANDLE, LPCWSTR, PHANDLE);
+typedef DWORD (WINAPI *GetEnergy_t)(HANDLE, PULONGLONG);
+typedef DWORD (WINAPI *CloseMeter_t)(HANDLE);
+static OpenMeter_t  pOpenMeter  = NULL;
+static GetEnergy_t  pGetEnergy  = NULL;
+static CloseMeter_t pCloseMeter = NULL;
 
-static HANDLE OpenMsrDriver() {
-  const wchar_t* devs[] = {
-    L"\\\\.\\WinRing0_1_2_0", L"\\\\.\\WinRing0x64", L"\\\\.\\WinRing0",
-    L"\\\\.\\CoreTempDriver", L"\\\\.\\CoreTempDrv",
-    L"\\\\.\\CoreTemp",
-    L"\\\\.\\EnergyMeter", L"\\\\.\\Energy",
+static bool InitEnergyApi() {
+  HMODULE m = LoadLibraryW(L"powrprof.dll");
+  if (!m) return false;
+  pOpenMeter  = (OpenMeter_t)GetProcAddress(m, "PowerOpenEnergyMeter");
+  pGetEnergy  = (GetEnergy_t)GetProcAddress(m, "PowerGetActualEnergy");
+  pCloseMeter = (CloseMeter_t)GetProcAddress(m, "PowerCloseEnergyMeter");
+  return pOpenMeter && pGetEnergy && pCloseMeter;
+}
+
+// --- WinRing0 via DLL (most reliable — no IOCTL guessing) ---
+static bool ReadMsrViaDll(uint32_t reg, uint64_t* val) {
+  // Try loading WinRing0 DLL from common install paths
+  const wchar_t* dlls[] = {
+    L"WinRing0x64.dll", L"WinRing0.dll",
+    L"C:\\Program Files\\Core Temp\\WinRing0x64.dll",
+    L"C:\\Program Files (x86)\\Core Temp\\WinRing0x64.dll",
   };
+  for (auto dllPath : dlls) {
+    HMODULE dll = LoadLibraryW(dllPath);
+    if (!dll) continue;
+    BOOL (WINAPI *Rdmsr)(DWORD, DWORD*, DWORD*) =
+        (BOOL (WINAPI*)(DWORD, DWORD*, DWORD*))GetProcAddress(dll, "ReadMsr");
+    if (Rdmsr) {
+      DWORD lo = 0, hi = 0;
+      if (Rdmsr(reg, &lo, &hi)) { *val = ((uint64_t)hi << 32) | lo; return true; }
+    }
+  }
+  return false;
+}
+
+// --- WinRing0 via driver IOCTL ---
+static uint32_t MakeIoctl(uint16_t devType, uint16_t func, uint8_t method) {
+  return (devType << 16) | (func << 2) | method;
+}
+
+static bool ReadMsrViaDevice(uint32_t reg, uint64_t* val) {
+  const wchar_t* devs[] = { L"\\\\.\\WinRing0_1_2_0", L"\\\\.\\WinRing0x64", L"\\\\.\\WinRing0" };
   for (auto d : devs) {
     HANDLE h = CreateFileW(d, GENERIC_READ | GENERIC_WRITE, 0, NULL,
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h != INVALID_HANDLE_VALUE) {
-      wcscpy(g_DebugName, d);
-      g_DebugDevice = h;
-      return h;
-    }
-  }
-  return INVALID_HANDLE_VALUE;
-}
+    if (h == INVALID_HANDLE_VALUE) continue;
 
-// Read MSR via driver IOCTL — brute-force all function codes 0x800-0x9FF
-static bool ReadMsr(HANDLE h, uint32_t reg, uint64_t* val) {
-  DWORD ret = 0;
-  int inSizes[] = {4, 8, 12};
-  int outSizes[] = {8, 12, 16};
-
-  // Generate all CTL_CODE(FILE_DEVICE_UNKNOWN=0x22, func, method=0-3, access=0)
-  // for function codes 0x800 through 0x9FF
-  for (int func = 0x800; func <= 0x9FF; func++) {
-    for (int method = 0; method < 4; method++) {
-      DWORD code = (0x22 << 16) | (0 << 14) | (func << 2) | method;
-      for (int is : inSizes) {
-        for (int os : outSizes) {
-          uint8_t in[32] = {}; uint8_t out[32] = {};
-          *(uint32_t*)in = reg;
-          ret = 0;
-          if (DeviceIoControl(h, code, in, is, out, os, &ret, NULL) && ret >= 8) {
-            // Extract QWORD from output at every offset
-            for (int off = 0; off + 8 <= (int)ret; off++) {
-              *val = *(uint64_t*)(out + off);
-              if (*val != 0 && *val != ~0ULL) return true;
-            }
+    // Try device types 0x00-0xFF and function codes 0x000-0x3FF
+    for (int dt = 0; dt < 0x100 && h != INVALID_HANDLE_VALUE; dt++) {
+      for (int fn = 0; fn < 0x400 && h != INVALID_HANDLE_VALUE; fn++) {
+        for (int mt = 0; mt < 4; mt++) {
+          DWORD code = MakeIoctl(dt, fn, mt);
+          DWORD ret = 0;
+          struct { uint32_t reg; uint32_t lo; uint32_t hi; } io = { reg, 0, 0 };
+          if (DeviceIoControl(h, code, &io, 12, &io, 12, &ret, NULL) && ret >= 8) {
+            *val = ((uint64_t)io.hi << 32) | io.lo;
+            CloseHandle(h); return true;
+          }
+          uint64_t out = 0;
+          struct { uint32_t r; uint32_t p; } in8 = { reg, 0 };
+          if (DeviceIoControl(h, code, &in8, 8, &out, 8, &ret, NULL) && ret >= 8) {
+            *val = out; CloseHandle(h); return true;
           }
         }
       }
     }
+    CloseHandle(h);
   }
   return false;
 }
@@ -954,25 +976,35 @@ static bool ReadMsr(HANDLE h, uint32_t reg, uint64_t* val) {
 NOINLINE
 void RunMeasurePower() {
 #if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
-  HANDLE h = OpenMsrDriver();
+  bool useEnergyApi = InitEnergyApi();
+  bool useMsr = false;
 
-  if (h == INVALID_HANDLE_VALUE) {
-    printf("No MSR driver found. Run Core Temp as administrator.\n");
-    printf("Falling back to perf-stats (no power data).\n\n");
+  if (useEnergyApi) {
+    printf("Using Windows Energy Meter API\n");
+  } else {
+    uint64_t dummy;
+    if (ReadMsrViaDll(MSR_PKG_ENERGY, &dummy)) {
+      printf("Using WinRing0 DLL\n");
+      useMsr = true;
+    } else if (ReadMsrViaDevice(MSR_PKG_ENERGY, &dummy)) {
+      printf("Using WinRing0 device IOCTL\n");
+      useMsr = true;
+    }
+  }
+
+  if (!useEnergyApi && !useMsr) {
+    uint64_t dummy;
+    bool dllOk = ReadMsrViaDll(MSR_PKG_ENERGY, &dummy);
+    bool devOk = false;
+    if (!dllOk) devOk = ReadMsrViaDevice(MSR_PKG_ENERGY, &dummy);
+    printf("No power measurement method available.\n");
+    printf("  Energy API: not available (needs Win 10 1903+)\n");
+    printf("  WinRing0 DLL: %s\n", dllOk ? "found but failed" : "not found");
+    printf("  WinRing0 device: %s\n", devOk ? "found but failed" : "not found");
+    printf("\nTry: run Core Temp as administrator, then re-run.\n\n");
     RunPerfStats();
     return;
   }
-
-  printf("Opened device: %S\n", g_DebugName);
-  printf("Testing MSR read ...\n");
-  uint64_t testVal = 0;
-  bool msrOk = ReadMsr(h, MSR_PKG_ENERGY, &testVal);
-  if (msrOk)
-    printf("  ReadMsr(0xC001029B) OK: value=0x%llx\n", (unsigned long long)testVal);
-  else
-    printf("  ReadMsr(0xC001029B): all %d IOCTL patterns failed (last error=%lu)\n",
-           512*4*3*3, GetLastError());
-  fflush(stdout);
 
   StressConfig cfg = {};
   uint64_t seed = 42;
@@ -986,14 +1018,6 @@ void RunMeasurePower() {
     {"avx512",     RunHyperStress_AVX512,       true},
   };
 
-  // Read energy counter: power = delta_energy / delta_time
-  // AMD MSR_PKG_ENERGY_STATUS: each unit = 15.3 uJ / (2^power_unit)
-  // power_unit is typically 3 → unit = 1.9125 uJ
-  // We read twice to compute delta, sampling for ~4 seconds per workload
-  constexpr int SAMPLES = 8;
-  constexpr int SAMPLE_MS = 500;
-  constexpr double ENERGY_PER_UNIT = 15.3e-6 / (double)(1 << 3); // ~1.9125 uJ
-
   for (auto& t : tests) {
     if (t.needsAVX512 && !g_Cpu.hasAVX512F) {
       printf("  %-10s: skipped (no AVX-512)\n", t.name);
@@ -1002,19 +1026,46 @@ void RunMeasurePower() {
 
     t.func(seed, 10, cfg);
 
+    // --- measure power ---
+    constexpr int SAMPLES = 8;
+    constexpr int SAMPLE_MS = 500;
     double watts = 0;
     int validSamples = 0;
 
     for (int s = 0; s < SAMPLES; s++) {
-      uint64_t e0 = 0, e1 = 0;
-      if (!ReadMsr(h, MSR_PKG_ENERGY, &e0)) break;
-      Sleep(SAMPLE_MS);
-      if (!ReadMsr(h, MSR_PKG_ENERGY, &e1)) break;
+      double w = 0;
+      bool ok = false;
 
-      uint64_t delta = (e1 - e0) & 0xFFFFFFFFULL;
-      double joules = (double)delta * ENERGY_PER_UNIT;
-      double w = joules / (SAMPLE_MS / 1000.0);
-      if (w > 0 && w < 1000) { watts += w; validSamples++; }
+      if (useEnergyApi) {
+        HANDLE hMeter = NULL;
+        if (pOpenMeter(NULL, NULL, &hMeter) == ERROR_SUCCESS) {
+          ULONGLONG e0, e1;
+          if (pGetEnergy(hMeter, &e0) == ERROR_SUCCESS) {
+            Sleep(SAMPLE_MS);
+            if (pGetEnergy(hMeter, &e1) == ERROR_SUCCESS) {
+              // Energy in milliwatt-hours → watts
+              double wh = (double)((int64_t)(e1 - e0)) / 3600000.0;
+              w = wh * 3600.0 / (SAMPLE_MS / 1000.0);
+              ok = true;
+            }
+          }
+          pCloseMeter(hMeter);
+        }
+      } else if (useMsr) {
+        uint64_t e0 = 0, e1 = 0;
+        bool ok0 = ReadMsrViaDll(MSR_PKG_ENERGY, &e0) || ReadMsrViaDevice(MSR_PKG_ENERGY, &e0);
+        Sleep(SAMPLE_MS);
+        bool ok1 = ReadMsrViaDll(MSR_PKG_ENERGY, &e1) || ReadMsrViaDevice(MSR_PKG_ENERGY, &e1);
+        if (ok0 && ok1) {
+          // AMD MSR: unit = 15.3 uJ / (2^power_unit), power_unit=3 → ~1.9125 uJ
+          uint64_t delta = (e1 - e0) & 0xFFFFFFFFULL;
+          double joules = (double)delta * 15.3e-6 / 8.0;
+          w = joules / (SAMPLE_MS / 1000.0);
+          if (w > 0 && w < 1000) ok = true;
+        }
+      }
+
+      if (ok) { watts += w; validSamples++; }
     }
 
     if (validSamples > 0) {
@@ -1026,9 +1077,9 @@ void RunMeasurePower() {
     fflush(stdout);
   }
 
-  CloseHandle(h);
+  // WinRing0 DLL/device handles are managed internally; no cleanup needed
 #else
-  printf("  --measure only supported on x86-64 Windows with WinRing0\n");
+  printf("  --measure only supported on x86-64 Windows\n");
 #endif
 }
 
