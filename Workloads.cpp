@@ -3,8 +3,9 @@
 #include <cstring>
 #include <vector>
 
-// Work buffer size: 256KB (32768 doubles). SSE2 and AVX-512 paths use it for
-// WORK macro data. AVX2 only uses it for init seeding (hot loop is pure reg-reg).
+// Work buffer size: 256KB (32768 doubles). SSE2/NEON/AVX2/AVX-512 all use it
+// only for init seeding and light L1-resident WORK calls (hot loops are mostly
+// pure reg-reg for maximum execution-port saturation at highest frequency).
 constexpr size_t WORK_BUF_ELEMS = 32768;
 // Alignment-safe MASK values derived from buffer size (must be power-of-two):
 // SSE2/NEON: clear lowest 1 bit  → 16-byte alignment
@@ -386,89 +387,91 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   uint64_t g8 = seed + 8, g9 = seed + 9, g10 = seed + 10, g11 = seed + 11;
   uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
   
-  int idx = 0;
-  // Ensure 16-byte alignment for NEON (2 doubles = 16 bytes)
   const int MASK = MASK_SSE2;
-  int iters = (int)std::min<uint64_t>((uint64_t)complexity * 280u, 2000000000u);
-  
+  int iters = (int)std::min<uint64_t>((uint64_t)complexity * 200u, 2000000000u);
+
+  // 4 L1-resident NEON WORK calls (always hit L1), then pure reg-reg compute
+  #define NEON_L1_WORK(r, off) \
+    r = vfmaq_f64(vld1q_f64(&memPtr[(off) & MASK]), r, mul); \
+    vst1q_f64(&memPtr[(off + 512) & MASK], r)
+
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
-    
-    // Prefetch next iterations' data ahead of time
-    int nextIdx = (idx + 96) & MASK;
-    int nextIdx2 = (idx + 192) & MASK;
-    __builtin_prefetch(&memPtr[nextIdx]);
-    __builtin_prefetch(&memPtr[(nextIdx + 512) & MASK]);
-    __builtin_prefetch(&memPtr[nextIdx2]);
-    __builtin_prefetch(&memPtr[(nextIdx2 + 512) & MASK]);
-    
-    // NEON: FMA read-modify-write (r = r*mul + mem[off])
-    #define NEON_WORK(r, off) \
-      r = vfmaq_f64(vld1q_f64(&memPtr[(idx + off) & MASK]), r, mul); \
-      vst1q_f64(&memPtr[(idx + off + 512) & MASK], r)
-    
-    NEON_WORK(r0, 0);   NEON_WORK(r1, 2);   NEON_WORK(r2, 4);   NEON_WORK(r3, 6);
-    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
-    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
-    
-    NEON_WORK(r4, 8);   NEON_WORK(r5, 10);  NEON_WORK(r6, 12);  NEON_WORK(r7, 14);
-    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
-    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
-    
-    NEON_WORK(r8, 16);  NEON_WORK(r9, 18);  NEON_WORK(r10, 20); NEON_WORK(r11, 22);
-    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
-    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
-    
-    NEON_WORK(r12, 24); NEON_WORK(r13, 26); NEON_WORK(r14, 28); NEON_WORK(r15, 30);
-    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
-    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
-    
-    NEON_WORK(r0, 32);  NEON_WORK(r1, 34);  NEON_WORK(r2, 36);  NEON_WORK(r3, 38);
-    NEON_WORK(r4, 40);  NEON_WORK(r5, 42);  NEON_WORK(r6, 44);  NEON_WORK(r7, 46);
-    NEON_WORK(r8, 48);  NEON_WORK(r9, 50);  NEON_WORK(r10, 52); NEON_WORK(r11, 54);
-    NEON_WORK(r12, 56); NEON_WORK(r13, 58); NEON_WORK(r14, 60); NEON_WORK(r15, 62);
-    
-    g8 = (g8 * 0x9E3779B97F4A7C15ULL) ^ (g9 >> 17) ^ (g10 << 13);
-    g9 = (g9 * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13);
-    
-    NEON_WORK(r0, 64);  NEON_WORK(r1, 66);  NEON_WORK(r2, 68);  NEON_WORK(r3, 70);
-    NEON_WORK(r4, 72);  NEON_WORK(r5, 74);  NEON_WORK(r6, 76);  NEON_WORK(r7, 78);
-    NEON_WORK(r8, 80);  NEON_WORK(r9, 82);  NEON_WORK(r10, 84); NEON_WORK(r11, 86);
-    NEON_WORK(r12, 88); NEON_WORK(r13, 90); NEON_WORK(r14, 92); NEON_WORK(r15, 94);
-    
-    // NEON shuffle: reverse 64-bit elements within each 128-bit vector
-    // vextq_f64(a, b, 1) = {a[1], b[0]}  →  (rN, rN, 1) = {rN[1], rN[0]}
-    #define NEON_SHUFFLE(r) r = vextq_f64(r, r, 1)
-    NEON_SHUFFLE(r0); NEON_SHUFFLE(r1); NEON_SHUFFLE(r2); NEON_SHUFFLE(r3);
-    NEON_SHUFFLE(r4); NEON_SHUFFLE(r5); NEON_SHUFFLE(r6); NEON_SHUFFLE(r7);
-    NEON_SHUFFLE(r8); NEON_SHUFFLE(r9); NEON_SHUFFLE(r10); NEON_SHUFFLE(r11);
-    NEON_SHUFFLE(r12); NEON_SHUFFLE(r13); NEON_SHUFFLE(r14); NEON_SHUFFLE(r15);
-    #undef NEON_SHUFFLE
-    
-    // Extra FMA pass: register-to-register rotating daisy chain (no memory, fills spare FMA cycles)
-    r0 = vfmaq_f64(r0, mul, r1);  r1 = vfmaq_f64(r1, mul, r2);
-    r2 = vfmaq_f64(r2, mul, r3);  r3 = vfmaq_f64(r3, mul, r4);
-    r4 = vfmaq_f64(r4, mul, r5);  r5 = vfmaq_f64(r5, mul, r6);
-    r6 = vfmaq_f64(r6, mul, r7);  r7 = vfmaq_f64(r7, mul, r8);
-    r8 = vfmaq_f64(r8, mul, r9);  r9 = vfmaq_f64(r9, mul, r10);
+
+    // 4 L1-resident WORK calls — activate load/store ports
+    NEON_L1_WORK(r0, 0); NEON_L1_WORK(r1, 2); NEON_L1_WORK(r2, 4); NEON_L1_WORK(r3, 6);
+
+    // Heavier GPR chains
+    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13) ^ (g3 >> 5);
+    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13) ^ (g4 >> 5);
+    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13) ^ (g5 >> 5);
+    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13) ^ (g6 >> 5);
+    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13) ^ (g7 >> 5);
+    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13) ^ (g0 >> 5);
+    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13) ^ (g1 >> 5);
+    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13) ^ (g2 >> 5);
+    g8 = (g8 * 0x9E3779B97F4A7C15ULL) ^ (g9 >> 17) ^ (g10 << 13) ^ (g11 >> 5);
+    g9 = (g9 * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13) ^ (g12 >> 5);
+    g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13) ^ (g13 >> 5);
+    g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13) ^ (g14 >> 5);
+    g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13) ^ (g15 >> 5);
+    g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13) ^ (g0 >> 5);
+    g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g0 << 13) ^ (g1 >> 5);
+    g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13) ^ (g2 >> 5);
+
+    #undef NEON_L1_WORK
+
+    // 48 shuffles (3 rotations x 16)
+    r0 = vextq_f64(r0, r0, 1);  r1 = vextq_f64(r1, r1, 1);
+    r2 = vextq_f64(r2, r2, 1);  r3 = vextq_f64(r3, r3, 1);
+    r4 = vextq_f64(r4, r4, 1);  r5 = vextq_f64(r5, r5, 1);
+    r6 = vextq_f64(r6, r6, 1);  r7 = vextq_f64(r7, r7, 1);
+    r8 = vextq_f64(r8, r8, 1);  r9 = vextq_f64(r9, r9, 1);
+    r10 = vextq_f64(r10, r10, 1); r11 = vextq_f64(r11, r11, 1);
+    r12 = vextq_f64(r12, r12, 1); r13 = vextq_f64(r13, r13, 1);
+    r14 = vextq_f64(r14, r14, 1); r15 = vextq_f64(r15, r15, 1);
+    r0 = vextq_f64(r0, r0, 1);  r1 = vextq_f64(r1, r1, 1);
+    r2 = vextq_f64(r2, r2, 1);  r3 = vextq_f64(r3, r3, 1);
+    r4 = vextq_f64(r4, r4, 1);  r5 = vextq_f64(r5, r5, 1);
+    r6 = vextq_f64(r6, r6, 1);  r7 = vextq_f64(r7, r7, 1);
+    r8 = vextq_f64(r8, r8, 1);  r9 = vextq_f64(r9, r9, 1);
+    r10 = vextq_f64(r10, r10, 1); r11 = vextq_f64(r11, r11, 1);
+    r12 = vextq_f64(r12, r12, 1); r13 = vextq_f64(r13, r13, 1);
+    r14 = vextq_f64(r14, r14, 1); r15 = vextq_f64(r15, r15, 1);
+    r0 = vextq_f64(r0, r0, 1);  r1 = vextq_f64(r1, r1, 1);
+    r2 = vextq_f64(r2, r2, 1);  r3 = vextq_f64(r3, r3, 1);
+    r4 = vextq_f64(r4, r4, 1);  r5 = vextq_f64(r5, r5, 1);
+    r6 = vextq_f64(r6, r6, 1);  r7 = vextq_f64(r7, r7, 1);
+    r8 = vextq_f64(r8, r8, 1);  r9 = vextq_f64(r9, r9, 1);
+    r10 = vextq_f64(r10, r10, 1); r11 = vextq_f64(r11, r11, 1);
+    r12 = vextq_f64(r12, r12, 1); r13 = vextq_f64(r13, r13, 1);
+    r14 = vextq_f64(r14, r14, 1); r15 = vextq_f64(r15, r15, 1);
+
+    // 48 daisy-chain reg-reg FMAs (3 rotations)
+    r0 = vfmaq_f64(r0, mul, r1);   r1 = vfmaq_f64(r1, mul, r2);
+    r2 = vfmaq_f64(r2, mul, r3);   r3 = vfmaq_f64(r3, mul, r4);
+    r4 = vfmaq_f64(r4, mul, r5);   r5 = vfmaq_f64(r5, mul, r6);
+    r6 = vfmaq_f64(r6, mul, r7);   r7 = vfmaq_f64(r7, mul, r8);
+    r8 = vfmaq_f64(r8, mul, r9);   r9 = vfmaq_f64(r9, mul, r10);
     r10 = vfmaq_f64(r10, mul, r11); r11 = vfmaq_f64(r11, mul, r12);
     r12 = vfmaq_f64(r12, mul, r13); r13 = vfmaq_f64(r13, mul, r14);
     r14 = vfmaq_f64(r14, mul, r15); r15 = vfmaq_f64(r15, mul, r0);
-    
-    g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13);
-    g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13);
-    g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13);
-    g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13);
-    g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g0 << 13);
-    g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
-    
-    g0 ^= g8; g1 ^= g9; g2 ^= g10; g3 ^= g11;
-    g4 ^= g12; g5 ^= g13; g6 ^= g14; g7 ^= g15;
-    
-    #undef NEON_WORK
-    
-    // Increment by 96 (must be even to maintain alignment)
-    idx = (idx + 96) & MASK;
+    r0 = vfmaq_f64(r0, mul, r1);   r1 = vfmaq_f64(r1, mul, r2);
+    r2 = vfmaq_f64(r2, mul, r3);   r3 = vfmaq_f64(r3, mul, r4);
+    r4 = vfmaq_f64(r4, mul, r5);   r5 = vfmaq_f64(r5, mul, r6);
+    r6 = vfmaq_f64(r6, mul, r7);   r7 = vfmaq_f64(r7, mul, r8);
+    r8 = vfmaq_f64(r8, mul, r9);   r9 = vfmaq_f64(r9, mul, r10);
+    r10 = vfmaq_f64(r10, mul, r11); r11 = vfmaq_f64(r11, mul, r12);
+    r12 = vfmaq_f64(r12, mul, r13); r13 = vfmaq_f64(r13, mul, r14);
+    r14 = vfmaq_f64(r14, mul, r15); r15 = vfmaq_f64(r15, mul, r0);
+    r0 = vfmaq_f64(r0, mul, r1);   r1 = vfmaq_f64(r1, mul, r2);
+    r2 = vfmaq_f64(r2, mul, r3);   r3 = vfmaq_f64(r3, mul, r4);
+    r4 = vfmaq_f64(r4, mul, r5);   r5 = vfmaq_f64(r5, mul, r6);
+    r6 = vfmaq_f64(r6, mul, r7);   r7 = vfmaq_f64(r7, mul, r8);
+    r8 = vfmaq_f64(r8, mul, r9);   r9 = vfmaq_f64(r9, mul, r10);
+    r10 = vfmaq_f64(r10, mul, r11); r11 = vfmaq_f64(r11, mul, r12);
+    r12 = vfmaq_f64(r12, mul, r13); r13 = vfmaq_f64(r13, mul, r14);
+    r14 = vfmaq_f64(r14, mul, r15); r15 = vfmaq_f64(r15, mul, r0);
   }
   
   // Reduce NEON registers
@@ -535,132 +538,99 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   uint64_t g8 = seed + 8, g9 = seed + 9, g10 = seed + 10, g11 = seed + 11;
   uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
 
-  int idx = 0;
   // MASK must ensure 16-byte (2 double) alignment for SSE2 _mm_load_pd/_mm_store_pd
   const int MASK = MASK_SSE2;
-  
-  int iters = (int)std::min<uint64_t>((uint64_t)complexity * 280u, 2000000000u);
+
+  int iters = (int)std::min<uint64_t>((uint64_t)complexity * 200u, 2000000000u);
+
+  // All 16 XMM registers are pure reg-reg (no memory in hot loop) to keep
+  // all FMA/shuffle ports saturated at full core frequency. A lightweight
+  // L1-resident buffer read=modify=write activates load/store ports 2/3/4.
+  #ifdef __FMA__
+  #define SSE2_L1_WORK(r, off) \
+    r = _mm_fmadd_pd(r, mul, _mm_load_pd(&memPtr[(off) & MASK])); \
+    _mm_store_pd(&memPtr[(off + 512) & MASK], r)
+  #else
+  #define SSE2_L1_WORK(r, off) \
+    r = _mm_mul_pd(r, mul); \
+    r = _mm_add_pd(r, _mm_load_pd(&memPtr[(off) & MASK])); \
+    _mm_store_pd(&memPtr[(off + 512) & MASK], r)
+  #endif
 
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
-    
-    // Prefetch next iterations' data ahead of time
-    int nextIdx = (idx + 64) & MASK;
-    int nextIdx2 = (idx + 128) & MASK;
-    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx]), _MM_HINT_T0);
-    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx + 512) & MASK]), _MM_HINT_T0);
-    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx2]), _MM_HINT_T0);
-    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx2 + 512) & MASK]), _MM_HINT_T0);
-    
-    // SSE2: 2-wide operations (128-bit) — single memory pass, heavy compute
+
+    // 4 L1-resident WORK calls — always hit L1 after init, activate ports 2/3/4
+    SSE2_L1_WORK(r0, 0);  SSE2_L1_WORK(r1, 2);  SSE2_L1_WORK(r2, 4);  SSE2_L1_WORK(r3, 6);
+
+    // Heavier GPR chains — extra XOR+shift per chain for more port 0 integer pressure
+    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13) ^ (g3 >> 5);
+    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13) ^ (g4 >> 5);
+    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13) ^ (g5 >> 5);
+    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13) ^ (g6 >> 5);
+    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13) ^ (g7 >> 5);
+    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13) ^ (g0 >> 5);
+    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13) ^ (g1 >> 5);
+    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13) ^ (g2 >> 5);
+    g8 = (g8 * 0x9E3779B97F4A7C15ULL) ^ (g9 >> 17) ^ (g10 << 13) ^ (g11 >> 5);
+    g9 = (g9 * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13) ^ (g12 >> 5);
+    g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13) ^ (g13 >> 5);
+    g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13) ^ (g14 >> 5);
+    g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13) ^ (g15 >> 5);
+    g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13) ^ (g0 >> 5);
+    g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g0 << 13) ^ (g1 >> 5);
+    g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13) ^ (g2 >> 5);
+
+    #undef SSE2_L1_WORK
+
+    // 48 shuffles (3 rotations x 16, port 5 pressure)
+    #define SSE2_SHUF(r) r = _mm_shuffle_pd(r, r, _MM_SHUFFLE2(0, 1))
+    SSE2_SHUF(r0); SSE2_SHUF(r1); SSE2_SHUF(r2); SSE2_SHUF(r3);
+    SSE2_SHUF(r4); SSE2_SHUF(r5); SSE2_SHUF(r6); SSE2_SHUF(r7);
+    SSE2_SHUF(r8); SSE2_SHUF(r9); SSE2_SHUF(r10); SSE2_SHUF(r11);
+    SSE2_SHUF(r12); SSE2_SHUF(r13); SSE2_SHUF(r14); SSE2_SHUF(r15);
+    SSE2_SHUF(r0); SSE2_SHUF(r1); SSE2_SHUF(r2); SSE2_SHUF(r3);
+    SSE2_SHUF(r4); SSE2_SHUF(r5); SSE2_SHUF(r6); SSE2_SHUF(r7);
+    SSE2_SHUF(r8); SSE2_SHUF(r9); SSE2_SHUF(r10); SSE2_SHUF(r11);
+    SSE2_SHUF(r12); SSE2_SHUF(r13); SSE2_SHUF(r14); SSE2_SHUF(r15);
+    SSE2_SHUF(r0); SSE2_SHUF(r1); SSE2_SHUF(r2); SSE2_SHUF(r3);
+    SSE2_SHUF(r4); SSE2_SHUF(r5); SSE2_SHUF(r6); SSE2_SHUF(r7);
+    SSE2_SHUF(r8); SSE2_SHUF(r9); SSE2_SHUF(r10); SSE2_SHUF(r11);
+    SSE2_SHUF(r12); SSE2_SHUF(r13); SSE2_SHUF(r14); SSE2_SHUF(r15);
+    #undef SSE2_SHUF
+
+    // 48 daisy-chain reg-reg FMAs (3 rotations x 16, port 0/1 pressure)
     #ifdef __FMA__
-    #define SSE2_WORK(r, off) \
-      r = _mm_fmadd_pd(r, mul, _mm_load_pd(&memPtr[(idx + off) & MASK])); \
-      _mm_store_pd(&memPtr[(idx + off + 512) & MASK], r)
+    #define SSE2_FMA(r, s) r = _mm_fmadd_pd(r, mul, s)
+    SSE2_FMA(r0, r1);   SSE2_FMA(r1, r2);   SSE2_FMA(r2, r3);   SSE2_FMA(r3, r4);
+    SSE2_FMA(r4, r5);   SSE2_FMA(r5, r6);   SSE2_FMA(r6, r7);   SSE2_FMA(r7, r8);
+    SSE2_FMA(r8, r9);   SSE2_FMA(r9, r10);  SSE2_FMA(r10, r11); SSE2_FMA(r11, r12);
+    SSE2_FMA(r12, r13); SSE2_FMA(r13, r14); SSE2_FMA(r14, r15); SSE2_FMA(r15, r0);
+    SSE2_FMA(r0, r1);   SSE2_FMA(r1, r2);   SSE2_FMA(r2, r3);   SSE2_FMA(r3, r4);
+    SSE2_FMA(r4, r5);   SSE2_FMA(r5, r6);   SSE2_FMA(r6, r7);   SSE2_FMA(r7, r8);
+    SSE2_FMA(r8, r9);   SSE2_FMA(r9, r10);  SSE2_FMA(r10, r11); SSE2_FMA(r11, r12);
+    SSE2_FMA(r12, r13); SSE2_FMA(r13, r14); SSE2_FMA(r14, r15); SSE2_FMA(r15, r0);
+    SSE2_FMA(r0, r1);   SSE2_FMA(r1, r2);   SSE2_FMA(r2, r3);   SSE2_FMA(r3, r4);
+    SSE2_FMA(r4, r5);   SSE2_FMA(r5, r6);   SSE2_FMA(r6, r7);   SSE2_FMA(r7, r8);
+    SSE2_FMA(r8, r9);   SSE2_FMA(r9, r10);  SSE2_FMA(r10, r11); SSE2_FMA(r11, r12);
+    SSE2_FMA(r12, r13); SSE2_FMA(r13, r14); SSE2_FMA(r14, r15); SSE2_FMA(r15, r0);
+    #undef SSE2_FMA
     #else
-    #define SSE2_WORK(r, off) \
-      r = _mm_mul_pd(r, mul); \
-      r = _mm_add_pd(r, _mm_load_pd(&memPtr[(idx + off) & MASK])); \
-      _mm_store_pd(&memPtr[(idx + off + 512) & MASK], r)
+    #define SSE2_FMA(r, s) r = _mm_add_pd(_mm_mul_pd(r, mul), s)
+    SSE2_FMA(r0, r1);   SSE2_FMA(r1, r2);   SSE2_FMA(r2, r3);   SSE2_FMA(r3, r4);
+    SSE2_FMA(r4, r5);   SSE2_FMA(r5, r6);   SSE2_FMA(r6, r7);   SSE2_FMA(r7, r8);
+    SSE2_FMA(r8, r9);   SSE2_FMA(r9, r10);  SSE2_FMA(r10, r11); SSE2_FMA(r11, r12);
+    SSE2_FMA(r12, r13); SSE2_FMA(r13, r14); SSE2_FMA(r14, r15); SSE2_FMA(r15, r0);
+    SSE2_FMA(r0, r1);   SSE2_FMA(r1, r2);   SSE2_FMA(r2, r3);   SSE2_FMA(r3, r4);
+    SSE2_FMA(r4, r5);   SSE2_FMA(r5, r6);   SSE2_FMA(r6, r7);   SSE2_FMA(r7, r8);
+    SSE2_FMA(r8, r9);   SSE2_FMA(r9, r10);  SSE2_FMA(r10, r11); SSE2_FMA(r11, r12);
+    SSE2_FMA(r12, r13); SSE2_FMA(r13, r14); SSE2_FMA(r14, r15); SSE2_FMA(r15, r0);
+    SSE2_FMA(r0, r1);   SSE2_FMA(r1, r2);   SSE2_FMA(r2, r3);   SSE2_FMA(r3, r4);
+    SSE2_FMA(r4, r5);   SSE2_FMA(r5, r6);   SSE2_FMA(r6, r7);   SSE2_FMA(r7, r8);
+    SSE2_FMA(r8, r9);   SSE2_FMA(r9, r10);  SSE2_FMA(r10, r11); SSE2_FMA(r11, r12);
+    SSE2_FMA(r12, r13); SSE2_FMA(r13, r14); SSE2_FMA(r14, r15); SSE2_FMA(r15, r0);
+    #undef SSE2_FMA
     #endif
-    
-    // Single memory pass — 16 WORK calls with all 16 GPR chains interleaved
-    SSE2_WORK(r0, 0);   SSE2_WORK(r1, 2);   SSE2_WORK(r2, 4);   SSE2_WORK(r3, 6);
-    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
-    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
-    g8 = (g8 * 0x9E3779B97F4A7C15ULL) ^ (g9 >> 17) ^ (g10 << 13);
-    g9 = (g9 * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13);
-    
-    SSE2_WORK(r4, 8);   SSE2_WORK(r5, 10);  SSE2_WORK(r6, 12);  SSE2_WORK(r7, 14);
-    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
-    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
-    g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13);
-    g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13);
-    
-    SSE2_WORK(r8, 16);  SSE2_WORK(r9, 18);  SSE2_WORK(r10, 20); SSE2_WORK(r11, 22);
-    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
-    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
-    g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13);
-    g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13);
-    
-    SSE2_WORK(r12, 24); SSE2_WORK(r13, 26); SSE2_WORK(r14, 28); SSE2_WORK(r15, 30);
-    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
-    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
-    g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g0 << 13);
-    g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
-    
-    // Port 5 shuffle pressure — first rotation
-    #define SSE2_SHUFFLE(r) r = _mm_shuffle_pd(r, r, _MM_SHUFFLE2(0, 1))
-    SSE2_SHUFFLE(r0); SSE2_SHUFFLE(r1); SSE2_SHUFFLE(r2); SSE2_SHUFFLE(r3);
-    SSE2_SHUFFLE(r4); SSE2_SHUFFLE(r5); SSE2_SHUFFLE(r6); SSE2_SHUFFLE(r7);
-    SSE2_SHUFFLE(r8); SSE2_SHUFFLE(r9); SSE2_SHUFFLE(r10); SSE2_SHUFFLE(r11);
-    SSE2_SHUFFLE(r12); SSE2_SHUFFLE(r13); SSE2_SHUFFLE(r14); SSE2_SHUFFLE(r15);
-    // Second rotation
-    SSE2_SHUFFLE(r0); SSE2_SHUFFLE(r1); SSE2_SHUFFLE(r2); SSE2_SHUFFLE(r3);
-    SSE2_SHUFFLE(r4); SSE2_SHUFFLE(r5); SSE2_SHUFFLE(r6); SSE2_SHUFFLE(r7);
-    SSE2_SHUFFLE(r8); SSE2_SHUFFLE(r9); SSE2_SHUFFLE(r10); SSE2_SHUFFLE(r11);
-    SSE2_SHUFFLE(r12); SSE2_SHUFFLE(r13); SSE2_SHUFFLE(r14); SSE2_SHUFFLE(r15);
-    #undef SSE2_SHUFFLE
-    
-    // Extra FMA passes: register-to-register rotating daisy chain (no memory, fills spare FMA cycles)
-    #ifdef __FMA__
-    // First rotation
-    r0 = _mm_fmadd_pd(r0, mul, r1);   r1 = _mm_fmadd_pd(r1, mul, r2);
-    r2 = _mm_fmadd_pd(r2, mul, r3);   r3 = _mm_fmadd_pd(r3, mul, r4);
-    r4 = _mm_fmadd_pd(r4, mul, r5);   r5 = _mm_fmadd_pd(r5, mul, r6);
-    r6 = _mm_fmadd_pd(r6, mul, r7);   r7 = _mm_fmadd_pd(r7, mul, r8);
-    r8 = _mm_fmadd_pd(r8, mul, r9);   r9 = _mm_fmadd_pd(r9, mul, r10);
-    r10 = _mm_fmadd_pd(r10, mul, r11); r11 = _mm_fmadd_pd(r11, mul, r12);
-    r12 = _mm_fmadd_pd(r12, mul, r13); r13 = _mm_fmadd_pd(r13, mul, r14);
-    r14 = _mm_fmadd_pd(r14, mul, r15); r15 = _mm_fmadd_pd(r15, mul, r0);
-    // Second rotation
-    r0 = _mm_fmadd_pd(r0, mul, r1);   r1 = _mm_fmadd_pd(r1, mul, r2);
-    r2 = _mm_fmadd_pd(r2, mul, r3);   r3 = _mm_fmadd_pd(r3, mul, r4);
-    r4 = _mm_fmadd_pd(r4, mul, r5);   r5 = _mm_fmadd_pd(r5, mul, r6);
-    r6 = _mm_fmadd_pd(r6, mul, r7);   r7 = _mm_fmadd_pd(r7, mul, r8);
-    r8 = _mm_fmadd_pd(r8, mul, r9);   r9 = _mm_fmadd_pd(r9, mul, r10);
-    r10 = _mm_fmadd_pd(r10, mul, r11); r11 = _mm_fmadd_pd(r11, mul, r12);
-    r12 = _mm_fmadd_pd(r12, mul, r13); r13 = _mm_fmadd_pd(r13, mul, r14);
-    r14 = _mm_fmadd_pd(r14, mul, r15); r15 = _mm_fmadd_pd(r15, mul, r0);
-    #else
-    r0 = _mm_add_pd(_mm_mul_pd(r0, mul), r1);
-    r1 = _mm_add_pd(_mm_mul_pd(r1, mul), r2);
-    r2 = _mm_add_pd(_mm_mul_pd(r2, mul), r3);
-    r3 = _mm_add_pd(_mm_mul_pd(r3, mul), r4);
-    r4 = _mm_add_pd(_mm_mul_pd(r4, mul), r5);
-    r5 = _mm_add_pd(_mm_mul_pd(r5, mul), r6);
-    r6 = _mm_add_pd(_mm_mul_pd(r6, mul), r7);
-    r7 = _mm_add_pd(_mm_mul_pd(r7, mul), r8);
-    r8 = _mm_add_pd(_mm_mul_pd(r8, mul), r9);
-    r9 = _mm_add_pd(_mm_mul_pd(r9, mul), r10);
-    r10 = _mm_add_pd(_mm_mul_pd(r10, mul), r11);
-    r11 = _mm_add_pd(_mm_mul_pd(r11, mul), r12);
-    r12 = _mm_add_pd(_mm_mul_pd(r12, mul), r13);
-    r13 = _mm_add_pd(_mm_mul_pd(r13, mul), r14);
-    r14 = _mm_add_pd(_mm_mul_pd(r14, mul), r15);
-    r15 = _mm_add_pd(_mm_mul_pd(r15, mul), r0);
-    // Second rotation
-    r0 = _mm_add_pd(_mm_mul_pd(r0, mul), r1);
-    r1 = _mm_add_pd(_mm_mul_pd(r1, mul), r2);
-    r2 = _mm_add_pd(_mm_mul_pd(r2, mul), r3);
-    r3 = _mm_add_pd(_mm_mul_pd(r3, mul), r4);
-    r4 = _mm_add_pd(_mm_mul_pd(r4, mul), r5);
-    r5 = _mm_add_pd(_mm_mul_pd(r5, mul), r6);
-    r6 = _mm_add_pd(_mm_mul_pd(r6, mul), r7);
-    r7 = _mm_add_pd(_mm_mul_pd(r7, mul), r8);
-    r8 = _mm_add_pd(_mm_mul_pd(r8, mul), r9);
-    r9 = _mm_add_pd(_mm_mul_pd(r9, mul), r10);
-    r10 = _mm_add_pd(_mm_mul_pd(r10, mul), r11);
-    r11 = _mm_add_pd(_mm_mul_pd(r11, mul), r12);
-    r12 = _mm_add_pd(_mm_mul_pd(r12, mul), r13);
-    r13 = _mm_add_pd(_mm_mul_pd(r13, mul), r14);
-    r14 = _mm_add_pd(_mm_mul_pd(r14, mul), r15);
-    r15 = _mm_add_pd(_mm_mul_pd(r15, mul), r0);
-    #endif
-    
-    #undef SSE2_WORK
-    
-    idx = (idx + 64) & MASK;
   }
 
   __m128d sum = _mm_add_pd(r0, r1);
@@ -744,7 +714,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
 }
 
 // ============================================================================
-// AVX2 MAX POWER - 16 YMM registers, 8 memory WORK, 48 FMAs, 48 permutes
+// AVX2 MAX POWER - 16 YMM registers, 4 L1 WORK, 48 FMAs, 48 shuffles/permutes
 // ============================================================================
 TARGET_AVX2
 uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
@@ -781,77 +751,61 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
   uint64_t g8 = seed + 8, g9 = seed + 9, g10 = seed + 10, g11 = seed + 11;
   uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
 
-  int idx = 0;
   const int MASK = MASK_AVX2;
   
   int iters = (int)std::min<uint64_t>((uint64_t)complexity * 180u, 2000000000u);
 
+  // Lightweight L1-resident WORK calls — always hit L1, activate load/store ports
+  #define AVX2_L1_WORK(r, off) \
+    r = _mm256_fmadd_pd(r, mul, _mm256_load_pd(&memPtr[(off) & MASK])); \
+    _mm256_store_pd(&memPtr[(off + 512) & MASK], r)
+
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
-    
-    // Prefetch next iteration's data ahead of time
-    int nextIdx = (idx + 64) & MASK;
-    int nextIdx2 = (idx + 128) & MASK;
-    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx]), _MM_HINT_T0);
-    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx + 512) & MASK]), _MM_HINT_T0);
-    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx2]), _MM_HINT_T0);
-    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx2 + 512) & MASK]), _MM_HINT_T0);
-    
-    #define WORK(r, off) \
-      r = _mm256_fmadd_pd(r, mul, _mm256_load_pd(&memPtr[(idx + off) & MASK])); \
-      _mm256_store_pd(&memPtr[(idx + off + 512) & MASK], r)
-    
-    // 8 memory WORK calls — enough to keep cache/memory controller active
-    // without saturating the store pipeline or causing L2 misses
-    WORK(r0, 0);  WORK(r2, 8);  WORK(r4, 16); WORK(r6, 24);
-    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
-    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
-    WORK(r8, 32); WORK(r10, 40); WORK(r12, 48); WORK(r14, 56);
-    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
-    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
-    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
-    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
-    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
-    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
-    g8 = (g8 * 0x9E3779B97F4A7C15ULL) ^ (g9 >> 17) ^ (g10 << 13);
-    g9 = (g9 * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13);
-    g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13);
-    g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13);
-    g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13);
-    g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13);
-    g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g0 << 13);
-    g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
-    
-    #undef WORK
-    
-    // 48 permutes (3 rotations × 16, port 5 pressure)
-    #define PERM(r, c) r = _mm256_permute4x64_pd(r, c)
-    PERM(r0, _MM_SHUFFLE(1, 0, 3, 2)); PERM(r1, _MM_SHUFFLE(1, 0, 3, 2));
-    PERM(r2, _MM_SHUFFLE(1, 0, 3, 2)); PERM(r3, _MM_SHUFFLE(1, 0, 3, 2));
-    PERM(r4, _MM_SHUFFLE(1, 0, 3, 2)); PERM(r5, _MM_SHUFFLE(1, 0, 3, 2));
-    PERM(r6, _MM_SHUFFLE(1, 0, 3, 2)); PERM(r7, _MM_SHUFFLE(1, 0, 3, 2));
-    PERM(r8, _MM_SHUFFLE(1, 0, 3, 2)); PERM(r9, _MM_SHUFFLE(1, 0, 3, 2));
-    PERM(r10, _MM_SHUFFLE(1, 0, 3, 2)); PERM(r11, _MM_SHUFFLE(1, 0, 3, 2));
-    PERM(r12, _MM_SHUFFLE(1, 0, 3, 2)); PERM(r13, _MM_SHUFFLE(1, 0, 3, 2));
-    PERM(r14, _MM_SHUFFLE(1, 0, 3, 2)); PERM(r15, _MM_SHUFFLE(1, 0, 3, 2));
-    PERM(r0, _MM_SHUFFLE(0, 1, 2, 3)); PERM(r1, _MM_SHUFFLE(0, 1, 2, 3));
-    PERM(r2, _MM_SHUFFLE(0, 1, 2, 3)); PERM(r3, _MM_SHUFFLE(0, 1, 2, 3));
-    PERM(r4, _MM_SHUFFLE(0, 1, 2, 3)); PERM(r5, _MM_SHUFFLE(0, 1, 2, 3));
-    PERM(r6, _MM_SHUFFLE(0, 1, 2, 3)); PERM(r7, _MM_SHUFFLE(0, 1, 2, 3));
-    PERM(r8, _MM_SHUFFLE(0, 1, 2, 3)); PERM(r9, _MM_SHUFFLE(0, 1, 2, 3));
-    PERM(r10, _MM_SHUFFLE(0, 1, 2, 3)); PERM(r11, _MM_SHUFFLE(0, 1, 2, 3));
-    PERM(r12, _MM_SHUFFLE(0, 1, 2, 3)); PERM(r13, _MM_SHUFFLE(0, 1, 2, 3));
-    PERM(r14, _MM_SHUFFLE(0, 1, 2, 3)); PERM(r15, _MM_SHUFFLE(0, 1, 2, 3));
-    PERM(r0, _MM_SHUFFLE(2, 3, 0, 1)); PERM(r1, _MM_SHUFFLE(2, 3, 0, 1));
-    PERM(r2, _MM_SHUFFLE(2, 3, 0, 1)); PERM(r3, _MM_SHUFFLE(2, 3, 0, 1));
-    PERM(r4, _MM_SHUFFLE(2, 3, 0, 1)); PERM(r5, _MM_SHUFFLE(2, 3, 0, 1));
-    PERM(r6, _MM_SHUFFLE(2, 3, 0, 1)); PERM(r7, _MM_SHUFFLE(2, 3, 0, 1));
-    PERM(r8, _MM_SHUFFLE(2, 3, 0, 1)); PERM(r9, _MM_SHUFFLE(2, 3, 0, 1));
-    PERM(r10, _MM_SHUFFLE(2, 3, 0, 1)); PERM(r11, _MM_SHUFFLE(2, 3, 0, 1));
-    PERM(r12, _MM_SHUFFLE(2, 3, 0, 1)); PERM(r13, _MM_SHUFFLE(2, 3, 0, 1));
-    PERM(r14, _MM_SHUFFLE(2, 3, 0, 1)); PERM(r15, _MM_SHUFFLE(2, 3, 0, 1));
+
+    // 4 L1-resident WORK calls — activate ports 2/3/4 without stalling
+    AVX2_L1_WORK(r0, 0); AVX2_L1_WORK(r2, 8); AVX2_L1_WORK(r4, 16); AVX2_L1_WORK(r6, 24);
+
+    // Heavier GPR chains — extra XOR+shift per chain
+    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13) ^ (g3 >> 5);
+    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13) ^ (g4 >> 5);
+    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13) ^ (g5 >> 5);
+    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13) ^ (g6 >> 5);
+    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13) ^ (g7 >> 5);
+    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13) ^ (g0 >> 5);
+    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13) ^ (g1 >> 5);
+    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13) ^ (g2 >> 5);
+    g8 = (g8 * 0x9E3779B97F4A7C15ULL) ^ (g9 >> 17) ^ (g10 << 13) ^ (g11 >> 5);
+    g9 = (g9 * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13) ^ (g12 >> 5);
+    g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13) ^ (g13 >> 5);
+    g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13) ^ (g14 >> 5);
+    g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13) ^ (g15 >> 5);
+    g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13) ^ (g0 >> 5);
+    g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g0 << 13) ^ (g1 >> 5);
+    g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13) ^ (g2 >> 5);
+
+    #undef AVX2_L1_WORK
+
+    // 2 rotations within-lane shuffle (2/cycle on Zen 3 via ports 1/5)
+    #define SHUF(r) r = _mm256_shuffle_pd(r, r, _MM_SHUFFLE2(0, 1))
+    SHUF(r0);  SHUF(r1);  SHUF(r2);  SHUF(r3);
+    SHUF(r4);  SHUF(r5);  SHUF(r6);  SHUF(r7);
+    SHUF(r8);  SHUF(r9);  SHUF(r10); SHUF(r11);
+    SHUF(r12); SHUF(r13); SHUF(r14); SHUF(r15);
+    SHUF(r0);  SHUF(r1);  SHUF(r2);  SHUF(r3);
+    SHUF(r4);  SHUF(r5);  SHUF(r6);  SHUF(r7);
+    SHUF(r8);  SHUF(r9);  SHUF(r10); SHUF(r11);
+    SHUF(r12); SHUF(r13); SHUF(r14); SHUF(r15);
+    #undef SHUF
+
+    // 1 rotation cross-lane permute (1/cycle on Zen 3 via port 5) for data mixing
+    #define PERM(r) r = _mm256_permute4x64_pd(r, _MM_SHUFFLE(2, 3, 0, 1))
+    PERM(r0);  PERM(r1);  PERM(r2);  PERM(r3);
+    PERM(r4);  PERM(r5);  PERM(r6);  PERM(r7);
+    PERM(r8);  PERM(r9);  PERM(r10); PERM(r11);
+    PERM(r12); PERM(r13); PERM(r14); PERM(r15);
     #undef PERM
-    
+
     // 48 daisy-chain reg-reg FMAs (3 rotations, port 0/1 pressure)
     #define FMA(r, s) r = _mm256_fmadd_pd(r, mul, s)
     FMA(r0, r1);  FMA(r1, r2);  FMA(r2, r3);  FMA(r3, r4);
@@ -867,8 +821,6 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     FMA(r8, r9);  FMA(r9, r10); FMA(r10, r11); FMA(r11, r12);
     FMA(r12, r13); FMA(r13, r14); FMA(r14, r15); FMA(r15, r0);
     #undef FMA
-    
-    idx = (idx + 64) & MASK;
   }
 
   __m256d sum = _mm256_add_pd(r0, r1);
@@ -905,7 +857,7 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
 }
 
 // ============================================================================
-// AVX-512 MAX POWER - ALL 32 ZMM REGISTERS + Aggressive Memory
+// AVX-512 MAX POWER - ALL 32 ZMM REGISTERS + Balanced Compute/Memory
 // 512-bit vectors = 2x throughput of AVX2
 // ============================================================================
 TARGET_AVX512
@@ -956,107 +908,106 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
   
   __m512d mul = _mm512_set1_pd(1.000001);
 
-  // 8 GPRs
+  // 16 GPRs
   uint64_t g0 = seed, g1 = seed + 1, g2 = seed + 2, g3 = seed + 3;
   uint64_t g4 = seed + 4, g5 = seed + 5, g6 = seed + 6, g7 = seed + 7;
+  uint64_t g8 = seed + 8, g9 = seed + 9, g10 = seed + 10, g11 = seed + 11;
+  uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
 
-  int idx = 0;
-  // Ensure 64-byte alignment for AVX-512 (8 doubles = 64 bytes)
   const int MASK = MASK_AVX512;
   
-  // Higher iteration count for 512-bit throughput
   int iters = (int)std::min<uint64_t>((uint64_t)complexity * 150u, 2000000000u);
+
+  // 16 L1-resident WORK calls (first 16 ZMM regs) — balance compute vs memory
+  #define AVX512_L1_WORK(r, off) \
+    r = _mm512_fmadd_pd(r, mul, _mm512_load_pd(&memPtr[(off) & MASK])); \
+    _mm512_store_pd(&memPtr[(off + 512) & MASK], r)
 
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
-    
-    // Prefetch next iterations' data ahead of time
-    int nextIdx = (idx + 256) & MASK;
-    int nextIdx2 = (idx + 512) & MASK;
-    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx]), _MM_HINT_T0);
-    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx + 512) & MASK]), _MM_HINT_T0);
-    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[nextIdx2]), _MM_HINT_T0);
-    _mm_prefetch(reinterpret_cast<const char*>(&memPtr[(nextIdx2 + 512) & MASK]), _MM_HINT_T0);
-    
-    // MASK_AVX512 ensures the double index is always a multiple of 8, so the
-    // byte address is always 64-byte aligned – safe to use aligned load/store.
-    #define WORK(r, off) \
-      r = _mm512_fmadd_pd(r, mul, _mm512_load_pd(&memPtr[(idx + off) & MASK])); \
-      _mm512_store_pd(&memPtr[(idx + off + 512) & MASK], r)
-    
-    WORK(r0, 0);   WORK(r1, 8);   WORK(r2, 16);  WORK(r3, 24);
-    
-    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
-    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
-    
-    WORK(r4, 32);  WORK(r5, 40);  WORK(r6, 48);  WORK(r7, 56);
-    
-    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
-    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
-    
-    WORK(r8, 64);  WORK(r9, 72);  WORK(r10, 80); WORK(r11, 88);
-    
-    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
-    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
-    
-    WORK(r12, 96);  WORK(r13, 104); WORK(r14, 112); WORK(r15, 120);
-    
-    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
-    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
-    
-    // Second half of 32 ZMM registers
-    WORK(r16, 128); WORK(r17, 136); WORK(r18, 144); WORK(r19, 152);
-    WORK(r20, 160); WORK(r21, 168); WORK(r22, 176); WORK(r23, 184);
-    WORK(r24, 192); WORK(r25, 200); WORK(r26, 208); WORK(r27, 216);
-    WORK(r28, 224); WORK(r29, 232); WORK(r30, 240); WORK(r31, 248);
-    
-    // AVX-512 mask register pressure: compare → mask → blend
-    // Keeps mask register file (k0–k7) active alongside vector pipes
+
+    // 16 L1-resident WORK calls — activate load/store ports without saturation
+    AVX512_L1_WORK(r0, 0);   AVX512_L1_WORK(r1, 8);
+    AVX512_L1_WORK(r2, 16);  AVX512_L1_WORK(r3, 24);
+    AVX512_L1_WORK(r4, 32);  AVX512_L1_WORK(r5, 40);
+    AVX512_L1_WORK(r6, 48);  AVX512_L1_WORK(r7, 56);
+    AVX512_L1_WORK(r8, 64);  AVX512_L1_WORK(r9, 72);
+    AVX512_L1_WORK(r10, 80); AVX512_L1_WORK(r11, 88);
+    AVX512_L1_WORK(r12, 96); AVX512_L1_WORK(r13, 104);
+    AVX512_L1_WORK(r14, 112); AVX512_L1_WORK(r15, 120);
+
+    // Heavier GPR chains
+    g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13) ^ (g3 >> 5);
+    g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13) ^ (g4 >> 5);
+    g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13) ^ (g5 >> 5);
+    g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13) ^ (g6 >> 5);
+    g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13) ^ (g7 >> 5);
+    g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13) ^ (g0 >> 5);
+    g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13) ^ (g1 >> 5);
+    g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13) ^ (g2 >> 5);
+    g8 = (g8 * 0x9E3779B97F4A7C15ULL) ^ (g9 >> 17) ^ (g10 << 13) ^ (g11 >> 5);
+    g9 = (g9 * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13) ^ (g12 >> 5);
+    g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13) ^ (g13 >> 5);
+    g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13) ^ (g14 >> 5);
+    g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13) ^ (g15 >> 5);
+    g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13) ^ (g0 >> 5);
+    g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g0 << 13) ^ (g1 >> 5);
+    g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13) ^ (g2 >> 5);
+
+    #undef AVX512_L1_WORK
+
+    // AVX-512 mask register pressure: compare → mask → blend (expanded to r0-r15)
     {
       __mmask8 mk = _mm512_cmp_pd_mask(r0, mul, _CMP_NEQ_UQ);
-      r0 = _mm512_mask_blend_pd(mk, r0, r1);
-      r1 = _mm512_mask_blend_pd(mk, r1, r2);
-      r2 = _mm512_mask_blend_pd(mk, r2, r3);
-      r3 = _mm512_mask_blend_pd(mk, r3, r4);
-      r4 = _mm512_mask_blend_pd(mk, r4, r5);
-      r5 = _mm512_mask_blend_pd(mk, r5, r6);
-      r6 = _mm512_mask_blend_pd(mk, r6, r7);
-      r7 = _mm512_mask_blend_pd(mk, r7, r0);
+      r0 = _mm512_mask_blend_pd(mk, r0, r1);   r1 = _mm512_mask_blend_pd(mk, r1, r2);
+      r2 = _mm512_mask_blend_pd(mk, r2, r3);   r3 = _mm512_mask_blend_pd(mk, r3, r4);
+      r4 = _mm512_mask_blend_pd(mk, r4, r5);   r5 = _mm512_mask_blend_pd(mk, r5, r6);
+      r6 = _mm512_mask_blend_pd(mk, r6, r7);   r7 = _mm512_mask_blend_pd(mk, r7, r8);
+      r8 = _mm512_mask_blend_pd(mk, r8, r9);   r9 = _mm512_mask_blend_pd(mk, r9, r10);
+      r10 = _mm512_mask_blend_pd(mk, r10, r11); r11 = _mm512_mask_blend_pd(mk, r11, r12);
+      r12 = _mm512_mask_blend_pd(mk, r12, r13); r13 = _mm512_mask_blend_pd(mk, r13, r14);
+      r14 = _mm512_mask_blend_pd(mk, r14, r15); r15 = _mm512_mask_blend_pd(mk, r15, r0);
     }
-    
-    // Port 5 shuffle pressure: cross-lane permute via within-256-bit shuffle
-    #define SHUFFLE(r) r = _mm512_permutex_pd(r, _MM_SHUFFLE(1, 0, 3, 2))
-    SHUFFLE(r0);  SHUFFLE(r1);  SHUFFLE(r2);  SHUFFLE(r3);
-    SHUFFLE(r4);  SHUFFLE(r5);  SHUFFLE(r6);  SHUFFLE(r7);
-    SHUFFLE(r8);  SHUFFLE(r9);  SHUFFLE(r10); SHUFFLE(r11);
-    SHUFFLE(r12); SHUFFLE(r13); SHUFFLE(r14); SHUFFLE(r15);
-    SHUFFLE(r16); SHUFFLE(r17); SHUFFLE(r18); SHUFFLE(r19);
-    SHUFFLE(r20); SHUFFLE(r21); SHUFFLE(r22); SHUFFLE(r23);
-    SHUFFLE(r24); SHUFFLE(r25); SHUFFLE(r26); SHUFFLE(r27);
-    SHUFFLE(r28); SHUFFLE(r29); SHUFFLE(r30); SHUFFLE(r31);
-    #undef SHUFFLE
-    
-    // Extra FMA pass: register-to-register (no memory, fills spare FMA cycles)
-    r0 = _mm512_fmadd_pd(r0, mul, r1);   r1 = _mm512_fmadd_pd(r1, mul, r2);
-    r2 = _mm512_fmadd_pd(r2, mul, r3);   r3 = _mm512_fmadd_pd(r3, mul, r4);
-    r4 = _mm512_fmadd_pd(r4, mul, r5);   r5 = _mm512_fmadd_pd(r5, mul, r6);
-    r6 = _mm512_fmadd_pd(r6, mul, r7);   r7 = _mm512_fmadd_pd(r7, mul, r8);
-    r8 = _mm512_fmadd_pd(r8, mul, r9);   r9 = _mm512_fmadd_pd(r9, mul, r10);
-    r10 = _mm512_fmadd_pd(r10, mul, r11); r11 = _mm512_fmadd_pd(r11, mul, r12);
-    r12 = _mm512_fmadd_pd(r12, mul, r13); r13 = _mm512_fmadd_pd(r13, mul, r14);
-    r14 = _mm512_fmadd_pd(r14, mul, r15); r15 = _mm512_fmadd_pd(r15, mul, r16);
-    r16 = _mm512_fmadd_pd(r16, mul, r17); r17 = _mm512_fmadd_pd(r17, mul, r18);
-    r18 = _mm512_fmadd_pd(r18, mul, r19); r19 = _mm512_fmadd_pd(r19, mul, r20);
-    r20 = _mm512_fmadd_pd(r20, mul, r21); r21 = _mm512_fmadd_pd(r21, mul, r22);
-    r22 = _mm512_fmadd_pd(r22, mul, r23); r23 = _mm512_fmadd_pd(r23, mul, r24);
-    r24 = _mm512_fmadd_pd(r24, mul, r25); r25 = _mm512_fmadd_pd(r25, mul, r26);
-    r26 = _mm512_fmadd_pd(r26, mul, r27); r27 = _mm512_fmadd_pd(r27, mul, r28);
-    r28 = _mm512_fmadd_pd(r28, mul, r29); r29 = _mm512_fmadd_pd(r29, mul, r30);
-    r30 = _mm512_fmadd_pd(r30, mul, r31); r31 = _mm512_fmadd_pd(r31, mul, r0);
-    
-    #undef WORK
-    
-    idx = (idx + 256) & MASK;
+
+    // 64 shuffles (2 rotations x 32, port 5 pressure)
+    #define SHUF(r) r = _mm512_permutex_pd(r, _MM_SHUFFLE(1, 0, 3, 2))
+    SHUF(r0);  SHUF(r1);  SHUF(r2);  SHUF(r3);
+    SHUF(r4);  SHUF(r5);  SHUF(r6);  SHUF(r7);
+    SHUF(r8);  SHUF(r9);  SHUF(r10); SHUF(r11);
+    SHUF(r12); SHUF(r13); SHUF(r14); SHUF(r15);
+    SHUF(r16); SHUF(r17); SHUF(r18); SHUF(r19);
+    SHUF(r20); SHUF(r21); SHUF(r22); SHUF(r23);
+    SHUF(r24); SHUF(r25); SHUF(r26); SHUF(r27);
+    SHUF(r28); SHUF(r29); SHUF(r30); SHUF(r31);
+    SHUF(r0);  SHUF(r1);  SHUF(r2);  SHUF(r3);
+    SHUF(r4);  SHUF(r5);  SHUF(r6);  SHUF(r7);
+    SHUF(r8);  SHUF(r9);  SHUF(r10); SHUF(r11);
+    SHUF(r12); SHUF(r13); SHUF(r14); SHUF(r15);
+    SHUF(r16); SHUF(r17); SHUF(r18); SHUF(r19);
+    SHUF(r20); SHUF(r21); SHUF(r22); SHUF(r23);
+    SHUF(r24); SHUF(r25); SHUF(r26); SHUF(r27);
+    SHUF(r28); SHUF(r29); SHUF(r30); SHUF(r31);
+    #undef SHUF
+
+    // 64 daisy-chain reg-reg FMAs (2 rotations x 32, port 0/1 pressure)
+    #define FMA(r, s) r = _mm512_fmadd_pd(r, mul, s)
+    FMA(r0, r1);   FMA(r1, r2);   FMA(r2, r3);   FMA(r3, r4);
+    FMA(r4, r5);   FMA(r5, r6);   FMA(r6, r7);   FMA(r7, r8);
+    FMA(r8, r9);   FMA(r9, r10);  FMA(r10, r11); FMA(r11, r12);
+    FMA(r12, r13); FMA(r13, r14); FMA(r14, r15); FMA(r15, r16);
+    FMA(r16, r17); FMA(r17, r18); FMA(r18, r19); FMA(r19, r20);
+    FMA(r20, r21); FMA(r21, r22); FMA(r22, r23); FMA(r23, r24);
+    FMA(r24, r25); FMA(r25, r26); FMA(r26, r27); FMA(r27, r28);
+    FMA(r28, r29); FMA(r29, r30); FMA(r30, r31); FMA(r31, r0);
+    FMA(r0, r1);   FMA(r1, r2);   FMA(r2, r3);   FMA(r3, r4);
+    FMA(r4, r5);   FMA(r5, r6);   FMA(r6, r7);   FMA(r7, r8);
+    FMA(r8, r9);   FMA(r9, r10);  FMA(r10, r11); FMA(r11, r12);
+    FMA(r12, r13); FMA(r13, r14); FMA(r14, r15); FMA(r15, r16);
+    FMA(r16, r17); FMA(r17, r18); FMA(r18, r19); FMA(r19, r20);
+    FMA(r20, r21); FMA(r21, r22); FMA(r22, r23); FMA(r23, r24);
+    FMA(r24, r25); FMA(r25, r26); FMA(r26, r27); FMA(r27, r28);
+    FMA(r28, r29); FMA(r29, r30); FMA(r30, r31); FMA(r31, r0);
+    #undef FMA
   }
 
   // Reduce all 32 ZMM registers
@@ -1083,7 +1034,8 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
   
   double out[8];
   _mm512_storeu_pd(out, sum);
-  uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7;
+  uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7 ^
+                  g8 ^ g9 ^ g10 ^ g11 ^ g12 ^ g13 ^ g14 ^ g15;
   double final_val = out[0] + out[1] + out[2] + out[3] +
                      out[4] + out[5] + out[6] + out[7] + (double)gint;
   volatile double sink = final_val;
