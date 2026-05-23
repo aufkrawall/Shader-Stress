@@ -1,11 +1,12 @@
 # Recent Changes Log
 
-## 2026-05-23 — Maximum power/heat sweep: pure reg-reg SSE2/NEON, AVX2 L1 traffic + faster shuffles, AVX-512 rebalance
+## 2026-05-23 — Reverted workload over-optimization; matched proven online design for max power
 
-- **SSE2/Scalar pure reg-reg pivot**: Replaced 16 memory WORK calls + 32 FMAs + 32 shuffles with 4 L1-resident WORK calls + 48 FMAs + 48 shuffles + heavier GPR chains. SSE2 runs at full core frequency on Zen 3 (no AVX downclock), so eliminating memory stalls was critical for max power. Iteration count: `complexity * 280` → `*200`.
-- **NEON (ARM64)**: Same pure reg-reg pivot as SSE2.
-- **AVX2 L1 traffic + faster shuffles**: Added 4 L1-resident WORK calls (activate previously-idle load/store ports 2/3/4). Replaced 2 of 3 cross-lane permute rotations (`permute4x64`, 1/cycle) with within-lane shuffles (`shuffle_pd`, 2/cycle on Zen 3 via ports 1+5). Heavier GPR chains (extra XOR+shift).
-- **AVX-512 rebalanced**: Reduced WORK calls 32→16 (eliminate store bottleneck), added second shuffle rotation (32→64), added second FMA rotation (32→64), GPR chains 8→16, mask ops expanded from r0–r7 to r0–r15.
+- **Root cause**: Previous pure reg-reg pivot (SSE2/NEON) and L1-traffic additions (AVX2) empirically REDUCED power draw vs the online GitHub release. Analysis revealed that: (1) removing memory WORK calls left load/store ports (2/3/4) underutilized, (2) adding shuffles/FMAs bloated the loop body causing µop cache pressure, (3) replacing integer division with multiply-XOR reduced pipeline backpressure.
+- **SSE2/Scalar**: Reverted to 48 WORK calls (3 passes × 16) using split `_mm_mul_pd + _mm_add_pd` (not FMA) for double µop count. Integer division for sustained pipeline backpressure. Buffer: 512KB (up from 256KB) to cause L2 misses → memory controller activity. Removed all shuffles and reg-reg FMAs. Iteration count: `complexity * 200` → `*280`.
+- **NEON (ARM64)**: Same 48-WORK design with NEON intrinsics, IDIV on GPRs.
+- **AVX2**: Reverted to 8 WORK calls with FMA (`_mm256_fmadd_pd`), 8 GPRs with multiply-XOR chains, removed all permutes and reg-reg FMAs. 512KB buffer.
+- **AVX-512**: Reverted to 32 WORK calls on all 32 ZMM registers, 8 GPRs with multiply-XOR chains. Removed mask ops, shuffles, and extra FMAs.
 - **All tests pass**: 28/28 (20 CLI + 4 stress + 2 golden + 2 UBSan) on x64 baseline and v3 builds.
 
 ## 2026-05-22 — Code quality sweep: UB fixes, security hardening, binary quality, test expansion
