@@ -52,6 +52,7 @@ struct CliOptions {
   bool benchmarkRequested = false;
   bool verifyRequested = false;
   bool reproRequested = false;
+  bool hashRoundtripRequested = false;
   bool hasMode = false;
   bool hasIsa = false;
   bool hasDuration = false;
@@ -321,6 +322,7 @@ static void PrintCliHelp() {
   std::cout << "  --verify <hash>          Decode and validate a benchmark hash.\n";
   std::cout << "  --repro <seed> <complexity>\n";
   std::cout << "                           Run one reproducible workload case.\n";
+  std::cout << "  --hash-roundtrip         Internal: verify hash encode/decode roundtrip.\n";
   std::cout << "  --no-avx512              Disable AVX-512 use.\n";
   std::cout << "  --no-avx2                Disable AVX2 use.\n";
   std::cout << "  --quiet                  Suppress the live dashboard and startup banner.\n";
@@ -466,6 +468,10 @@ static CliParseResult ParseCliArgs(const std::vector<std::wstring> &args) {
       result.options.verifyHash = args[++i];
       continue;
     }
+    if (lowered == L"--hash-roundtrip") {
+      result.options.hashRoundtripRequested = true;
+      continue;
+    }
     if (lowered == L"--repro") {
       if (i + 2 >= args.size()) {
         AddError(result.errors, L"--repro requires both <seed> and <complexity>.");
@@ -493,6 +499,10 @@ static CliParseResult ParseCliArgs(const std::vector<std::wstring> &args) {
   }
 
   if (result.options.showHelp || result.options.showVersion) {
+    return result;
+  }
+
+  if (result.options.hashRoundtripRequested) {
     return result;
   }
 
@@ -765,6 +775,21 @@ static void PrintVerifyResult(const std::wstring &hash, const HashResult &result
   std::cout << "R0: " << result.r0 << " jobs/s" << '\n';
   std::cout << "R1: " << result.r1 << " jobs/s" << '\n';
   std::cout << "R2: " << result.r2 << " jobs/s" << '\n';
+}
+
+static int RunHashRoundtripCommand() {
+  // Verify that GenerateBenchmarkHash -> ValidateBenchmarkHash roundtrips correctly.
+  const uint64_t r0 = 12345, r1 = 23456, r2 = 34567;
+  std::wstring hash = GenerateBenchmarkHash(r0, r1, r2);
+  HashResult decoded = ValidateBenchmarkHash(hash);
+  if (!decoded.valid || decoded.r0 != r0 || decoded.r1 != r1 || decoded.r2 != r2) {
+    std::wcerr << L"Hash roundtrip FAILED: " << hash
+               << L" -> valid=" << (decoded.valid ? L"true" : L"false")
+               << L" r0=" << decoded.r0 << L" r1=" << decoded.r1 << L" r2=" << decoded.r2 << L"\n";
+    return (int)CliExitCode::InvalidArguments;
+  }
+  std::wcout << L"Hash roundtrip OK: " << hash << L"\n";
+  return (int)CliExitCode::Success;
 }
 
 static int RunVerifyCommand(const CliOptions &options) {
@@ -1113,6 +1138,9 @@ static int RunCliCommand(CliOptions options, const CliEnvironment &environment,
 
   ApplyCliDefaults(options);
 
+  if (options.hashRoundtripRequested) {
+    return RunHashRoundtripCommand();
+  }
   if (options.verifyRequested) {
     return RunVerifyCommand(options);
   }

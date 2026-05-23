@@ -7,10 +7,11 @@ Copyright (c) 2026 aufkrawall
 
 ## Critical workflow
 
-- Windows-first project: prefer PowerShell 7.6, Windows-native paths, and installed project tools unless there is a clear reason not to!
-- After code changes, run `python build.py`!
+- Windows-first project: prefer PowerShell 7.6, Windows-native paths, and installed project tools unless there is a clear reason to move away from them!
+- After code changes, run `python build.py native`!
 - Always git commit after code changes!
-- Before committing, run relevant tests/unit tests and ensure build/test results succeed.
+- Before committing, run ALL tests and ensure they pass: `python tests/run_tests.py --stress --sanitize`!
+- Sanitizer builds catch UB and memory errors before they reach release.
 - Commit completed code changes with plain git commands only: `git status`, `git add -A`, `git commit -m "<message>"`!
 - Do not push to cloud unless explicitly requested, generally just commit locally!
 - Always consult `llm-wiki/` for code, bug, build, test, config, debugging, or behavior work!

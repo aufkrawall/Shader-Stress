@@ -123,6 +123,42 @@ def build_windows_resource(out_path):
         return None
 
 
+def set_pe_checksum(exe_path):
+    """Compute and write the PE checksum using the standard algorithm."""
+    try:
+        data = bytearray(exe_path.read_bytes())
+        if len(data) < 256:
+            return False
+        # Locate PE checksum field: offset in optional header differs for PE32/PE32+
+        dos = data[:64]
+        e_lfanew = int.from_bytes(dos[60:64], "little")
+        nt_offset = e_lfanew + 4  # skip PE\0\0 signature
+        fh = data[nt_offset:nt_offset + 20]
+        opt_magic = int.from_bytes(data[e_lfanew + 24:e_lfanew + 26], "little")
+        # PE32+: Checksum at optional header offset 64
+        # PE32: Checksum at optional header offset 68
+        if opt_magic == 0x20b:
+            checksum_off = e_lfanew + 24 + 64
+        elif opt_magic == 0x10b:
+            checksum_off = e_lfanew + 24 + 68
+        else:
+            return False
+        # Zero out the checksum field for calculation
+        data[checksum_off:checksum_off + 4] = b'\x00\x00\x00\x00'
+        # Compute one's complement sum over all WORDs, then add file size
+        total = 0
+        for i in range(0, len(data), 2):
+            word = int.from_bytes(data[i:i + 2], "little")
+            total = (total + word) & 0xFFFFFFFF
+        total = (total + len(data)) & 0xFFFFFFFF
+        # Write checksum
+        data[checksum_off:checksum_off + 4] = total.to_bytes(4, "little")
+        exe_path.write_bytes(data)
+        return True
+    except Exception:
+        return False
+
+
 def build_windows_cli_launcher(target, cpu, out_path):
     """Build the tiny CLI launcher (.com) using LLVM MinGW"""
     launcher_path = out_path / "ShaderStress.com"
@@ -275,6 +311,12 @@ def build_windows_target(config):
 
         cmd = [c for c in cmd if c]
         subprocess.run(cmd, check=True, capture_output=True)
+
+        # Set PE checksum for image integrity validation
+        if set_pe_checksum(exe_path):
+            log(f"PE checksum set for {exe_path.name}")
+        else:
+            log(f"Warning: could not set PE checksum for {exe_path.name}")
 
         # Build the CLI launcher
         build_windows_cli_launcher(target, cpu, out_path)

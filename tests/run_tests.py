@@ -188,6 +188,12 @@ def test_repro_high_complexity(binary):
     check(ret == 0, "--repro high complexity (boundary)")
 
 
+def test_hash_roundtrip(binary):
+    ret, out, err = run(binary, ["--hash-roundtrip"])
+    text = out.decode(errors="replace")
+    check(ret == 0 and "roundtrip OK" in text, "--hash-roundtrip")
+
+
 LIGHTWEIGHT_TESTS = [
     test_help,
     test_version,
@@ -208,6 +214,7 @@ LIGHTWEIGHT_TESTS = [
     test_max_duration_alias_validation,
     test_repro_missing_args,
     test_repro_partial_args,
+    test_hash_roundtrip,
 ]
 
 
@@ -272,6 +279,35 @@ STRESS_TESTS = [
 # Main
 # ---------------------------------------------------------------------------
 
+def build_with_sanitizer(mode="undefined"):
+    """Build the native target with a sanitizer and return the binary path."""
+    import subprocess as sp
+    print(f"  [BUILD] Building with --sanitize={mode}")
+    result = sp.run([sys.executable, "build.py", "--sanitize=" + mode, "native"],
+                    capture_output=True, timeout=300, cwd=PROJECT_ROOT)
+    if result.returncode != 0:
+        print(f"  [FAIL] sanitizer build ({mode}): {result.stderr.decode(errors='replace')[-200:]}")
+        return None
+    return find_binary()
+
+
+def test_sanitizer_undefined(binary):
+    """Run CLI tests under UBSan build (fast, no CPU stress)."""
+    if not binary:
+        return
+    ret, out, err = run(binary, ["--help"])
+    text = out.decode(errors="replace")
+    check(ret == 0 and "Usage:" in text, "UBSan: --help")
+
+
+def test_sanitizer_hash_roundtrip(binary):
+    if not binary:
+        return
+    ret, out, err = run(binary, ["--hash-roundtrip"])
+    text = out.decode(errors="replace")
+    check(ret == 0 and "roundtrip OK" in text, "UBSan: --hash-roundtrip")
+
+
 def main():
     global PASS, FAIL
     binary = find_binary()
@@ -290,6 +326,7 @@ def main():
 
     run_stress = "--stress" in flags
     record_golden = "--record-golden" in flags
+    run_sanitizer = "--sanitize" in flags
 
     if not os.path.exists(binary):
         print(f"ERROR: Binary not found: {binary}")
@@ -322,6 +359,16 @@ def main():
             verify_golden_values(binary)
     else:
         print(f"\n  (use --stress to also run CPU workload tests)")
+
+    # Sanitizer builds (only with --sanitize)
+    if run_sanitizer:
+        print(f"\n--- Sanitizer builds ---")
+        san_binary = build_with_sanitizer("undefined")
+        if san_binary:
+            test_sanitizer_undefined(san_binary)
+            test_sanitizer_hash_roundtrip(san_binary)
+        else:
+            print("  [SKIP] sanitizer tests (build failed)")
 
     total = PASS + FAIL
     print(f"\n{'='*50}")

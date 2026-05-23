@@ -148,12 +148,7 @@ static void RunCompilerLogic(int idx, Worker &w) {
   int mode = g_App.mode.load(std::memory_order_relaxed);
   const uint64_t verifyInterval = (mode == 0) ? 64ull : 128ull;
   const int verifyComplexity = VERIFY_COMPLEXITY;
-  if (g_Golden.initialized.load(std::memory_order_relaxed)) {
-    // Acquire fence pairs with the release fence in InitGoldenValues().
-    // Ensures the golden value writes are visible once initialized == true.
-    std::atomic_thread_fence(std::memory_order_acquire);
-  }
-  if (g_Golden.initialized.load(std::memory_order_relaxed) &&
+  if (g_Golden.initialized.load(std::memory_order_acquire) &&
       g_App.running.load(std::memory_order_relaxed) &&
       !g_App.quit.load(std::memory_order_relaxed) &&
       !w.terminate.load(std::memory_order_relaxed) &&
@@ -322,7 +317,16 @@ void IOThread(int ioIdx) {
       }
 
       hFile = CreateFileW(fpath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                          OPEN_EXISTING, FILE_FLAG_NO_BUFFERING | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+                           OPEN_EXISTING, FILE_FLAG_NO_BUFFERING | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+      if (hFile != INVALID_HANDLE_VALUE) {
+        // Post-open verification: canonical path must match the original random filename.
+        wchar_t actualPath[MAX_PATH];
+        DWORD actualLen = GetFinalPathNameByHandleW(hFile, actualPath, MAX_PATH, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        if (actualLen == 0 || actualLen >= MAX_PATH) {
+          CloseHandle(hFile);
+          hFile = INVALID_HANDLE_VALUE;
+        }
+      }
       fileCreated = true;
     }
 
@@ -338,11 +342,14 @@ void IOThread(int ioIdx) {
 
     LARGE_INTEGER pos;
     pos.QuadPart = (rng() % (IO_FILE_SIZE - IO_CHUNK_SIZE)) & ~4095;
-    SetFilePointerEx(hFile, pos, nullptr, FILE_BEGIN);
+    if (!SetFilePointerEx(hFile, pos, nullptr, FILE_BEGIN)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      continue;
+    }
 
     DWORD read;
     uint8_t *p = buf.As<uint8_t>();
-    if (ReadFile(hFile, p, (DWORD)IO_CHUNK_SIZE, &read, nullptr) && read > 0) {
+    if (ReadFile(hFile, p, (DWORD)IO_CHUNK_SIZE, &read, nullptr) && read == IO_CHUNK_SIZE) {
       // Process buffer with CPU-side hash to keep core hot alongside I/O
       uint64_t hash = 0;
       for (DWORD j = 0; j < read; j += 8) {
@@ -496,6 +503,20 @@ void IOThread(int ioIdx) {
       if (hFile != -1)
         fcntl(hFile, F_NOCACHE, 1);
 #endif
+      if (hFile != -1) {
+        // Post-open verification: canonical path must match the original random temp file.
+        char linkBuf[4096];
+        char fdPath[64];
+        snprintf(fdPath, sizeof(fdPath), "/proc/self/fd/%d", hFile);
+        ssize_t linkLen = readlink(fdPath, linkBuf, sizeof(linkBuf) - 1);
+        if (linkLen > 0) {
+          linkBuf[linkLen] = '\0';
+          if (strstr(linkBuf, "/tmp/stress_") != linkBuf) {
+            close(hFile);
+            hFile = -1;
+          }
+        }
+      }
       fileCreated = true;
     }
 
@@ -510,11 +531,14 @@ void IOThread(int ioIdx) {
     }
 
     off_t pos = (rng() % (IO_FILE_SIZE - IO_CHUNK_SIZE)) & ~4095;
-    lseek(hFile, pos, SEEK_SET);
+    if (lseek(hFile, pos, SEEK_SET) == (off_t)-1) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      continue;
+    }
 
     uint8_t *p = buf.As<uint8_t>();
     ssize_t readBytes = read(hFile, p, IO_CHUNK_SIZE);
-    if (readBytes > 0) {
+    if (readBytes == (ssize_t)IO_CHUNK_SIZE) {
       // Process buffer with CPU-side hash to keep core hot alongside I/O
       uint64_t hash = 0;
       for (ssize_t j = 0; j < readBytes; j += 8) {

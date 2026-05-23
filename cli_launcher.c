@@ -44,9 +44,9 @@ static wchar_t *BuildChildCommandLine(const wchar_t *exePath,
   }
 
   if (tailLen != 0) {
-    swprintf(commandLine, totalLen, L"\"%ls\" %ls", exePath, tail);
+    _snwprintf_s(commandLine, totalLen, _TRUNCATE, L"\"%ls\" %ls", exePath, tail);
   } else {
-    swprintf(commandLine, totalLen, L"\"%ls\"", exePath);
+    _snwprintf_s(commandLine, totalLen, _TRUNCATE, L"\"%ls\"", exePath);
   }
 
   return commandLine;
