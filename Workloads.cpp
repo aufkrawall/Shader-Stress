@@ -888,8 +888,7 @@ void RunPerfStats() {
 }
 
 // ============================================================================
-// Power Measurement — reads MSR_PKG_ENERGY_STATUS via WinRing0 driver
-// Works when Core Temp (or any WinRing0-based tool) is running elevated.
+// Power Measurement — reads CPU package power via WinRing0 MSR driver
 // ============================================================================
 #if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
 #define WIN32_LEAN_AND_MEAN
@@ -898,58 +897,54 @@ void RunPerfStats() {
 // AMD MSR for package energy (Zen 3: MSR_PKG_ENERGY_STATUS)
 #define MSR_PKG_ENERGY 0xC001029BU
 
-// Attempt to open MSR driver device (WinRing0 or Core Temp variants)
+// Try to open MSR driver (WinRing0 or Core Temp variants)
+static HANDLE g_DebugDevice = INVALID_HANDLE_VALUE;
+static wchar_t g_DebugName[64] = L"";
+
 static HANDLE OpenMsrDriver() {
-  const wchar_t* devices[] = {
-    L"\\\\.\\WinRing0_1_2_0",
-    L"\\\\.\\WinRing0x64",
-    L"\\\\.\\WinRing0",
-    L"\\\\.\\CoreTempDriver",
-    L"\\\\.\\CoreTempDrv",
+  const wchar_t* devs[] = {
+    L"\\\\.\\WinRing0_1_2_0", L"\\\\.\\WinRing0x64", L"\\\\.\\WinRing0",
+    L"\\\\.\\CoreTempDriver", L"\\\\.\\CoreTempDrv",
+    L"\\\\.\\CoreTemp",
+    L"\\\\.\\EnergyMeter", L"\\\\.\\Energy",
   };
-  for (auto d : devices) {
+  for (auto d : devs) {
     HANDLE h = CreateFileW(d, GENERIC_READ | GENERIC_WRITE, 0, NULL,
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h != INVALID_HANDLE_VALUE) return h;
+    if (h != INVALID_HANDLE_VALUE) {
+      wcscpy(g_DebugName, d);
+      g_DebugDevice = h;
+      return h;
+    }
   }
   return INVALID_HANDLE_VALUE;
 }
 
-// Read MSR via driver IOCTL. Tries many variants.
+// Read MSR via driver IOCTL — brute-force all function codes 0x800-0x9FF
 static bool ReadMsr(HANDLE h, uint32_t reg, uint64_t* val) {
-  // IOCTL variants to try
-  DWORD codes[] = {
-    0x00222084, 0x08002084, 0x80002084, 0x80002040,
-    0x00222040, 0x08002040, 0x00222088, 0x08002088,
-    0x80002088, 0x00222080, 0x08002080, 0x80002080,
-    0x00222000, 0x08002000, 0x80002000,
-  };
   DWORD ret = 0;
+  int inSizes[] = {4, 8, 12};
+  int outSizes[] = {8, 12, 16};
 
-  // Buffer patterns to try: [reg, pad, pad], [reg, 0, 0, 0], etc.
-  struct { uint32_t reg; uint32_t pad; }     b8  = { reg, 0 };
-  struct { uint32_t reg; uint32_t lo; uint32_t hi; } b12 = { reg, 0, 0 };
-  uint64_t out8  = 0;
-  uint64_t out12[2] = { 0, 0 };
-
-  for (auto code : codes) {
-    // Pattern 1: 4-byte input, 8-byte output
-    b8.reg = reg; out8 = 0;
-    if (DeviceIoControl(h, code, &b8, 4, &out8, 8, &ret, NULL)) {
-      *val = out8; return true;
-    }
-    // Pattern 2: 8-byte input, 8-byte output
-    if (DeviceIoControl(h, code, &b8, 8, &out8, 8, &ret, NULL)) {
-      *val = out8; return true;
-    }
-    // Pattern 3: 12-byte in/out (WinRing0 style: reg/hi/lo)
-    b12.reg = reg; b12.lo = 0; b12.hi = 0; out12[0] = 0; out12[1] = 0;
-    if (DeviceIoControl(h, code, &b12, 12, &b12, 12, &ret, NULL)) {
-      *val = ((uint64_t)b12.hi << 32) | b12.lo; return true;
-    }
-    // Pattern 4: 12-byte in/out swapped (reg/lo/hi)
-    if (DeviceIoControl(h, code, &b12, 12, &b12, 12, &ret, NULL)) {
-      *val = ((uint64_t)b12.lo << 32) | b12.hi; return true;
+  // Generate all CTL_CODE(FILE_DEVICE_UNKNOWN=0x22, func, method=0-3, access=0)
+  // for function codes 0x800 through 0x9FF
+  for (int func = 0x800; func <= 0x9FF; func++) {
+    for (int method = 0; method < 4; method++) {
+      DWORD code = (0x22 << 16) | (0 << 14) | (func << 2) | method;
+      for (int is : inSizes) {
+        for (int os : outSizes) {
+          uint8_t in[32] = {}; uint8_t out[32] = {};
+          *(uint32_t*)in = reg;
+          ret = 0;
+          if (DeviceIoControl(h, code, in, is, out, os, &ret, NULL) && ret >= 8) {
+            // Extract QWORD from output at every offset
+            for (int off = 0; off + 8 <= (int)ret; off++) {
+              *val = *(uint64_t*)(out + off);
+              if (*val != 0 && *val != ~0ULL) return true;
+            }
+          }
+        }
+      }
     }
   }
   return false;
@@ -960,22 +955,23 @@ NOINLINE
 void RunMeasurePower() {
 #if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
   HANDLE h = OpenMsrDriver();
-  bool hasDriver = (h != INVALID_HANDLE_VALUE);
 
-  if (!hasDriver) {
-    printf("MSR driver not found. Tried: WinRing0, CoreTempDriver.\n");
-    printf("Run Core Temp as administrator first to load the MSR driver.\n");
+  if (h == INVALID_HANDLE_VALUE) {
+    printf("No MSR driver found. Run Core Temp as administrator.\n");
     printf("Falling back to perf-stats (no power data).\n\n");
     RunPerfStats();
     return;
   }
 
-  printf("MSR driver opened OK (handle=%p). Testing MSR read ...\n", (void*)h);
+  printf("Opened device: %S\n", g_DebugName);
+  printf("Testing MSR read ...\n");
   uint64_t testVal = 0;
   bool msrOk = ReadMsr(h, MSR_PKG_ENERGY, &testVal);
-  printf("  ReadMsr(0xC001029B): %s", msrOk ? "OK" : "FAILED");
-  if (msrOk) printf(" value=0x%llx\n", (unsigned long long)testVal);
-  else       printf(" (last error=%lu)\n", GetLastError());
+  if (msrOk)
+    printf("  ReadMsr(0xC001029B) OK: value=0x%llx\n", (unsigned long long)testVal);
+  else
+    printf("  ReadMsr(0xC001029B): all %d IOCTL patterns failed (last error=%lu)\n",
+           512*4*3*3, GetLastError());
   fflush(stdout);
 
   StressConfig cfg = {};
