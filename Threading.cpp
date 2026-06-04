@@ -992,6 +992,9 @@ void Watchdog() {
   uint64_t lastPowerLogTick = 0;
 
   while (!g_App.quit) {
+    // Init power measurement in background (blocks for ~10s on first run)
+    InitPowerMeasurement();
+
     bool currentRunning = g_App.running;
     uint64_t now = GetTick();
     uint64_t totalShaders = 0;

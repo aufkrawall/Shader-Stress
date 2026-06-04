@@ -1100,7 +1100,7 @@ static double RunPowerReader() {
   return (watts > 0 && watts < 1000) ? watts : -1.0;
 }
 
-static void InitPowerMeasurement() {
+void InitPowerMeasurement() {
   if (g_lhmInited) return;
   g_lhmInited = true;
 
@@ -1134,7 +1134,6 @@ static void InitPowerMeasurement() {
 
 double SampleCpuPackagePower() {
 #if defined(_WIN32)
-  if (!g_lhmInited) InitPowerMeasurement();
   if (!g_lhmOk) return -1.0;
 
   uint64_t tick = GetTickCount64();

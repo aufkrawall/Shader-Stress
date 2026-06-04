@@ -439,6 +439,7 @@ uint64_t SafeRunWorkload(uint64_t seed, int complexity,
                           const StressConfig &config, int threadIdx);
 void RunPerfStats();
 double SampleCpuPackagePower();
+void InitPowerMeasurement();
 void ShutdownPowerMeasurement();
 
 struct GoldenValues {
