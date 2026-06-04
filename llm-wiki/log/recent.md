@@ -1,5 +1,31 @@
 # Recent Changes Log
 
+## 2026-06-04 — Power-draw inversion: cache residency + expensive compute ops
+
+**Inverts the 2026-05-23 "L2-miss memory controller" design** — per user note, data staying in CPU caches yields higher package power than data spilling to DRAM (cache hits keep execution units busy; DRAM access stalls the pipeline).
+
+- **Workloads.cpp — buffer size**: `WORK_BUF_ELEMS` 65536 → 32768 (512 KB → 256 KB, L2-resident on all modern CPUs). Reverts 2026-05-23's deliberate L2-miss design.
+- **Workloads.cpp — AVX-512**: Replaced 4 of 32 FMA WORK calls with `_mm512_div_pd` and 4 with `_mm512_sqrt_pd`. Feeds the otherwise-idle div/sqrt execution unit. GPR chains 8 → 16 (g0–g15) for more integer-pipe pressure.
+- **Workloads.cpp — AVX-2**: Replaced 1 of 16 FMA with `_mm256_div_pd` and 1 with `_mm256_sqrt_pd`. GPR chains 8 → 16.
+- **Workloads.cpp — SSE2**: Replaced 1 of 48 split-mul-add WORK calls with `_mm_div_pd` and 1 with `_mm_sqrt_pd`.
+- **Workloads.cpp — NEON (ARM64)**: Replaced 2 of 48 NEON_WORK with `vdivq_f64` and 2 with `vsqrtq_f64`.
+- **Workloads.cpp — function attributes**: Added `__attribute__((hot))` to `TARGET_AVX2` and `TARGET_AVX512` for icache priority (no µop-cache bloat risk).
+- **Threading.cpp — DecompressLogic**: `PASSES` 128 → 256; added 64-bit `idiv` every 64 bytes (high-latency port-0 traffic, ~20-40 cycles each).
+- **Threading.cpp — IOThread (Windows + Linux)**: Added a 2nd-pass AVX2 hash on the 256 KB read buffer (gated on `__AVX2__`). Doubles per-read CPU burst on the IO core.
+- **Common.h + Threading.cpp — RAMThread**: New `RAM_STRESS_MAX_BYTES = 1536 MiB` (1.5 GB) constant. Caps the working set to 1.5 GB (L3-friendly). Replaces "70 % of available memory, max 16 GB" which put heavy load on DRAM subsystem.
+- **tests/run_tests.py — 10 new read-only invariant tests**:
+  - `test_invariant_work_buf_elems` (256 KB)
+  - `test_invariant_ram_stress_cap` (1.5 GB)
+  - `test_invariant_decomp_passes` (256)
+  - `test_invariant_avx512_vec_div` / `_vec_sqrt` (AVX-512 div/sqrt)
+  - `test_invariant_avx2_vec_div` (AVX-2 div)
+  - `test_invariant_sse2_vec_div` (SSE2 div)
+  - `test_invariant_io_avx2_hash` (2nd-pass AVX2 hash in IOThread)
+  - `test_invariant_decomp_idiv` (64-bit IDIV every 64 bytes)
+  - `test_invariant_realistic_unchanged` (RunRealisticCompilerSim_V3 byte-identical)
+- **Verification**: 38/38 tests pass (20 CLI + 10 invariant + 4 stress + 2 golden + 2 UBSan). `python build.py native` builds clean.
+- **Explicitly NOT touched**: `RunRealisticCompilerSim_V3` (user-excluded), `tests/golden_values.json` (unchanged), `build.py` flags (current set is correct: no unroll/peel/web/cf-protection per the 2026-05-23 design).
+
 ## 2026-05-23 — v2: Strip extra optimization flags, add --perf-stats
 
 - **build.py**: Removed `-frename-registers`, `-fweb`, `-funroll-all-loops`, `-fpeel-loops`, `-fcf-protection=full`. These made code too efficient (fewer cycles/iter), reducing sustained power draw. Online release uses vanilla `-O3`.

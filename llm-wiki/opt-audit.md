@@ -2,6 +2,8 @@
 
 Audited for maximum power draw, throughput, heat, and utilization (2026-05-14).
 
+**2026-06-04 — Power-draw inversion**: See "## 2026-06-04 Inversion" at the bottom of this file. The 2026-05-23 design ("L2-miss memory controller activity") was deliberately INVERTED per user note: cache-resident data + expensive compute ops draw more CPU power than DRAM-bound data.
+
 ## Implemented Optimizations
 
 ### Build System (build.py)
@@ -86,3 +88,41 @@ Audited for maximum power draw, throughput, heat, and utilization (2026-05-14).
 - `python tests/run_tests.py`: 19/19 CLI tests passed
 - Each build target compiles without warnings/errors
 - `git status` confirms only intended files changed
+
+## 2026-06-04 Inversion: cache residency + expensive compute ops
+
+**Inverts the 2026-05-23 "L2-miss → memory controller activity" design.** Per user note: data staying in CPU caches yields higher package power than data spilling to DRAM. DRAM-bound access stalls the CPU pipeline; L2-resident data keeps execution units fed at peak IPC.
+
+### Reverted 2026-05-23 changes
+- **`WORK_BUF_ELEMS` 65536 → 32768** (512 KB → 256 KB, L2-resident on all modern CPUs). MASK values re-derived.
+- **RAM stress cap**: 70 % of available memory (max 16 GB) → fixed 1.5 GB. DRAM-spilling lowers power.
+- **Decompressor `PASSES` 128 → 256**: more sustained integer-pipe work, buffer still L2-resident.
+- **GPR chains**: AVX-2 8 → 16, AVX-512 8 → 16 (more integer-pipe pressure).
+
+### New expensive compute ops (replacement, not addition — no register spill)
+
+To keep the 32-ZMM / 16-YMM / 16-XMM / 16-NEON register files intact, the new vec-div / vec-sqrt ops REPLACE some of the existing FMA / mul-add WORK calls rather than add new accumulators. The replaced ops run on the same `r` registers, so the FMA/dependent chain continues — the new ops simply feed a different execution unit.
+
+- **AVX-512**: 4 of 32 FMA replaced with `_mm512_div_pd`; 4 replaced with `_mm512_sqrt_pd`. 24 FMA + 4 div + 4 sqrt = 32 ZMM.
+- **AVX-2**: 1 of 16 FMA replaced with `_mm256_div_pd`; 1 replaced with `_mm256_sqrt_pd`. 14 FMA + 1 div + 1 sqrt = 16 YMM.
+- **SSE2**: 1 of 48 split-mul-add replaced with `_mm_div_pd`; 1 with `_mm_sqrt_pd`.
+- **NEON (ARM64)**: 2 of 48 NEON_WORK replaced with `vdivq_f64`; 2 with `vsqrtq_f64`.
+
+### IO thread 2nd-pass AVX2 hash
+- `IOThread` (Windows + Linux): added a 2nd hash pass over the 256 KB read buffer using `_mm256_loadu_si256` + `_mm256_mul_epu32`. Gated on `__AVX2__`. Doubles the per-IO-completion CPU burst, keeping the IO core hot.
+
+### Decompressor 64-bit IDIV
+- Added `acc = acc / ((data[i] & 0xFFFFFFFFULL) | 1ULL)` every 64 bytes inside the `RunDecompressLogic` inner loop. ~20-40 cycle port-0 latency per call. PASSES doubled, so ~1M IDIV per call. Buffer still 256 KB / L2-resident.
+
+### Function attributes
+- Added `__attribute__((hot))` to `TARGET_AVX2` and `TARGET_AVX512` (alongside the existing `noinline` and target attribute). Tells the compiler to prioritize these functions in the icache. No µop-cache bloat risk.
+
+### Rejected (not added)
+- `-funroll-loops` / `-funroll-all-loops` / `-fpeel-loops`: still removed (the 2026-05-23 reasoning stands: efficient code draws less power).
+- More mask-register pressure / permutes on AVX-512: still rejected (reverted 2026-05-23).
+- `__attribute__((flatten))`: rejected (icache bloat risk).
+- NUMA-aware allocation / huge pages: deferred; not a power-draw lever.
+- Larger `WORK_BUF_ELEMS` (e.g., 768 KB): would push data further from L2; contradicts user note.
+
+### Trade-off
+On Intel Skylake-X+ (and Emerald Rapids), the AVX-512 path may trigger AVX-512 frequency throttling because all 32 ZMM + 8 div + 4 sqrt per iter keep the core very busy. This is a feature, not a bug — throttling is a sign the core is at the power/thermal limit. If measured frequency drops too far, reduce the div/sqrt count from 4+4 to 2+2.

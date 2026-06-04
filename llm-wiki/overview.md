@@ -56,3 +56,4 @@ All runtime params are hardcoded constants (no external config files). CLI flags
 - `#pragma clang fp contract(off)` ensures deterministic FP golden values
 - `NOINLINE` on dispatcher prevents LTO from inlining ISA-specific into generic code
 - 64-byte alignment on hot buffers (AVX-512) and Worker structs
+- 2026-06-04: `WORK_BUF_ELEMS = 32768` (256 KB, L2-resident). RAM stress capped at 1.5 GB (L3-friendly). All max-power kernels include vec-div / vec-sqrt ops to feed the div/sqrt execution unit alongside FMA. Decompressor PASSES = 256, with 64-bit IDIV every 64 bytes.

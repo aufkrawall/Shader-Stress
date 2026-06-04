@@ -3,12 +3,15 @@
 #include <cstring>
 #include <vector>
 
-// Work buffer size: 512KB (65536 doubles). Used as thread-local work area for
-// all max-power workloads (SSE2, NEON, AVX2, AVX-512) which use mixed memory+
-// compute WORK calls to saturate load/store ports. Also used by IDECOMPRESS
-// (256KB fits in L2) — the extra space is harmless.
-constexpr size_t WORK_BUF_ELEMS = 65536;
-// Alignment-safe MASK values derived from buffer size (must be power-of-two):
+// Work buffer size: 256KB (32768 doubles) — L2-resident on all modern CPUs.
+// Reduced from 512KB (2026-05-23) per user note: data staying in CPU caches
+// yields higher package power than data spilling to RAM (L2/L3-resident hits
+// keep execution units busy, while DRAM-bound access stalls the pipeline).
+// Used as thread-local work area for all max-power workloads (SSE2, NEON,
+// AVX2, AVX-512) which now rely on L2 hit rate + extra expensive compute ops
+// (vec-div/vec-sqrt) rather than memory-controller traffic to heat the cores.
+constexpr size_t WORK_BUF_ELEMS = 32768;
+// Alignment-safe MASK values derived from buffer size (buffer is power-of-two):
 // SSE2/NEON: clear lowest 1 bit  → 16-byte alignment
 // AVX2:      clear lowest 2 bits → 32-byte alignment
 // AVX-512:   clear lowest 3 bits → 64-byte alignment
@@ -112,13 +115,14 @@ LONG WINAPI WriteCrashDump(PEXCEPTION_POINTERS pExceptionInfo, uint64_t seed,
   } break;
 
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
-#define TARGET_AVX2 __attribute__((target("avx2,fma"), noinline))
+// 2026-06-04: added `hot` to prioritize icache footprint for these hot loops.
+#define TARGET_AVX2 __attribute__((target("avx2,fma"), hot, noinline))
 // Clang 22+ (llvm-mingw): evex512 unsupported in target attribute (ignored).
 // Clang <22 (Zig's clang 20) and GCC: evex512 required for AVX-512 intrinsics.
 #if defined(__clang__) && __clang_major__ >= 22
-#define TARGET_AVX512 __attribute__((target("avx512f"), noinline))
+#define TARGET_AVX512 __attribute__((target("avx512f"), hot, noinline))
 #else
-#define TARGET_AVX512 __attribute__((target("avx512f,evex512"), noinline))
+#define TARGET_AVX512 __attribute__((target("avx512f,evex512"), hot, noinline))
 #endif
 #else
 #define TARGET_AVX2
@@ -395,26 +399,32 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   #define NEON_WORK(r, off) \
     r = vfmaq_f64(vld1q_f64(&memPtr[(idx + off) & MASK]), r, mul); \
     vst1q_f64(&memPtr[(idx + off + 512) & MASK], r)
+  #define NEON_WORK_DIV(r, off) \
+    r = vdivq_f64(r, vld1q_f64(&memPtr[(idx + off) & MASK])); \
+    vst1q_f64(&memPtr[(idx + off + 512) & MASK], r)
+  #define NEON_WORK_SQRT(r, off) \
+    r = vsqrtq_f64(vld1q_f64(&memPtr[(idx + off) & MASK])); \
+    vst1q_f64(&memPtr[(idx + off + 512) & MASK], r)
 
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
 
     NEON_WORK(r0, 0);   NEON_WORK(r1, 2);   NEON_WORK(r2, 4);   NEON_WORK(r3, 6);
     g0 = g0 / ((g8 & 0xFFFFFFFF) | 1);  g1 = g1 / ((g9 & 0xFFFFFFFF) | 1);
-    NEON_WORK(r4, 8);   NEON_WORK(r5, 10);  NEON_WORK(r6, 12);  NEON_WORK(r7, 14);
+    NEON_WORK_DIV(r4, 8);   NEON_WORK(r5, 10);  NEON_WORK(r6, 12);  NEON_WORK(r7, 14);
     g2 = g2 / ((g10 & 0xFFFFFFFF) | 1); g3 = g3 / ((g11 & 0xFFFFFFFF) | 1);
     NEON_WORK(r8, 16);  NEON_WORK(r9, 18);  NEON_WORK(r10, 20); NEON_WORK(r11, 22);
     g4 = g4 / ((g12 & 0xFFFFFFFF) | 1); g5 = g5 / ((g13 & 0xFFFFFFFF) | 1);
-    NEON_WORK(r12, 24); NEON_WORK(r13, 26); NEON_WORK(r14, 28); NEON_WORK(r15, 30);
+    NEON_WORK(r12, 24); NEON_WORK_SQRT(r13, 26); NEON_WORK(r14, 28); NEON_WORK(r15, 30);
     g6 = g6 / ((g14 & 0xFFFFFFFF) | 1); g7 = g7 / ((g15 & 0xFFFFFFFF) | 1);
 
     NEON_WORK(r0, 32);  NEON_WORK(r1, 34);  NEON_WORK(r2, 36);  NEON_WORK(r3, 38);
     g8 = g8 / ((g0 & 0xFFFFFFFF) | 1);  g9 = g9 / ((g1 & 0xFFFFFFFF) | 1);
     NEON_WORK(r4, 40);  NEON_WORK(r5, 42);  NEON_WORK(r6, 44);  NEON_WORK(r7, 46);
     g10 = g10 / ((g2 & 0xFFFFFFFF) | 1); g11 = g11 / ((g3 & 0xFFFFFFFF) | 1);
-    NEON_WORK(r8, 48);  NEON_WORK(r9, 50);  NEON_WORK(r10, 52); NEON_WORK(r11, 54);
+    NEON_WORK_SQRT(r8, 48);  NEON_WORK(r9, 50);  NEON_WORK(r10, 52); NEON_WORK(r11, 54);
     g12 = g12 / ((g4 & 0xFFFFFFFF) | 1); g13 = g13 / ((g5 & 0xFFFFFFFF) | 1);
-    NEON_WORK(r12, 56); NEON_WORK(r13, 58); NEON_WORK(r14, 60); NEON_WORK(r15, 62);
+    NEON_WORK(r12, 56); NEON_WORK(r13, 58); NEON_WORK_DIV(r14, 60); NEON_WORK(r15, 62);
     g14 = g14 / ((g6 & 0xFFFFFFFF) | 1); g15 = g15 / ((g7 & 0xFFFFFFFF) | 1);
 
     NEON_WORK(r0, 64);  NEON_WORK(r1, 66);  NEON_WORK(r2, 68);  NEON_WORK(r3, 70);
@@ -427,6 +437,10 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
 
     idx = (idx + 96) & MASK;
   }
+
+  #undef NEON_WORK
+  #undef NEON_WORK_DIV
+  #undef NEON_WORK_SQRT
   
   // Reduce NEON registers
   float64x2_t sum = vaddq_f64(r0, r1);
@@ -500,9 +514,17 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   // Load-Multiply-Add-Store pattern — 48 WORK calls (3 passes x 16) saturate
   // load/store ports. Split mul+add (not FMA) doubles µop count for maximum
   // pipeline pressure. Integer division adds sustained backpressure.
+  // 2026-06-04: 2 of the 48 calls replaced with vec-div/vec-sqrt to feed
+  // the div/sqrt execution unit (was idle; FMA/mul+add does not exercise it).
   #define SSE2_WORK(r, off) \
     r = _mm_mul_pd(r, mul); \
     r = _mm_add_pd(r, _mm_load_pd(&memPtr[(idx + off) & MASK])); \
+    _mm_store_pd(&memPtr[(idx + off + 512) & MASK], r)
+  #define SSE2_WORK_DIV(r, off) \
+    r = _mm_div_pd(r, _mm_load_pd(&memPtr[(idx + off) & MASK])); \
+    _mm_store_pd(&memPtr[(idx + off + 512) & MASK], r)
+  #define SSE2_WORK_SQRT(r, off) \
+    r = _mm_sqrt_pd(_mm_load_pd(&memPtr[(idx + off) & MASK])); \
     _mm_store_pd(&memPtr[(idx + off + 512) & MASK], r)
 
   for (int i = 0; i < iters; ++i) {
@@ -518,14 +540,14 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
     SSE2_WORK(r12, 24); SSE2_WORK(r13, 26); SSE2_WORK(r14, 28); SSE2_WORK(r15, 30);
     g6 = g6 / ((g14 & 0xFFFFFFFF) | 1); g7 = g7 / ((g15 & 0xFFFFFFFF) | 1);
 
-    // Pass 2: 16 WORK + 8 IDIV (different GPR pairs)
+    // Pass 2: 16 WORK + 8 IDIV (different GPR pairs) — 1 div + 1 sqrt inserted
     SSE2_WORK(r0, 32);  SSE2_WORK(r1, 34);  SSE2_WORK(r2, 36);  SSE2_WORK(r3, 38);
     g8 = g8 / ((g0 & 0xFFFFFFFF) | 1);  g9 = g9 / ((g1 & 0xFFFFFFFF) | 1);
     SSE2_WORK(r4, 40);  SSE2_WORK(r5, 42);  SSE2_WORK(r6, 44);  SSE2_WORK(r7, 46);
     g10 = g10 / ((g2 & 0xFFFFFFFF) | 1); g11 = g11 / ((g3 & 0xFFFFFFFF) | 1);
-    SSE2_WORK(r8, 48);  SSE2_WORK(r9, 50);  SSE2_WORK(r10, 52); SSE2_WORK(r11, 54);
+    SSE2_WORK(r8, 48);  SSE2_WORK_SQRT(r9, 50);  SSE2_WORK(r10, 52); SSE2_WORK(r11, 54);
     g12 = g12 / ((g4 & 0xFFFFFFFF) | 1); g13 = g13 / ((g5 & 0xFFFFFFFF) | 1);
-    SSE2_WORK(r12, 56); SSE2_WORK(r13, 58); SSE2_WORK(r14, 60); SSE2_WORK(r15, 62);
+    SSE2_WORK(r12, 56); SSE2_WORK(r13, 58); SSE2_WORK(r14, 60); SSE2_WORK_DIV(r15, 62);
     g14 = g14 / ((g6 & 0xFFFFFFFF) | 1); g15 = g15 / ((g7 & 0xFFFFFFFF) | 1);
 
     // Pass 3: 16 WORK (no interleaved GPR) + light XOR to break dependency chains
@@ -539,6 +561,10 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
 
     idx = (idx + 96) & MASK;
   }
+
+  #undef SSE2_WORK
+  #undef SSE2_WORK_DIV
+  #undef SSE2_WORK_SQRT
 
   __m128d sum = _mm_add_pd(r0, r1);
   sum = _mm_add_pd(sum, r2);
@@ -653,18 +679,28 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
   
   __m256d mul = _mm256_set1_pd(1.000001);
 
+  // 16 GPRs (doubled from 8: 2026-06-04 power inversion — more integer-pipe pressure)
   uint64_t g0 = seed, g1 = seed + 1, g2 = seed + 2, g3 = seed + 3;
   uint64_t g4 = seed + 4, g5 = seed + 5, g6 = seed + 6, g7 = seed + 7;
+  uint64_t g8 = seed + 8, g9 = seed + 9, g10 = seed + 10, g11 = seed + 11;
+  uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
 
   int idx = 0;
   const int MASK = MASK_AVX2;
   
   int iters = (int)std::min<uint64_t>((uint64_t)complexity * 180u, 2000000000u);
 
-  // 8 memory WORK calls — balanced mix of FMA + memory for AVX2 frequency
-  // reduction. No permutes or reg-reg FMAs to keep loop compact in µop cache.
+  // 16 memory WORK calls (4 chunks x 4) — mix of FMA + 1 vec-div + 1 vec-sqrt
+  // to keep div/sqrt unit fed alongside FMA (2026-06-04 power inversion).
+  // No permutes or reg-reg FMAs to keep loop compact in µop cache.
   #define AVX2_WORK(r, off) \
     r = _mm256_fmadd_pd(r, mul, _mm256_load_pd(&memPtr[(idx + off) & MASK])); \
+    _mm256_store_pd(&memPtr[(idx + off + 512) & MASK], r)
+  #define AVX2_WORK_DIV(r, off) \
+    r = _mm256_div_pd(r, _mm256_load_pd(&memPtr[(idx + off) & MASK])); \
+    _mm256_store_pd(&memPtr[(idx + off + 512) & MASK], r)
+  #define AVX2_WORK_SQRT(r, off) \
+    r = _mm256_sqrt_pd(_mm256_load_pd(&memPtr[(idx + off) & MASK])); \
     _mm256_store_pd(&memPtr[(idx + off + 512) & MASK], r)
 
   for (int i = 0; i < iters; ++i) {
@@ -673,18 +709,30 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     AVX2_WORK(r0, 0);  AVX2_WORK(r1, 4);  AVX2_WORK(r2, 8);  AVX2_WORK(r3, 12);
     g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
     g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
-    AVX2_WORK(r4, 16); AVX2_WORK(r5, 20); AVX2_WORK(r6, 24); AVX2_WORK(r7, 28);
+    g8 = (g8 * 0x9E3779B97F4A7C15ULL) ^ (g9 >> 17) ^ (g10 << 13);
+    g9 = (g9 * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13);
+    AVX2_WORK(r4, 16); AVX2_WORK(r5, 20); AVX2_WORK(r6, 24); AVX2_WORK_SQRT(r7, 28);
     g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
     g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
+    g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13);
+    g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13);
     AVX2_WORK(r8, 32); AVX2_WORK(r9, 36); AVX2_WORK(r10, 40); AVX2_WORK(r11, 44);
     g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
     g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
-    AVX2_WORK(r12, 48); AVX2_WORK(r13, 52); AVX2_WORK(r14, 56); AVX2_WORK(r15, 60);
+    g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13);
+    g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13);
+    AVX2_WORK(r12, 48); AVX2_WORK_DIV(r13, 52); AVX2_WORK(r14, 56); AVX2_WORK(r15, 60);
     g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
     g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
+    g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g8 << 13);
+    g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g8 >> 17) ^ (g9 << 13);
 
     idx = (idx + 64) & MASK;
   }
+
+  #undef AVX2_WORK
+  #undef AVX2_WORK_DIV
+  #undef AVX2_WORK_SQRT
 
   __m256d sum = _mm256_add_pd(r0, r1);
   sum = _mm256_add_pd(sum, r2);
@@ -704,7 +752,8 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
   
   double out[4];
   _mm256_storeu_pd(out, sum);
-  uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7;
+  uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7 ^
+                  g8 ^ g9 ^ g10 ^ g11 ^ g12 ^ g13 ^ g14 ^ g15;
   double final_val = out[0] + out[1] + out[2] + out[3] + (double)gint;
   volatile double sink = final_val;
   (void)sink;
@@ -767,43 +816,67 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
   
   __m512d mul = _mm512_set1_pd(1.000001);
 
-  // 8 GPRs
+  // 16 GPRs (doubled from 8: 2026-06-04 power inversion — more integer-pipe pressure)
   uint64_t g0 = seed, g1 = seed + 1, g2 = seed + 2, g3 = seed + 3;
   uint64_t g4 = seed + 4, g5 = seed + 5, g6 = seed + 6, g7 = seed + 7;
+  uint64_t g8 = seed + 8, g9 = seed + 9, g10 = seed + 10, g11 = seed + 11;
+  uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
 
   int idx = 0;
   const int MASK = MASK_AVX512;
   
   int iters = (int)std::min<uint64_t>((uint64_t)complexity * 150u, 2000000000u);
 
-  // 32 WORK calls on ALL 32 ZMM registers — maximal memory+compute mixing
+  // 32 WORK-style calls on ALL 32 ZMM registers — mix of FMA + vec-div + vec-sqrt
+  // to feed every execution unit. 4 div + 4 sqrt replace 8 of 32 FMA so the
+  // div/sqrt pipe is not idle (2026-06-04 power inversion: was FMA-only).
   #define WORK(r, off) \
     r = _mm512_fmadd_pd(r, mul, _mm512_load_pd(&memPtr[(idx + off) & MASK])); \
+    _mm512_store_pd(&memPtr[(idx + off + 512) & MASK], r)
+  #define WORK_DIV(r, off) \
+    r = _mm512_div_pd(r, _mm512_load_pd(&memPtr[(idx + off) & MASK])); \
+    _mm512_store_pd(&memPtr[(idx + off + 512) & MASK], r)
+  #define WORK_SQRT(r, off) \
+    r = _mm512_sqrt_pd(_mm512_load_pd(&memPtr[(idx + off) & MASK])); \
     _mm512_store_pd(&memPtr[(idx + off + 512) & MASK], r)
 
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
 
+    // Pass 1: 12 FMA + 2 div + 2 sqrt on r0..r15, interleaved with g0..g7 chains
     WORK(r0, 0);   WORK(r1, 8);   WORK(r2, 16);  WORK(r3, 24);
     g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
     g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
-    WORK(r4, 32);  WORK(r5, 40);  WORK(r6, 48);  WORK(r7, 56);
+    WORK_DIV(r4, 32);  WORK(r5, 40);  WORK(r6, 48);  WORK(r7, 56);
     g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
     g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
-    WORK(r8, 64);  WORK(r9, 72);  WORK(r10, 80); WORK(r11, 88);
+    WORK_SQRT(r8, 64); WORK(r9, 72);  WORK(r10, 80); WORK(r11, 88);
     g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
     g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
-    WORK(r12, 96);  WORK(r13, 104); WORK(r14, 112); WORK(r15, 120);
+    WORK(r12, 96);  WORK(r13, 104); WORK_DIV(r14, 112); WORK(r15, 120);
     g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
     g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
 
-    WORK(r16, 128); WORK(r17, 136); WORK(r18, 144); WORK(r19, 152);
-    WORK(r20, 160); WORK(r21, 168); WORK(r22, 176); WORK(r23, 184);
-    WORK(r24, 192); WORK(r25, 200); WORK(r26, 208); WORK(r27, 216);
-    WORK(r28, 224); WORK(r29, 232); WORK(r30, 240); WORK(r31, 248);
+    // Pass 2: 12 FMA + 2 div + 2 sqrt on r16..r31, interleaved with g8..g15 chains
+    WORK_SQRT(r16, 128); WORK(r17, 136); WORK(r18, 144); WORK(r19, 152);
+    g8  = (g8  * 0x9E3779B97F4A7C15ULL) ^ (g9  >> 17) ^ (g10 << 13);
+    g9  = (g9  * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13);
+    WORK(r20, 160); WORK(r21, 168); WORK(r22, 176); WORK_DIV(r23, 184);
+    g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13);
+    g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13);
+    WORK(r24, 192); WORK_DIV(r25, 200); WORK(r26, 208); WORK(r27, 216);
+    g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13);
+    g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13);
+    WORK(r28, 224); WORK(r29, 232); WORK(r30, 240); WORK_SQRT(r31, 248);
+    g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g8  << 13);
+    g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g8  >> 17) ^ (g9  << 13);
 
     idx = (idx + 256) & MASK;
   }
+
+  #undef WORK
+  #undef WORK_DIV
+  #undef WORK_SQRT
 
   // Reduce all 32 ZMM registers
   __m512d sum = _mm512_add_pd(r0, r1);
@@ -825,7 +898,8 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
   
   double out[8];
   _mm512_storeu_pd(out, sum);
-  uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7;
+  uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7 ^
+                  g8 ^ g9 ^ g10 ^ g11 ^ g12 ^ g13 ^ g14 ^ g15;
   double final_val = out[0] + out[1] + out[2] + out[3] +
                      out[4] + out[5] + out[6] + out[7] + (double)gint;
   volatile double sink = final_val;

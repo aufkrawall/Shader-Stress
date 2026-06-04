@@ -194,6 +194,88 @@ def test_hash_roundtrip(binary):
     check(ret == 0 and "roundtrip OK" in text, "--hash-roundtrip")
 
 
+# ---------------------------------------------------------------------------
+# Source-invariant regression tests (read-only, no CPU stress)
+# These verify the 2026-06-04 power-inversion invariants are intact in the
+# source tree. They grep .cpp / .h files for constants and patterns, and
+# never run the actual stress workload (per AGENTS.md rule).
+# ---------------------------------------------------------------------------
+
+def _read(path):
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
+def test_invariant_work_buf_elems(binary):
+    """WORK_BUF_ELEMS must be 32768 (256 KB, L2-resident) after the 2026-06-04 inversion."""
+    src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
+    check("constexpr size_t WORK_BUF_ELEMS = 32768;" in src,
+          "WORK_BUF_ELEMS == 32768 (256 KB L2-resident)")
+
+
+def test_invariant_ram_stress_cap(binary):
+    """RAM_STRESS_MAX_BYTES must be 1.5 GB (L3-friendly) after the 2026-06-04 inversion."""
+    src = _read(os.path.join(PROJECT_ROOT, "Common.h"))
+    check("RAM_STRESS_MAX_BYTES = 1536ULL * 1024 * 1024" in src,
+          "RAM_STRESS_MAX_BYTES == 1.5 GB (L3-friendly)")
+
+
+def test_invariant_decomp_passes(binary):
+    """DecompressLogic PASSES must be 256 after the 2026-06-04 inversion."""
+    src = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
+    check("const int PASSES = 256;" in src,
+          "DecompressLogic PASSES == 256")
+
+
+def test_invariant_avx512_vec_div(binary):
+    """AVX-512 path must use _mm512_div_pd (vec-div/iter, feeds div unit)."""
+    src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
+    check("_mm512_div_pd" in src,
+          "AVX-512 uses _mm512_div_pd")
+
+
+def test_invariant_avx512_vec_sqrt(binary):
+    """AVX-512 path must use _mm512_sqrt_pd (vec-sqrt/iter, feeds sqrt unit)."""
+    src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
+    check("_mm512_sqrt_pd" in src,
+          "AVX-512 uses _mm512_sqrt_pd")
+
+
+def test_invariant_avx2_vec_div(binary):
+    """AVX-2 path must use _mm256_div_pd."""
+    src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
+    check("_mm256_div_pd" in src,
+          "AVX-2 uses _mm256_div_pd")
+
+
+def test_invariant_sse2_vec_div(binary):
+    """SSE2 path must use _mm_div_pd (replaces 1-2 of the 48 split-mul-add WORK calls)."""
+    src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
+    check("_mm_div_pd" in src,
+          "SSE2 uses _mm_div_pd")
+
+
+def test_invariant_io_avx2_hash(binary):
+    """IOThread must have an AVX2 second-pass hash on the read buffer."""
+    src = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
+    check("_mm256_loadu_si256" in src and "_mm256_mul_epu32" in src,
+          "IOThread has AVX2 second-pass hash")
+
+
+def test_invariant_decomp_idiv(binary):
+    """DecompressLogic must inject 64-bit IDIV every 64 bytes (high-latency port-0 traffic)."""
+    src = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
+    check("acc = acc / ((data[i] & 0xFFFFFFFFULL) | 1ULL)" in src,
+          "DecompressLogic has 64-bit IDIV injection")
+
+
+def test_invariant_realistic_unchanged(binary):
+    """RunRealisticCompilerSim_V3 must be byte-identical (user-excluded kernel)."""
+    src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
+    check("RunRealisticCompilerSim_V3" in src and "case start + 31:" in src,
+          "RealisticCompilerSim_V3 banner + 32-case block intact")
+
+
 LIGHTWEIGHT_TESTS = [
     test_help,
     test_version,
@@ -215,6 +297,16 @@ LIGHTWEIGHT_TESTS = [
     test_repro_missing_args,
     test_repro_partial_args,
     test_hash_roundtrip,
+    test_invariant_work_buf_elems,
+    test_invariant_ram_stress_cap,
+    test_invariant_decomp_passes,
+    test_invariant_avx512_vec_div,
+    test_invariant_avx512_vec_sqrt,
+    test_invariant_avx2_vec_div,
+    test_invariant_sse2_vec_div,
+    test_invariant_io_avx2_hash,
+    test_invariant_decomp_idiv,
+    test_invariant_realistic_unchanged,
 ]
 
 

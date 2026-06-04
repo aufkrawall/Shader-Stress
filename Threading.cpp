@@ -203,7 +203,9 @@ static void RunDecompressLogic(int idx) {
   // Each pass processes BUF_SIZE bytes, repeated PASSES times to keep the
   // core busy for a meaningful per-invocation interval.
   // Smaller buffer (256KB) fits in L2, fewer cache misses = more sustained work.
-  const int PASSES = 128;
+  // 2026-06-04: PASSES doubled (128 -> 256) for more sustained integer-pipe work;
+  //             64-bit IDIV injected every 64 bytes for high-latency port-0 traffic.
+  const int PASSES = 256;
   uint64_t acc = 0;
   for (int p = 0; p < PASSES; ++p) {
     for (size_t i = 0; i < BUF_SIZE; i += 8) {
@@ -218,6 +220,10 @@ static void RunDecompressLogic(int idx) {
         acc += 0xDEADBEEF;
       // Integer multiply chain adds port 0 pressure (integer multiply)
       acc = (acc * 0x9E3779B97F4A7C15ULL) ^ (acc >> 31);
+      // 64-bit IDIV every 64 bytes: ~20-40 cycle port-0 latency, high power
+      if ((i & 63) == 0) {
+        acc = acc / ((data[i] & 0xFFFFFFFFULL) | 1ULL);
+      }
       data[i] ^= (uint8_t)acc;
     }
   }
@@ -350,13 +356,27 @@ void IOThread(int ioIdx) {
     DWORD read;
     uint8_t *p = buf.As<uint8_t>();
     if (ReadFile(hFile, p, (DWORD)IO_CHUNK_SIZE, &read, nullptr) && read == IO_CHUNK_SIZE) {
-      // Process buffer with CPU-side hash to keep core hot alongside I/O
+      // Process buffer with CPU-side hash to keep core hot alongside I/O.
+      // 2026-06-04: pass 1 (scalar) + pass 2 (AVX2 on x86_64 with __AVX2__)
+      // doubles per-read CPU burst -> higher sustained power on the IO core.
       uint64_t hash = 0;
       for (DWORD j = 0; j < read; j += 8) {
         uint64_t val;
         std::memcpy(&val, &p[j], 8);
         hash = (hash * 0x9E3779B97F4A7C15ULL) ^ val;
       }
+#if defined(__AVX2__)
+      __m256i vhash = _mm256_set1_epi64x((int64_t)0x9E3779B97F4A7C15ULL);
+      __m256i vacc = _mm256_setzero_si256();
+      for (DWORD j = 0; j + 32 <= read; j += 32) {
+        __m256i v = _mm256_loadu_si256((const __m256i*)&p[j]);
+        vacc = _mm256_xor_si256(vacc, _mm256_mul_epu32(v, vhash));
+      }
+      hash ^= (uint64_t)_mm256_extract_epi64(vacc, 0);
+      hash ^= (uint64_t)_mm256_extract_epi64(vacc, 1);
+      hash ^= (uint64_t)_mm256_extract_epi64(vacc, 2);
+      hash ^= (uint64_t)_mm256_extract_epi64(vacc, 3);
+#endif
       volatile uint64_t sink = hash;
       (void)sink;
     }
@@ -389,10 +409,11 @@ void RAMThread() {
       std::this_thread::sleep_for(1s);
       continue;
     }
-    uint64_t safeSize =
-        std::min<uint64_t>(ms.ullAvailPhys, ms.ullTotalPhys) * 7 / 10;
-    if (safeSize > 16ull * 1024 * 1024 * 1024)
-      safeSize = 16ull * 1024 * 1024 * 1024;
+    // 2026-06-04 power inversion: cap at RAM_STRESS_MAX_BYTES (1.5 GB, L3-friendly)
+    // instead of 70% of available memory / 16 GB. DRAM-spilling lowers power.
+    uint64_t safeSize = RAM_STRESS_MAX_BYTES;
+    if (ms.ullAvailPhys > 0 && safeSize > ms.ullAvailPhys)
+      safeSize = ms.ullAvailPhys;
     safeSize &= ~4095;
 
     if (safeSize < 1024 * 1024) {
@@ -539,13 +560,27 @@ void IOThread(int ioIdx) {
     uint8_t *p = buf.As<uint8_t>();
     ssize_t readBytes = read(hFile, p, IO_CHUNK_SIZE);
     if (readBytes == (ssize_t)IO_CHUNK_SIZE) {
-      // Process buffer with CPU-side hash to keep core hot alongside I/O
+      // Process buffer with CPU-side hash to keep core hot alongside I/O.
+      // 2026-06-04: pass 1 (scalar) + pass 2 (AVX2 on x86_64 with __AVX2__)
+      // doubles per-read CPU burst -> higher sustained power on the IO core.
       uint64_t hash = 0;
       for (ssize_t j = 0; j < readBytes; j += 8) {
         uint64_t val;
         std::memcpy(&val, &p[j], 8);
         hash = (hash * 0x9E3779B97F4A7C15ULL) ^ val;
       }
+#if defined(__AVX2__)
+      __m256i vhash = _mm256_set1_epi64x((int64_t)0x9E3779B97F4A7C15ULL);
+      __m256i vacc = _mm256_setzero_si256();
+      for (ssize_t j = 0; j + 32 <= readBytes; j += 32) {
+        __m256i v = _mm256_loadu_si256((const __m256i*)&p[j]);
+        vacc = _mm256_xor_si256(vacc, _mm256_mul_epu32(v, vhash));
+      }
+      hash ^= (uint64_t)_mm256_extract_epi64(vacc, 0);
+      hash ^= (uint64_t)_mm256_extract_epi64(vacc, 1);
+      hash ^= (uint64_t)_mm256_extract_epi64(vacc, 2);
+      hash ^= (uint64_t)_mm256_extract_epi64(vacc, 3);
+#endif
       volatile uint64_t sink = hash;
       (void)sink;
     }
@@ -594,11 +629,11 @@ void RAMThread() {
     }
 #endif
 
-    uint64_t safeSize = availPhys * 7 / 10;
-
-    // Cap at 16GB like Windows
-    if (safeSize > 16ull * 1024 * 1024 * 1024)
-      safeSize = 16ull * 1024 * 1024 * 1024;
+    // 2026-06-04 power inversion: cap at RAM_STRESS_MAX_BYTES (1.5 GB, L3-friendly)
+    // instead of 70% of available memory / 16 GB. DRAM-spilling lowers power.
+    uint64_t safeSize = RAM_STRESS_MAX_BYTES;
+    if (availPhys > 0 && safeSize > availPhys)
+      safeSize = availPhys;
 
     // If detection failed (checks 0), default to 1GB to trigger stress anyway
     if (safeSize == 0)
