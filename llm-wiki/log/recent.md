@@ -1,5 +1,13 @@
 # Recent Changes Log
 
+## 2026-06-04 — Replace LHM EXE with extracted PawnIO_setup.exe
+
+- **PawnIO_setup.exe extracted at build time**: `build.py` extracts `PawnIO_setup.exe` from LHM's embedded .NET resources during build. Eliminates `LibreHardwareMonitor.exe` (4.3 MB) from lhm/, replaced by standalone `PawnIO_setup.exe` (3.1 MB).
+- **Simplified InstallPawnIO()**: No more PowerShell extraction at runtime. C++ just runs `PawnIO_setup.exe -install -silent` directly.
+- **PawnIO scripts updated**: Both scripts use standalone `PawnIO_setup.exe`, auto-verify results, no user confirmation needed.
+- **LHM folder final size**: 11 files — `PowerReader.exe`, `PowerReader.exe.config`, `LibreHardwareMonitorLib.dll`, `PawnIO_setup.exe`, 3x System.*.dll, 2x scripts, 2x license files.
+- **44/44 tests pass**.
+
 ## 2026-06-04 — Replace WMI with PowerReader.exe (C# helper, compiled at build)
 
 - **Root cause found**: LHM's WMI provider is broken. Registration shows version 0.9.2.0 but library is 0.9.6.0 — version mismatch prevents WMI host from loading the provider. Namespace `root\OpenHardwareMonitor` exists but has 0 sensor instances. This was never going to work.

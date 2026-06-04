@@ -996,45 +996,14 @@ static bool IsPawnIOInstalled() {
 }
 
 static bool InstallPawnIO() {
-  wchar_t lhmPath[MAX_PATH];
-  GetModuleFileNameW(NULL, lhmPath, MAX_PATH);
-  wchar_t* lastSlash = wcsrchr(lhmPath, L'\\');
-  if (!lastSlash) return false;
-  wcscpy(lastSlash + 1, L"lhm\\LibreHardwareMonitor.exe");
-
   wchar_t setupPath[MAX_PATH];
-  GetTempPathW(MAX_PATH, setupPath);
-  wcscat(setupPath, L"PawnIO_setup.exe");
-
-  wchar_t psPath[MAX_PATH];
-  GetSystemDirectoryW(psPath, MAX_PATH);
-  wcscat(psPath, L"\\windowspowershell\\v1.0\\powershell.exe");
-
-  wchar_t psCmd[1024];
-  swprintf(psCmd, 1024,
-    L"-NoProfile -NonInteractive -Command \""
-    L"$a=[System.Reflection.Assembly]::LoadFile('%s');"
-    L"$s=$a.GetManifestResourceStream('LibreHardwareMonitor.Resources.PawnIO_setup.exe');"
-    L"$f=[System.IO.File]::Create('%s');"
-    L"$s.CopyTo($f);"
-    L"$f.Close();$s.Close()\"",
-    lhmPath, setupPath);
-
-  g_App.Log(L"Power: extracting PawnIO installer...");
-  STARTUPINFOW si = { sizeof(si) };
-  si.dwFlags = STARTF_USESHOWWINDOW;
-  si.wShowWindow = SW_HIDE;
-  PROCESS_INFORMATION pi;
-  if (!CreateProcessW(psPath, psCmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-    g_App.Log(L"Power: PawnIO extraction failed");
-    return false;
-  }
-  WaitForSingleObject(pi.hProcess, 15000);
-  CloseHandle(pi.hProcess);
-  CloseHandle(pi.hThread);
+  GetModuleFileNameW(NULL, setupPath, MAX_PATH);
+  wchar_t* lastSlash = wcsrchr(setupPath, L'\\');
+  if (!lastSlash) return false;
+  wcscpy(lastSlash + 1, L"lhm\\PawnIO_setup.exe");
 
   if (GetFileAttributesW(setupPath) == INVALID_FILE_ATTRIBUTES) {
-    g_App.Log(L"Power: PawnIO extraction failed (file not created)");
+    g_App.Log(L"Power: PawnIO_setup.exe not found in lhm/");
     return false;
   }
 
@@ -1046,12 +1015,10 @@ static bool InstallPawnIO() {
   sei.nShow = SW_HIDE;
   if (!ShellExecuteExW(&sei) || !sei.hProcess) {
     g_App.Log(L"Power: PawnIO install failed");
-    DeleteFileW(setupPath);
     return false;
   }
   WaitForSingleObject(sei.hProcess, 30000);
   CloseHandle(sei.hProcess);
-  DeleteFileW(setupPath);
 
   if (IsPawnIOInstalled()) {
     g_App.Log(L"Power: PawnIO installed successfully");

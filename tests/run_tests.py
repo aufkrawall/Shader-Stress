@@ -277,10 +277,10 @@ def test_invariant_realistic_unchanged(binary):
 
 
 def test_invariant_lhm_subfolder(binary):
-    """LHM exe path must reference lhm/ subfolder, not flat alongside binary."""
+    """PawnIO setup path must reference lhm/ subfolder."""
     src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
-    check('L"lhm\\\\LibreHardwareMonitor.exe"' in src,
-          "LHM exe path uses lhm/ subfolder")
+    check('L"lhm\\\\PawnIO_setup.exe"' in src,
+          "PawnIO_setup.exe path uses lhm/ subfolder")
 
 
 def test_invariant_lhm_build_copy(binary):

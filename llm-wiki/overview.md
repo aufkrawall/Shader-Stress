@@ -60,7 +60,7 @@ All runtime params are hardcoded constants (no external config files). CLI flags
 
 ## Power Measurement (Windows, admin only)
 
-- `PowerReader.exe` (C#, compiled at build time) loads `LibreHardwareMonitorLib.dll` directly and reads the CPU Package Power sensor via PawnIO
+- `lhm/` subfolder contains: `PowerReader.exe` + config, `LibreHardwareMonitorLib.dll` (core lib + PawnIO firmware), `PawnIO_setup.exe` (extracted at build from LHM), `System.Memory/Buffers/Unsafe.dll` (.NET deps), `install-pawnio.ps1` / `uninstall-pawnio.ps1` (standalone scripts), license files
 - `SampleCpuPackagePower()` in `Workloads.cpp` launches PowerReader.exe via `CreateProcess` + stdout pipe, 3s cache
 - PawnIO driver auto-installed on first run (extracted from LHM embedded resources)
 - Requires admin privileges (PawnIO reads RAPL MSRs)

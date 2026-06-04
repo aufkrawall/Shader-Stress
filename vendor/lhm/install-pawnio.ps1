@@ -17,30 +17,15 @@ if (Test-Path $regPath) {
     exit 0
 }
 
-# Extract PawnIO_setup.exe from LibreHardwareMonitor.exe resources
-$lhmExe = Join-Path $LhmDir "LibreHardwareMonitor.exe"
-if (-not (Test-Path $lhmExe)) {
-    Write-Error "LibreHardwareMonitor.exe not found in $LhmDir"
+# Run PawnIO_setup.exe
+$setup = Join-Path $LhmDir "PawnIO_setup.exe"
+if (-not (Test-Path $setup)) {
+    Write-Error "PawnIO_setup.exe not found in $LhmDir"
     exit 1
 }
-
-Write-Host "Extracting PawnIO installer..."
-$assembly = [System.Reflection.Assembly]::LoadFile($lhmExe)
-$stream = $assembly.GetManifestResourceStream("LibreHardwareMonitor.Resources.PawnIO_setup.exe")
-if ($null -eq $stream) {
-    Write-Error "PawnIO_setup.exe resource not found in LHM assembly."
-    exit 1
-}
-
-$tempSetup = Join-Path $env:TEMP "PawnIO_setup.exe"
-$fs = [System.IO.File]::Create($tempSetup)
-$stream.CopyTo($fs)
-$fs.Close()
-$stream.Close()
 
 Write-Host "Installing PawnIO driver..."
-$proc = Start-Process -FilePath $tempSetup -ArgumentList "-install","-silent" -PassThru -Wait
-Remove-Item $tempSetup -Force -ErrorAction SilentlyContinue
+$proc = Start-Process -FilePath $setup -ArgumentList "-install","-silent" -PassThru -Wait
 
 # Verify installation
 $regPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO"

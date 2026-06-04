@@ -351,10 +351,28 @@ def build_windows_target(config):
         if lhm_src.exists():
             lhm_out = out_path / "lhm"
             lhm_out.mkdir(parents=True, exist_ok=True)
-            # Only files needed for PowerReader.exe + PawnIO auto-install
+
+            # Extract PawnIO_setup.exe from LHM .NET resources
+            lhm_exe = lhm_src / "LibreHardwareMonitor.exe"
+            pawnio_out = lhm_out / "PawnIO_setup.exe"
+            if lhm_exe.exists() and not pawnio_out.exists():
+                ps_extract = (
+                    f"$a=[System.Reflection.Assembly]::LoadFile('{lhm_exe}');"
+                    f"$s=$a.GetManifestResourceStream("
+                    f"'LibreHardwareMonitor.Resources.PawnIO_setup.exe');"
+                    f"$f=[System.IO.File]::Create('{pawnio_out}');"
+                    f"$s.CopyTo($f);$f.Close();$s.Close()"
+                )
+                subprocess.run([
+                    "powershell.exe", "-NoProfile", "-NonInteractive",
+                    "-Command", ps_extract,
+                ], check=True, capture_output=True)
+                log(f"Extracted PawnIO_setup.exe")
+
+            # Only files needed for PowerReader.exe + PawnIO
             needed = [
                 "LibreHardwareMonitorLib.dll",  # core library + PawnIO firmware
-                "LibreHardwareMonitor.exe",      # contains PawnIO_setup.exe
+                "PawnIO_setup.exe",             # extracted above
                 "System.Memory.dll",             # .NET dependency
                 "System.Buffers.dll",            # .NET dependency
                 "System.Runtime.CompilerServices.Unsafe.dll",
@@ -365,7 +383,7 @@ def build_windows_target(config):
             ]
             for name in needed:
                 src = lhm_src / name
-                if src.exists():
+                if src.exists() and not (lhm_out / name).exists():
                     shutil.copy2(src, lhm_out / name)
 
         return (True, target, out_dir, archive_name)
