@@ -979,28 +979,93 @@ static bool g_lhmOk = false;
 static IWbemServices* g_pSvc = NULL;
 static HANDLE g_lhmProcess = NULL;
 static uint64_t g_lastTick = 0;
-static HANDLE g_dialogWatcher = NULL;
-static volatile bool g_dialogWatcherStop = false;
 
-static BOOL CALLBACK CloseLhmDialogProc(HWND hwnd, LPARAM lParam) {
-  wchar_t title[64];
-  if (GetWindowTextW(hwnd, title, 64) > 0 &&
-      wcscmp(title, L"LibreHardwareMonitor") == 0 &&
-      IsWindowVisible(hwnd)) {
-    PostMessageW(hwnd, WM_CLOSE, 0, 0);
-    *(bool*)lParam = true;
+static bool IsPawnIOInstalled() {
+  HKEY hKey = NULL;
+  bool installed = false;
+  if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+      L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\PawnIO",
+      0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+    wchar_t ver[64];
+    DWORD verSize = sizeof(ver);
+    if (RegQueryValueExW(hKey, L"DisplayVersion", NULL, NULL,
+                         (LPBYTE)ver, &verSize) == ERROR_SUCCESS) {
+      installed = wcslen(ver) > 0;
+    }
+    RegCloseKey(hKey);
   }
-  return TRUE;
+  return installed;
 }
 
-static DWORD WINAPI DialogWatcherThread(LPVOID) {
-  for (int i = 0; i < 100 && !g_dialogWatcherStop; i++) {
-    bool found = false;
-    EnumWindows(CloseLhmDialogProc, (LPARAM)&found);
-    if (found) break;
-    Sleep(100);
+static bool InstallPawnIO() {
+  // Extract PawnIO_setup.exe from LHM's embedded resources via PowerShell
+  wchar_t lhmPath[MAX_PATH];
+  GetModuleFileNameW(NULL, lhmPath, MAX_PATH);
+  wchar_t* lastSlash = wcsrchr(lhmPath, L'\\');
+  if (!lastSlash) return false;
+  wcscpy(lastSlash + 1, L"lhm\\LibreHardwareMonitor.exe");
+
+  wchar_t setupPath[MAX_PATH];
+  GetTempPathW(MAX_PATH, setupPath);
+  wcscat(setupPath, L"PawnIO_setup.exe");
+
+  // PowerShell: load assembly, extract embedded resource
+  wchar_t psCmd[1024];
+  swprintf(psCmd, 1024,
+    L"$a=[System.Reflection.Assembly]::LoadFile('%s');"
+    L"$s=$a.GetManifestResourceStream('LibreHardwareMonitor.Resources.PawnIO_setup.exe');"
+    L"$f=[System.IO.File]::Create('%s');"
+    L"$s.CopyTo($f);"
+    L"$f.Close();$s.Close()",
+    lhmPath, setupPath);
+
+  g_App.Log(L"Power: extracting PawnIO installer...");
+  SHELLEXECUTEINFOW sei = { sizeof(sei) };
+  sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+  sei.lpFile = L"powershell.exe";
+  wchar_t psArgs[1100];
+  swprintf(psArgs, 1100, L"-NoProfile -NonInteractive -Command \"%s\"", psCmd);
+  sei.lpParameters = psArgs;
+  sei.nShow = SW_HIDE;
+  if (!ShellExecuteExW(&sei) || !sei.hProcess) {
+    g_App.Log(L"Power: failed to extract PawnIO installer");
+    return false;
   }
-  return 0;
+  WaitForSingleObject(sei.hProcess, 15000);
+  DWORD exitCode = 0;
+  GetExitCodeProcess(sei.hProcess, &exitCode);
+  CloseHandle(sei.hProcess);
+
+  if (GetFileAttributesW(setupPath) == INVALID_FILE_ATTRIBUTES) {
+    g_App.Log(L"Power: PawnIO extraction failed (file not created)");
+    return false;
+  }
+
+  // Run PawnIO_setup.exe -install (silent driver installation)
+  g_App.Log(L"Power: installing PawnIO driver...");
+  memset(&sei, 0, sizeof(sei));
+  sei.cbSize = sizeof(sei);
+  sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+  sei.lpFile = setupPath;
+  sei.lpParameters = L"-install";
+  sei.nShow = SW_HIDE;
+  if (!ShellExecuteExW(&sei) || !sei.hProcess) {
+    g_App.Log(L"Power: failed to run PawnIO installer");
+    DeleteFileW(setupPath);
+    return false;
+  }
+  WaitForSingleObject(sei.hProcess, 30000);
+  GetExitCodeProcess(sei.hProcess, &exitCode);
+  CloseHandle(sei.hProcess);
+  DeleteFileW(setupPath);
+
+  if (IsPawnIOInstalled()) {
+    g_App.Log(L"Power: PawnIO installed successfully");
+    return true;
+  }
+  g_App.Log(L"Power: PawnIO installation did not complete (exit " +
+            std::to_wstring(exitCode) + L")");
+  return false;
 }
 
 static bool StartLHM() {
@@ -1036,21 +1101,12 @@ static bool StartLHM() {
   g_lhmProcess = pi.hProcess;
   CloseHandle(pi.hThread);
   g_App.Log(L"Power: LHM started (PID " + std::to_wstring(pi.dwProcessId) + L")");
-
-  // Suppress PawnIO install dialog (LHM shows MessageBox on first run)
-  g_dialogWatcherStop = false;
-  g_dialogWatcher = CreateThread(NULL, 0, DialogWatcherThread, NULL, 0, NULL);
-
   return true;
 }
 
 static bool ConnectWmi() {
   HRESULT hr = CoInitializeEx(0, COINIT_MULTITHREADED);
-  if (FAILED(hr)) {
-    g_App.Log(L"Power: CoInitializeEx failed (0x" +
-              std::to_wstring(hr) + L")");
-    return false;
-  }
+  if (FAILED(hr)) return false;
 
   IWbemLocator* pLoc = NULL;
   hr = CoCreateInstance(CLSID_WbemLocator, 0, CLSCTX_INPROC_SERVER,
@@ -1065,8 +1121,9 @@ static bool ConnectWmi() {
                             0, NULL, 0, 0, &g_pSvc);
   pLoc->Release();
   if (FAILED(hr)) {
-    g_App.Log(L"Power: WMI connect to root\\librehardwaremonitor failed (0x" +
-              std::to_wstring(hr) + L")");
+    wchar_t hex[16];
+    swprintf(hex, 16, L"0x%08X", (unsigned long)hr);
+    g_App.Log(L"Power: WMI connect failed (" + std::wstring(hex) + L")");
     return false;
   }
   g_App.Log(L"Power: WMI connected to root\\librehardwaremonitor");
@@ -1077,11 +1134,33 @@ static void InitPowerMeasurement() {
   if (g_lhmInited) return;
   g_lhmInited = true;
 
+  // Check/install PawnIO before starting LHM
+  if (!IsPawnIOInstalled()) {
+    g_App.Log(L"Power: PawnIO not installed, attempting auto-install...");
+    if (!InstallPawnIO()) return;
+  }
+
   if (!StartLHM()) return;
-  g_App.Log(L"Power: polling WMI for sensors (up to 8s)...");
-  // Poll WMI up to 8 seconds for sensors
-  for (int i = 0; i < 40 && !g_lhmOk; i++) {
-    if (!g_pSvc && !ConnectWmi()) { Sleep(200); continue; }
+  g_App.Log(L"Power: polling WMI for sensors (up to 20s)...");
+  bool wmiConnectFailed = false;
+  // Poll WMI up to 20 seconds for sensors
+  for (int i = 0; i < 100 && !g_lhmOk; i++) {
+    // Check if LHM process is still alive
+    if (g_lhmProcess) {
+      DWORD exitCode = 0;
+      if (GetExitCodeProcess(g_lhmProcess, &exitCode) && exitCode != STILL_ACTIVE) {
+        g_App.Log(L"Power: LHM exited early (code " +
+                  std::to_wstring(exitCode) + L")");
+        return;
+      }
+    }
+    if (!g_pSvc && !ConnectWmi()) {
+      if (!wmiConnectFailed) {
+        wmiConnectFailed = true;
+      }
+      Sleep(200); continue;
+    }
+    wmiConnectFailed = false;
     IEnumWbemClassObject* pEnum = NULL;
     HRESULT hr = g_pSvc->ExecQuery(_bstr_t(L"WQL"),
       _bstr_t(L"SELECT * FROM Sensor WHERE SensorType='Power'"),
@@ -1139,12 +1218,6 @@ double SampleCpuPackagePower() {
 
 void ShutdownPowerMeasurement() {
 #if defined(_WIN32)
-  g_dialogWatcherStop = true;
-  if (g_dialogWatcher) {
-    WaitForSingleObject(g_dialogWatcher, 2000);
-    CloseHandle(g_dialogWatcher);
-    g_dialogWatcher = NULL;
-  }
   if (g_pSvc) { g_pSvc->Release(); g_pSvc = NULL; }
   if (g_lhmProcess) {
     TerminateProcess(g_lhmProcess, 0);
