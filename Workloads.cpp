@@ -1130,6 +1130,8 @@ void InitPowerMeasurement() {
     g_App.Log(L"Power: sensor read failed (not admin or PawnIO not working)");
   }
 }
+#else
+void InitPowerMeasurement() {}
 #endif
 
 double SampleCpuPackagePower() {

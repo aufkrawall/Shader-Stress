@@ -8,7 +8,7 @@ Copyright (c) 2026 aufkrawall
 ## Critical workflow
 
 - Windows-first project: prefer PowerShell 7.6, Windows-native paths, and installed project tools unless there is a clear reason to move away from them!
-- After code changes, run `python build.py native`!
+- After code changes, run `python build.py`!
 - Always git commit after code changes!
 - Before committing, run ALL tests and ensure they pass: `python tests/run_tests.py --stress --sanitize`!
 - Sanitizer builds catch UB and memory errors before they reach release.
