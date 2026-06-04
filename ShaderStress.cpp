@@ -763,6 +763,7 @@ static void CleanupWorkers() {
 
 #ifdef PLATFORM_WINDOWS
   ReleaseHighPerformance();
+  ShutdownPowerMeasurement();
 #endif
 }
 
@@ -1036,8 +1037,10 @@ static void PrintFinalResults() {
   std::cout << "Avg Rate: " << (unsigned long long)g_App.currentRate.load()
              << " jobs/s\n";
   double cpuW = SampleCpuPackagePower();
-  if (cpuW > 0)
+  if (cpuW > 0) {
     std::cout << "CPU Package Power: " << (int)cpuW << " W\n";
+    g_App.Log(L"Final CPU Package Power: " + std::to_wstring((int)cpuW) + L" W");
+  }
   std::cout << "Errors: " << (unsigned long long)g_App.errors.load() << "\n";
 
   if (g_App.mode == 0) {

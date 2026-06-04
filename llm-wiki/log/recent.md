@@ -1,5 +1,14 @@
 # Recent Changes Log
 
+## 2026-06-04 — Slim down LHM integration, fix power logging, add cleanup
+
+- **LHM bin spam fix**: Moved LHM files to `bin/<target>/lhm/` subfolder instead of flat alongside ShaderStress binaries. Updated `build.py` copy destination and `StartLHM()` path in `Workloads.cpp`.
+- **Power logging to file**: Added periodic power logging (every ~5s) to `ShaderStress.log` during benchmarks via Watchdog thread. Added power to benchmark completion report (`LogRaw`). Added power to final results log entry (`PrintFinalResults`).
+- **LHM process cleanup**: Added `ShutdownPowerMeasurement()` — terminates the LHM process and releases COM on exit. Called from `CleanupWorkers()`.
+- **Tests**: 4 new invariant tests verifying LHM subfolder path, build copy target, shutdown function presence, and power logging.
+- **Files changed**: `build.py`, `Workloads.cpp`, `Common.h`, `Threading.cpp`, `ShaderStress.cpp`, `tests/run_tests.py`, `llm-wiki/overview.md`
+- **Verification**: 44/44 tests pass (34 CLI + 4 workload + 2 golden + 2 UBSan + 4 new invariants). `python build.py native` clean.
+
 ## 2026-06-04 — Power-draw inversion: cache residency + expensive compute ops
 
 **Inverts the 2026-05-23 "L2-miss memory controller" design** — per user note, data staying in CPU caches yields higher package power than data spilling to DRAM (cache hits keep execution units busy; DRAM access stalls the pipeline).

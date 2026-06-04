@@ -318,13 +318,13 @@ def build_windows_target(config):
         # Build the CLI launcher
         build_windows_cli_launcher(target, cpu, out_path)
 
-        # Copy LibreHardwareMonitor files alongside the EXE
+        # Copy LibreHardwareMonitor files into lhm/ subfolder
         lhm_src = BASE_DIR / "vendor" / "lhm"
         if lhm_src.exists():
             for item in lhm_src.rglob("*"):
                 if item.is_file():
                     rel = item.relative_to(lhm_src)
-                    dest = out_path / rel
+                    dest = out_path / "lhm" / rel
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(item, dest)
 

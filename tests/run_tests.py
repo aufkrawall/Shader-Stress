@@ -276,6 +276,40 @@ def test_invariant_realistic_unchanged(binary):
           "RealisticCompilerSim_V3 banner + 32-case block intact")
 
 
+def test_invariant_lhm_subfolder(binary):
+    """LHM exe path must reference lhm/ subfolder, not flat alongside binary."""
+    src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
+    check('L"lhm\\\\LibreHardwareMonitor.exe"' in src,
+          "LHM exe path uses lhm/ subfolder")
+
+
+def test_invariant_lhm_build_copy(binary):
+    """build.py must copy LHM to lhm/ subfolder, not flat."""
+    build = _read(os.path.join(PROJECT_ROOT, "build.py"))
+    check('"lhm" / rel' in build or 'lhm / rel' in build,
+          "build.py copies LHM to lhm/ subfolder")
+
+
+def test_invariant_shutdown_power(binary):
+    """ShutdownPowerMeasurement must be declared and called on cleanup."""
+    hdr = _read(os.path.join(PROJECT_ROOT, "Common.h"))
+    src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
+    main_src = _read(os.path.join(PROJECT_ROOT, "ShaderStress.cpp"))
+    check("ShutdownPowerMeasurement" in hdr,
+          "ShutdownPowerMeasurement declared in Common.h")
+    check("void ShutdownPowerMeasurement()" in src,
+          "ShutdownPowerMeasurement defined in Workloads.cpp")
+    check("ShutdownPowerMeasurement()" in main_src,
+          "ShutdownPowerMeasurement called in ShaderStress.cpp")
+
+
+def test_invariant_power_logged(binary):
+    """Power must be logged to ShaderStress.log during benchmarks."""
+    src = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
+    check('L"Power: "' in src,
+          "Power logging in Watchdog")
+
+
 LIGHTWEIGHT_TESTS = [
     test_help,
     test_version,
@@ -307,6 +341,10 @@ LIGHTWEIGHT_TESTS = [
     test_invariant_io_avx2_hash,
     test_invariant_decomp_idiv,
     test_invariant_realistic_unchanged,
+    test_invariant_lhm_subfolder,
+    test_invariant_lhm_build_copy,
+    test_invariant_shutdown_power,
+    test_invariant_power_logged,
 ]
 
 

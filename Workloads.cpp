@@ -985,7 +985,7 @@ static bool StartLHM() {
   GetModuleFileNameW(NULL, ourPath, MAX_PATH);
   wchar_t* lastSlash = wcsrchr(ourPath, L'\\');
   if (!lastSlash) return false;
-  wcscpy(lastSlash + 1, L"LibreHardwareMonitor.exe");
+  wcscpy(lastSlash + 1, L"lhm\\LibreHardwareMonitor.exe");
 
   // Check if already running
   HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -1082,6 +1082,18 @@ double SampleCpuPackagePower() {
   if (watts > 0 && watts < 1000) return watts;
 #endif
   return -1.0;
+}
+
+void ShutdownPowerMeasurement() {
+#if defined(_WIN32)
+  if (g_pSvc) { g_pSvc->Release(); g_pSvc = NULL; }
+  if (g_lhmProcess) {
+    TerminateProcess(g_lhmProcess, 0);
+    CloseHandle(g_lhmProcess);
+    g_lhmProcess = NULL;
+  }
+  CoUninitialize();
+#endif
 }
 
 // --- Workload Dispatcher ---

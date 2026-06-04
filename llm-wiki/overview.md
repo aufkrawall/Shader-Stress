@@ -38,7 +38,7 @@ Output directories: `bin/x64-llvm/`, `bin/x64-llvm-v3/`, `bin/x64-llvm-v4/`, `bi
 |------|---------|
 | `ShaderStress.cpp` | Entry, CLI, dispatch, main loop |
 | `Common.h` | Shared types, macros, CpuFeatures struct |
-| `Workloads.cpp` | Stress workload kernels (SSE2, AVX2, AVX-512, NEON, scalar) |
+| `Workloads.cpp` | Stress workload kernels (SSE2, AVX2, AVX-512, NEON, scalar) + CPU power sampling |
 | `Threading.cpp` | Worker threads, dynamic mode, watchdog |
 | `Platform.cpp` | Power mgmt, thread pinning, crash dumps |
 | `CpuFeatures.cpp` | CPUID-based feature detection |
@@ -57,3 +57,14 @@ All runtime params are hardcoded constants (no external config files). CLI flags
 - `NOINLINE` on dispatcher prevents LTO from inlining ISA-specific into generic code
 - 64-byte alignment on hot buffers (AVX-512) and Worker structs
 - 2026-06-04: `WORK_BUF_ELEMS = 32768` (256 KB, L2-resident). RAM stress capped at 1.5 GB (L3-friendly). All max-power kernels include vec-div / vec-sqrt ops to feed the div/sqrt execution unit alongside FMA. Decompressor PASSES = 256, with 64-bit IDIV every 64 bytes.
+
+## Power Measurement (Windows, admin only)
+
+- Uses LibreHardwareMonitor (LHM) via WMI (`root\librehardwaremonitor` namespace)
+- LHM binaries in `vendor/lhm/`, copied to `bin/<target>/lhm/` during build
+- `StartLHM()` launches `lhm\LibreHardwareMonitor.exe` as a hidden background process
+- `SampleCpuPackagePower()` queries WMI for CPU Package Power (watts), rate-limited to 250ms
+- `ShutdownPowerMeasurement()` kills the LHM process and releases COM on exit
+- Power logged to `ShaderStress.log` every ~5s during benchmarks (Watchdog thread)
+- Power included in benchmark completion report and final results log entry
+- Returns -1.0 gracefully when not admin, unsupported hardware, or LHM not available

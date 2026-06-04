@@ -989,6 +989,7 @@ void Watchdog() {
   int lastBenchIntervalIndex = -1;
   uint64_t lastRateTime = GetTick();
   uint64_t lastRateShaders = 0;
+  uint64_t lastPowerLogTick = 0;
 
   while (!g_App.quit) {
     bool currentRunning = g_App.running;
@@ -1044,6 +1045,14 @@ void Watchdog() {
           g_App.currentRate = (dShader * 1000) / dt;
         lastRateTime = now;
         lastRateShaders = current;
+      }
+
+      // Periodic power logging (every ~5s while running)
+      if (currentRunning && now - lastPowerLogTick >= 5000) {
+        lastPowerLogTick = now;
+        double watts = SampleCpuPackagePower();
+        if (watts > 0)
+          g_App.Log(L"Power: " + std::to_wstring((int)watts) + L" W");
       }
 
       if (g_App.mode == 0) {
@@ -1104,6 +1113,9 @@ void Watchdog() {
           report << L"Minute 1: " << FmtNum(r0) << L" Jobs/s\n";
           report << L"Minute 2: " << FmtNum(r1) << L" Jobs/s\n";
           report << L"Minute 3: " << FmtNum(r2) << L" Jobs/s\n";
+          double finalPower = SampleCpuPackagePower();
+          if (finalPower > 0)
+            report << L"CPU Power: " << (int)finalPower << L" W\n";
           report << L"----------------------------------------\n";
           report << L"WINNER: Interval " << (g_App.benchWinner + 1) << L" ("
                  << FmtNum(g_App.benchRates[g_App.benchWinner])
