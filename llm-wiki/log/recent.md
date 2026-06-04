@@ -1,5 +1,14 @@
 # Recent Changes Log
 
+## 2026-06-04 — Auto-install PawnIO before LHM, remove dialog watcher
+
+- **PawnIO auto-install**: Before starting LHM, check registry for PawnIO. If missing, extract `PawnIO_setup.exe` from LHM's embedded .NET resources via PowerShell, run `-install` silently, clean up. No user interaction needed.
+- **Dialog watcher removed**: PawnIO is now installed before LHM starts, so the PawnIO dialog never appears.
+- **Extended WMI polling**: 20 seconds (was 8s) with LHM process liveness checks during polling.
+- **Root cause**: LHM's WMI provider (`root\librehardwaremonitor`) requires PawnIO to register. Without PawnIO, WMI returns `0x8004100E` (namespace not found). The previous approach of launching LHM and hoping WMI works was flawed.
+- **Files changed**: `Workloads.cpp`
+- **Verification**: 44/44 tests pass.
+
 ## 2026-06-04 — LHM debug logging + PawnIO dialog suppression
 
 - **Debug logging**: Added comprehensive logging to `StartLHM()`, `ConnectWmi()`, `InitPowerMeasurement()` — all output to `ShaderStress.log` with process start, WMI connection status, sensor detection result.

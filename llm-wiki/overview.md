@@ -68,4 +68,4 @@ All runtime params are hardcoded constants (no external config files). CLI flags
 - Power logged to `ShaderStress.log` every ~5s during benchmarks (Watchdog thread)
 - Power included in benchmark completion report and final results log entry
 - Returns -1.0 gracefully when not admin, unsupported hardware, or LHM not available
-- **PawnIO required**: LHM needs the PawnIO kernel driver to read RAPL MSRs for power data. On first run, LHM shows a dialog to install PawnIO. The dialog watcher thread auto-closes this dialog; actual power reading requires PawnIO pre-installed.
+- **PawnIO auto-install**: On first run, extracts `PawnIO_setup.exe` from LHM's embedded resources and installs silently. No user interaction needed.
