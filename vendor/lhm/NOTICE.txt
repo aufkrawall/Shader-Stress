@@ -1,0 +1,58 @@
+LibreHardwareMonitor
+https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
+
+Copyright (C) LibreHardwareMonitor contributors.
+Licensed under the Mozilla Public License 2.0 (MPL-2.0).
+
+This product includes software developed by the LibreHardwareMonitor project.
+The full source code is available at: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
+
+---
+
+Third-Party Dependencies (bundled with LibreHardwareMonitor):
+
+HidSharp
+  Copyright (C) James F. Bellinger
+  License: MIT
+  https://github.com/jamesbiederbacke/HidSharp
+
+OxyPlot
+  Copyright (C) OxyPlot contributors
+  License: MIT
+  https://github.com/oxyplot/oxyplot
+
+Aga.Controls
+  License: MIT-like
+  https://github.com/pa-0/Aga.Controls
+
+Microsoft.Bcl.AsyncInterfaces
+Microsoft.Bcl.HashCode
+System.Buffers
+System.CodeDom
+System.Collections.Immutable
+System.Formats.Nrbf
+System.IO.Pipelines
+System.Memory
+System.Numerics.Vectors
+System.Reflection.Metadata
+System.Resources.Extensions
+System.Runtime.CompilerServices.Unsafe
+System.Security.AccessControl
+System.Security.Principal.Windows
+System.Text.Encodings.Web
+System.Text.Json
+System.Threading.AccessControl
+System.Threading.Tasks.Extensions
+  Copyright (C) Microsoft Corporation
+  License: MIT
+  https://github.com/dotnet/runtime
+
+Microsoft.Win32.TaskScheduler
+  Copyright (C) David Hall
+  License: MIT
+  https://github.com/dahall/TaskScheduler
+
+PawnIO
+  Copyright (C) namazso
+  License: MIT
+  https://github.com/namazso/PawnIO
