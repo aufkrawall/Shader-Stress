@@ -39,7 +39,7 @@ $fs.Close()
 $stream.Close()
 
 Write-Host "Installing PawnIO driver..."
-& $tempSetup -install
+$proc = Start-Process -FilePath $tempSetup -ArgumentList "-install" -PassThru -Wait
 Remove-Item $tempSetup -Force -ErrorAction SilentlyContinue
 
 # Verify installation
@@ -49,8 +49,8 @@ if ((Test-Path $regPath) -and $service) {
     $ver = Get-ItemProperty -Path $regPath -Name DisplayVersion -ErrorAction SilentlyContinue
     Write-Host "PawnIO installed successfully (version $($ver.DisplayVersion), service: $($service.Status))."
 } elseif (Test-Path $regPath) {
-    Write-Host "PawnIO registered (service not yet active — a reboot may be required)."
+    Write-Host "PawnIO registered. Service not yet active (reboot may be required)."
 } else {
-    Write-Error "PawnIO installation failed."
+    Write-Error "PawnIO installation failed (exit code $($proc.ExitCode))."
     exit 1
 }

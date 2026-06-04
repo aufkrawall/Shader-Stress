@@ -35,17 +35,19 @@ $fs.Close()
 $stream.Close()
 
 Write-Host "Uninstalling PawnIO driver..."
-& $tempSetup -uninstall
+$proc = Start-Process -FilePath $tempSetup -ArgumentList "-uninstall" -PassThru -Wait
 Remove-Item $tempSetup -Force -ErrorAction SilentlyContinue
 
-# Verify removal
+# Verify removal (may need reboot if driver was loaded)
 $regPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO"
 $service = Get-Service -Name "PawnIO" -ErrorAction SilentlyContinue
 if (-not (Test-Path $regPath) -and -not $service) {
     Write-Host "PawnIO uninstalled successfully."
 } elseif (-not (Test-Path $regPath)) {
-    Write-Host "PawnIO registry removed, but service still registered (reboot required to fully unload)."
+    Write-Host "PawnIO removed. Service still registered (reboot required to fully unload)."
+} elseif ($proc.ExitCode -eq 0) {
+    Write-Host "PawnIO uninstaller completed. Reboot may be required to fully remove."
 } else {
-    Write-Error "PawnIO uninstallation failed."
+    Write-Error "PawnIO uninstallation failed (exit code $($proc.ExitCode))."
     exit 1
 }
