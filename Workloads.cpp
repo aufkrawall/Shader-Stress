@@ -974,8 +974,9 @@ void RunPerfStats() {
 static bool g_lhmInited = false;
 static bool g_lhmOk = false;
 static double g_cachedPower = -1.0;
-static uint64_t g_lastSampleTick = 0;
 static wchar_t g_readerExe[MAX_PATH] = {};
+static HANDLE g_powerThread = NULL;
+static volatile bool g_powerThreadStop = false;
 
 static bool IsPawnIOInstalled() {
   HKEY hKey = NULL;
@@ -1100,6 +1101,17 @@ static double RunPowerReader() {
   return (watts > 0 && watts < 1000) ? watts : -1.0;
 }
 
+static DWORD WINAPI PowerSamplingThread(LPVOID) {
+  while (!g_powerThreadStop) {
+    double watts = RunPowerReader();
+    if (watts > 0) g_cachedPower = watts;
+    // Sleep in 100ms increments so we can stop quickly
+    for (int i = 0; i < 50 && !g_powerThreadStop; i++)
+      Sleep(100);
+  }
+  return 0;
+}
+
 void InitPowerMeasurement() {
   if (g_lhmInited) return;
   g_lhmInited = true;
@@ -1126,6 +1138,9 @@ void InitPowerMeasurement() {
     g_lhmOk = true;
     g_cachedPower = test;
     g_App.Log(L"Power: sensor OK (" + std::to_wstring((int)test) + L" W)");
+    // Start background sampling thread
+    g_powerThreadStop = false;
+    g_powerThread = CreateThread(NULL, 0, PowerSamplingThread, NULL, 0, NULL);
   } else {
     g_App.Log(L"Power: sensor read failed (not admin or PawnIO not working)");
   }
@@ -1136,13 +1151,6 @@ void InitPowerMeasurement() {}
 
 double SampleCpuPackagePower() {
 #if defined(_WIN32)
-  if (!g_lhmOk) return -1.0;
-
-  uint64_t tick = GetTickCount64();
-  if (tick - g_lastSampleTick < 3000) return g_cachedPower;
-  g_lastSampleTick = tick;
-
-  g_cachedPower = RunPowerReader();
   return g_cachedPower;
 #else
   return -1.0;
@@ -1150,7 +1158,14 @@ double SampleCpuPackagePower() {
 }
 
 void ShutdownPowerMeasurement() {
-  // No persistent processes to clean up — PowerReader.exe exits after each read
+#if defined(_WIN32)
+  g_powerThreadStop = true;
+  if (g_powerThread) {
+    WaitForSingleObject(g_powerThread, 3000);
+    CloseHandle(g_powerThread);
+    g_powerThread = NULL;
+  }
+#endif
 }
 
 // --- Workload Dispatcher ---
