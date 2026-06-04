@@ -286,7 +286,7 @@ def test_invariant_lhm_subfolder(binary):
 def test_invariant_lhm_build_copy(binary):
     """build.py must copy LHM to lhm/ subfolder, not flat."""
     build = _read(os.path.join(PROJECT_ROOT, "build.py"))
-    check('"lhm" / rel' in build or 'lhm / rel' in build,
+    check('"lhm"' in build and ('/ rel' in build or '/ name' in build),
           "build.py copies LHM to lhm/ subfolder")
 
 

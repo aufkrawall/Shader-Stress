@@ -347,14 +347,26 @@ def build_windows_target(config):
                     '</configuration>\n', encoding="utf-8")
                 log(f"Compiled PowerReader.exe")
 
-        # Copy LibreHardwareMonitor DLLs into lhm/ subfolder
+        # Copy minimal LHM files into lhm/ subfolder
         if lhm_src.exists():
-            for item in lhm_src.rglob("*"):
-                if item.is_file() and item.suffix.lower() != ".cs":
-                    rel = item.relative_to(lhm_src)
-                    dest = out_path / "lhm" / rel
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(item, dest)
+            lhm_out = out_path / "lhm"
+            lhm_out.mkdir(parents=True, exist_ok=True)
+            # Only files needed for PowerReader.exe + PawnIO auto-install
+            needed = [
+                "LibreHardwareMonitorLib.dll",  # core library + PawnIO firmware
+                "LibreHardwareMonitor.exe",      # contains PawnIO_setup.exe
+                "System.Memory.dll",             # .NET dependency
+                "System.Buffers.dll",            # .NET dependency
+                "System.Runtime.CompilerServices.Unsafe.dll",
+                "install-pawnio.ps1",            # standalone script
+                "uninstall-pawnio.ps1",          # standalone script
+                "LICENSE-MPL-2.0.txt",           # license
+                "NOTICE.txt",                    # attribution
+            ]
+            for name in needed:
+                src = lhm_src / name
+                if src.exists():
+                    shutil.copy2(src, lhm_out / name)
 
         return (True, target, out_dir, archive_name)
 
