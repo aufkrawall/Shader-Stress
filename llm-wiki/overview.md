@@ -60,12 +60,9 @@ All runtime params are hardcoded constants (no external config files). CLI flags
 
 ## Power Measurement (Windows, admin only)
 
-- Uses LibreHardwareMonitor (LHM) via WMI (`root\librehardwaremonitor` namespace)
-- LHM binaries in `vendor/lhm/`, copied to `bin/<target>/lhm/` during build
-- `StartLHM()` launches `lhm\LibreHardwareMonitor.exe` as a hidden background process
-- `SampleCpuPackagePower()` queries WMI for CPU Package Power (watts), rate-limited to 250ms
-- `ShutdownPowerMeasurement()` kills the LHM process and releases COM on exit
-- Power logged to `ShaderStress.log` every ~5s during benchmarks (Watchdog thread)
-- Power included in benchmark completion report and final results log entry
-- Returns -1.0 gracefully when not admin, unsupported hardware, or LHM not available
-- **PawnIO auto-install**: On first run, extracts `PawnIO_setup.exe` from LHM's embedded resources and installs silently. No user interaction needed.
+- `PowerReader.exe` (C#, compiled at build time) loads `LibreHardwareMonitorLib.dll` directly and reads the CPU Package Power sensor via PawnIO
+- `SampleCpuPackagePower()` in `Workloads.cpp` launches PowerReader.exe via `CreateProcess` + stdout pipe, 3s cache
+- PawnIO driver auto-installed on first run (extracted from LHM embedded resources)
+- Requires admin privileges (PawnIO reads RAPL MSRs)
+- Returns -1.0 gracefully when not admin, unsupported hardware, or PowerReader not found
+- Power logged to `ShaderStress.log` every ~5s during benchmarks, included in benchmark report

@@ -1,5 +1,16 @@
 # Recent Changes Log
 
+## 2026-06-04 — Replace WMI with PowerReader.exe (C# helper, compiled at build)
+
+- **Root cause found**: LHM's WMI provider is broken. Registration shows version 0.9.2.0 but library is 0.9.6.0 — version mismatch prevents WMI host from loading the provider. Namespace `root\OpenHardwareMonitor` exists but has 0 sensor instances. This was never going to work.
+- **New approach**: `vendor/lhm/PowerReader.cs` — a small C# helper EXE compiled at build time via `csc.exe`. Loads `LibreHardwareMonitorLib.dll` directly, reads the Package power sensor, outputs watts to stdout. Needs .NET 4.8 app.config for `MutexSecurity` constructor.
+- **C++ integration**: `SampleCpuPackagePower()` launches `PowerReader.exe` via `CreateProcess` + stdout pipe. Working directory set to `lhm/` so all .NET dependencies are found. 3-second cache to avoid excessive process spawns.
+- **Removed**: All WMI code (`IWbemLocator`, `IWbemServices`, `ConnectWmi`, `StartLHM`, `IEnumWbemClassObject`). Removed `-lwbemuuid` linker flag.
+- **Kept**: PawnIO auto-install (registry check + extract from LHM embedded resources).
+- **Build**: `build.py` compiles `PowerReader.cs` with `csc.exe /platform:x64`, writes `.NET 4.8` app.config.
+- **Tested**: PowerReader.exe outputs 42.8 W on AMD Ryzen 7 5700X (admin required).
+- **Verification**: 44/44 tests pass. `python build.py native` clean.
+
 ## 2026-06-04 — Auto-install PawnIO before LHM, remove dialog watcher
 
 - **PawnIO auto-install**: Before starting LHM, check registry for PawnIO. If missing, extract `PawnIO_setup.exe` from LHM's embedded .NET resources via PowerShell, run `-install` silently, clean up. No user interaction needed.
