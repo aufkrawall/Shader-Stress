@@ -1,5 +1,13 @@
 # Recent Changes Log
 
+## 2026-06-04 — LHM debug logging + PawnIO dialog suppression
+
+- **Debug logging**: Added comprehensive logging to `StartLHM()`, `ConnectWmi()`, `InitPowerMeasurement()` — all output to `ShaderStress.log` with process start, WMI connection status, sensor detection result.
+- **PawnIO dialog fix**: Added `DialogWatcherThread` using `EnumWindows` to find and `WM_CLOSE` the PawnIO install dialog that LHM shows on first run. `SW_HIDE` only hides the main form, not the `MessageBox` dialog. Thread runs for up to 10s after LHM launch.
+- **Root cause of no power logging**: LHM requires PawnIO driver to read RAPL MSRs. Without PawnIO, the WMI namespace has no Power sensors, so `SampleCpuPackagePower()` returns -1.0. The dialog watcher at least prevents the blocking dialog; actual power reading still requires PawnIO to be installed.
+- **Files changed**: `Workloads.cpp`
+- **Verification**: 44/44 tests pass.
+
 ## 2026-06-04 — Slim down LHM integration, fix power logging, add cleanup
 
 - **LHM bin spam fix**: Moved LHM files to `bin/<target>/lhm/` subfolder instead of flat alongside ShaderStress binaries. Updated `build.py` copy destination and `StartLHM()` path in `Workloads.cpp`.
