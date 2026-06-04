@@ -979,6 +979,29 @@ static bool g_lhmOk = false;
 static IWbemServices* g_pSvc = NULL;
 static HANDLE g_lhmProcess = NULL;
 static uint64_t g_lastTick = 0;
+static HANDLE g_dialogWatcher = NULL;
+static volatile bool g_dialogWatcherStop = false;
+
+static BOOL CALLBACK CloseLhmDialogProc(HWND hwnd, LPARAM lParam) {
+  wchar_t title[64];
+  if (GetWindowTextW(hwnd, title, 64) > 0 &&
+      wcscmp(title, L"LibreHardwareMonitor") == 0 &&
+      IsWindowVisible(hwnd)) {
+    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    *(bool*)lParam = true;
+  }
+  return TRUE;
+}
+
+static DWORD WINAPI DialogWatcherThread(LPVOID) {
+  for (int i = 0; i < 100 && !g_dialogWatcherStop; i++) {
+    bool found = false;
+    EnumWindows(CloseLhmDialogProc, (LPARAM)&found);
+    if (found) break;
+    Sleep(100);
+  }
+  return 0;
+}
 
 static bool StartLHM() {
   wchar_t ourPath[MAX_PATH];
@@ -993,7 +1016,9 @@ static bool StartLHM() {
     PROCESSENTRY32W pe = { sizeof(pe) };
     if (Process32FirstW(snap, &pe)) do {
       if (wcsstr(pe.szExeFile, L"LibreHardwareMonitor")) {
-        CloseHandle(snap); return true;
+        CloseHandle(snap);
+        g_App.Log(L"Power: LHM already running");
+        return true;
       }
     } while (Process32NextW(snap, &pe));
     CloseHandle(snap);
@@ -1003,26 +1028,49 @@ static bool StartLHM() {
   si.dwFlags = STARTF_USESHOWWINDOW;
   si.wShowWindow = SW_HIDE;
   PROCESS_INFORMATION pi;
-  if (CreateProcessW(ourPath, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-    g_lhmProcess = pi.hProcess; CloseHandle(pi.hThread);
-    return true;
+  if (!CreateProcessW(ourPath, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+    g_App.Log(L"Power: failed to start LHM (error " +
+              std::to_wstring(GetLastError()) + L")");
+    return false;
   }
-  return false;
+  g_lhmProcess = pi.hProcess;
+  CloseHandle(pi.hThread);
+  g_App.Log(L"Power: LHM started (PID " + std::to_wstring(pi.dwProcessId) + L")");
+
+  // Suppress PawnIO install dialog (LHM shows MessageBox on first run)
+  g_dialogWatcherStop = false;
+  g_dialogWatcher = CreateThread(NULL, 0, DialogWatcherThread, NULL, 0, NULL);
+
+  return true;
 }
 
 static bool ConnectWmi() {
   HRESULT hr = CoInitializeEx(0, COINIT_MULTITHREADED);
-  if (FAILED(hr)) return false;
+  if (FAILED(hr)) {
+    g_App.Log(L"Power: CoInitializeEx failed (0x" +
+              std::to_wstring(hr) + L")");
+    return false;
+  }
 
   IWbemLocator* pLoc = NULL;
   hr = CoCreateInstance(CLSID_WbemLocator, 0, CLSCTX_INPROC_SERVER,
                          IID_IWbemLocator, (void**)&pLoc);
-  if (FAILED(hr)) { CoUninitialize(); return false; }
+  if (FAILED(hr)) {
+    g_App.Log(L"Power: CoCreateInstance WbemLocator failed (0x" +
+              std::to_wstring(hr) + L")");
+    CoUninitialize(); return false;
+  }
 
   hr = pLoc->ConnectServer(_bstr_t(L"root\\librehardwaremonitor"), NULL, NULL,
                             0, NULL, 0, 0, &g_pSvc);
   pLoc->Release();
-  return SUCCEEDED(hr);
+  if (FAILED(hr)) {
+    g_App.Log(L"Power: WMI connect to root\\librehardwaremonitor failed (0x" +
+              std::to_wstring(hr) + L")");
+    return false;
+  }
+  g_App.Log(L"Power: WMI connected to root\\librehardwaremonitor");
+  return true;
 }
 
 static void InitPowerMeasurement() {
@@ -1030,6 +1078,7 @@ static void InitPowerMeasurement() {
   g_lhmInited = true;
 
   if (!StartLHM()) return;
+  g_App.Log(L"Power: polling WMI for sensors (up to 8s)...");
   // Poll WMI up to 8 seconds for sensors
   for (int i = 0; i < 40 && !g_lhmOk; i++) {
     if (!g_pSvc && !ConnectWmi()) { Sleep(200); continue; }
@@ -1048,6 +1097,10 @@ static void InitPowerMeasurement() {
     }
     if (!g_lhmOk) Sleep(200);
   }
+  if (g_lhmOk)
+    g_App.Log(L"Power: sensors available, power logging active");
+  else
+    g_App.Log(L"Power: no sensors found after 8s (PawnIO driver may be required)");
 }
 #endif
 
@@ -1086,6 +1139,12 @@ double SampleCpuPackagePower() {
 
 void ShutdownPowerMeasurement() {
 #if defined(_WIN32)
+  g_dialogWatcherStop = true;
+  if (g_dialogWatcher) {
+    WaitForSingleObject(g_dialogWatcher, 2000);
+    CloseHandle(g_dialogWatcher);
+    g_dialogWatcher = NULL;
+  }
   if (g_pSvc) { g_pSvc->Release(); g_pSvc = NULL; }
   if (g_lhmProcess) {
     TerminateProcess(g_lhmProcess, 0);
