@@ -17,29 +17,18 @@ if (Test-Path $regPath) {
     exit 0
 }
 
-# Extract PawnIO_setup.exe from LibreHardwareMonitorLib.dll
-$lhmLib = Join-Path $LhmDir "LibreHardwareMonitorLib.dll"
-if (-not (Test-Path $lhmLib)) {
-    Write-Error "LibreHardwareMonitorLib.dll not found in $LhmDir"
+# Extract PawnIO_setup.exe from LibreHardwareMonitor.exe resources
+$lhmExe = Join-Path $LhmDir "LibreHardwareMonitor.exe"
+if (-not (Test-Path $lhmExe)) {
+    Write-Error "LibreHardwareMonitor.exe not found in $LhmDir"
     exit 1
 }
 
 Write-Host "Extracting PawnIO installer..."
-$assembly = [System.Reflection.Assembly]::LoadFile($lhmLib)
-# PawnIO_setup.exe is actually in the EXE, not the lib — check both
-$lhmExe = Join-Path $LhmDir "LibreHardwareMonitor.exe"
-$resourceName = "LibreHardwareMonitor.Resources.PawnIO_setup.exe"
-
-$stream = $null
-if (Test-Path $lhmExe) {
-    $exeAssembly = [System.Reflection.Assembly]::LoadFile($lhmExe)
-    $stream = $exeAssembly.GetManifestResourceStream($resourceName)
-}
+$assembly = [System.Reflection.Assembly]::LoadFile($lhmExe)
+$stream = $assembly.GetManifestResourceStream("LibreHardwareMonitor.Resources.PawnIO_setup.exe")
 if ($null -eq $stream) {
-    $stream = $assembly.GetManifestResourceStream($resourceName)
-}
-if ($null -eq $stream) {
-    Write-Error "PawnIO_setup.exe resource not found in LHM assemblies."
+    Write-Error "PawnIO_setup.exe resource not found in LHM assembly."
     exit 1
 }
 
