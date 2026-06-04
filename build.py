@@ -303,7 +303,7 @@ def build_windows_target(config):
             "-Wl,--subsystem,windows",
             "-Wl,--gc-sections",
         "-luser32", "-lgdi32", "-ldwmapi", "-lshcore",
-        "-lshell32", "-lole32", "-loleaut32", "-lwbemuuid", "-ldbghelp",
+        "-lshell32", "-lole32", "-loleaut32", "-ldbghelp",
         ]
 
         cmd = [c for c in cmd if c]
@@ -318,11 +318,39 @@ def build_windows_target(config):
         # Build the CLI launcher
         build_windows_cli_launcher(target, cpu, out_path)
 
-        # Copy LibreHardwareMonitor files into lhm/ subfolder
+        # Compile PowerReader.cs (C# helper for LHM power reading)
         lhm_src = BASE_DIR / "vendor" / "lhm"
+        power_reader_cs = lhm_src / "PowerReader.cs"
+        if power_reader_cs.exists() and lhm_src.exists():
+            lhm_out = out_path / "lhm"
+            lhm_out.mkdir(parents=True, exist_ok=True)
+            csc = Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / \
+                "Microsoft.NET" / "Framework64" / "v4.0.30319" / "csc.exe"
+            if csc.exists():
+                lhm_dll = lhm_src / "LibreHardwareMonitorLib.dll"
+                pr_exe = lhm_out / "PowerReader.exe"
+                subprocess.run([
+                    str(csc), "/target:exe", f"/out:{pr_exe}",
+                    "/platform:x64", "/nologo",
+                    f"/reference:{lhm_dll}",
+                    str(power_reader_cs),
+                ], check=True, capture_output=True)
+                # Write app.config to target .NET 4.8 (needed for Mutex ctor)
+                config_path = pr_exe.with_suffix(".exe.config")
+                config_path.write_text(
+                    '<?xml version="1.0" encoding="utf-8"?>\n'
+                    '<configuration>\n'
+                    '  <startup>\n'
+                    '    <supportedRuntime version="v4.0" '
+                    'sku=".NETFramework,Version=v4.8" />\n'
+                    '  </startup>\n'
+                    '</configuration>\n', encoding="utf-8")
+                log(f"Compiled PowerReader.exe")
+
+        # Copy LibreHardwareMonitor DLLs into lhm/ subfolder
         if lhm_src.exists():
             for item in lhm_src.rglob("*"):
-                if item.is_file():
+                if item.is_file() and item.suffix.lower() != ".cs":
                     rel = item.relative_to(lhm_src)
                     dest = out_path / "lhm" / rel
                     dest.parent.mkdir(parents=True, exist_ok=True)
