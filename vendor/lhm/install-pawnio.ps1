@@ -39,7 +39,7 @@ $fs.Close()
 $stream.Close()
 
 Write-Host "Installing PawnIO driver..."
-$proc = Start-Process -FilePath $tempSetup -ArgumentList "-install" -PassThru -Wait
+$proc = Start-Process -FilePath $tempSetup -ArgumentList "-install","-silent" -PassThru -Wait
 Remove-Item $tempSetup -Force -ErrorAction SilentlyContinue
 
 # Verify installation

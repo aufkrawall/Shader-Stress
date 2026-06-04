@@ -1042,7 +1042,7 @@ static bool InstallPawnIO() {
   SHELLEXECUTEINFOW sei = { sizeof(sei) };
   sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
   sei.lpFile = setupPath;
-  sei.lpParameters = L"-install";
+  sei.lpParameters = L"-install -silent";
   sei.nShow = SW_HIDE;
   if (!ShellExecuteExW(&sei) || !sei.hProcess) {
     g_App.Log(L"Power: PawnIO install failed");

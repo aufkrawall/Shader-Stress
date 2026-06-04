@@ -35,7 +35,7 @@ $fs.Close()
 $stream.Close()
 
 Write-Host "Uninstalling PawnIO driver..."
-$proc = Start-Process -FilePath $tempSetup -ArgumentList "-uninstall" -PassThru -Wait
+$proc = Start-Process -FilePath $tempSetup -ArgumentList "-uninstall","-silent" -PassThru -Wait
 Remove-Item $tempSetup -Force -ErrorAction SilentlyContinue
 
 # Verify removal (may need reboot if driver was loaded)
