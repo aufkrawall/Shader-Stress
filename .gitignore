@@ -9,6 +9,14 @@ audit/
 zig-*/
 llvm-mingw-*/
 
+# Downloaded LHM dependencies (fetched from GitHub at build time)
+vendor/lhm/LibreHardwareMonitorLib.dll
+vendor/lhm/PawnIO_setup.exe
+vendor/lhm/System.Memory.dll
+vendor/lhm/System.Buffers.dll
+vendor/lhm/System.Runtime.CompilerServices.Unsafe.dll
+vendor/lhm/SHA256SUMS.txt
+
 # Runtime artifacts
 *.log
 Crash_*/

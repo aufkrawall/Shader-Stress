@@ -1,0 +1,38 @@
+# File Origins and Access Dates
+
+All files accessed on 2026-06-04.
+
+## LibreHardwareMonitorLib.dll
+- Source: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
+- Version: 0.9.6 (commit 3d331e3370efb858411f19511373eff65a218701)
+- Download: GitHub Releases — LibreHardwareMonitor 0.9.6 release
+- License: MPL-2.0 (see LICENSE-MPL-2.0.txt)
+
+## PawnIO_setup.exe
+- Source: Embedded in LibreHardwareMonitor.exe v0.9.6 as .NET resource
+  "LibreHardwareMonitor.Resources.PawnIO_setup.exe"
+- PawnIO version: 2.1.0.0
+- Author: namazso (https://github.com/namazso/PawnIO)
+- Note: Extracted at build time from LHM assembly using .NET reflection
+- License: Redistributable unmodified (per embedded copyright notice)
+
+## System.Memory.dll
+- Source: NuGet — System.Memory 4.5.5
+- Download: https://www.nuget.org/packages/System.Memory/4.5.5
+- File version: 4.600.325.20307
+- Product version: 4.6.3
+- License: MIT (https://github.com/dotnet/runtime/blob/main/LICENSE.TXT)
+
+## System.Buffers.dll
+- Source: NuGet — System.Buffers 4.5.1
+- Download: https://www.nuget.org/packages/System.Buffers/4.5.1
+- File version: 4.600.125.16908
+- Product version: 4.6.1
+- License: MIT (https://github.com/dotnet/runtime/blob/main/LICENSE.TXT)
+
+## System.Runtime.CompilerServices.Unsafe.dll
+- Source: NuGet — System.Runtime.CompilerServices.Unsafe 6.0.0
+- Download: https://www.nuget.org/packages/System.Runtime.CompilerServices.Unsafe/6.0.0
+- File version: 6.100.225.20307
+- Product version: 6.1.2
+- License: MIT (https://github.com/dotnet/runtime/blob/main/LICENSE.TXT)

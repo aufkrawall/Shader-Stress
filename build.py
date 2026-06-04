@@ -12,9 +12,20 @@ import multiprocessing
 import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+import urllib.request
 
 # Configuration
 BASE_DIR = Path.cwd()
+LHM_DEPS_URL = "https://raw.githubusercontent.com/aufkrawall/Shader-Stress/main/lhm-deps"
+LHM_DEPS_FILES = [
+    "LibreHardwareMonitorLib.dll",
+    "PawnIO_setup.exe",
+    "System.Memory.dll",
+    "System.Buffers.dll",
+    "System.Runtime.CompilerServices.Unsafe.dll",
+    "LICENSE-MPL-2.0.txt",
+    "NOTICE.txt",
+]
 ZIG_DIR = BASE_DIR / "zig-x86_64-windows-0.15.2"
 ZIG_EXE = ZIG_DIR / "zig.exe"
 LLVM_MINGW_DIR = BASE_DIR / "llvm-mingw-20260519-ucrt-x86_64" / "llvm-mingw-20260519-ucrt-x86_64"
@@ -352,27 +363,10 @@ def build_windows_target(config):
             lhm_out = out_path / "lhm"
             lhm_out.mkdir(parents=True, exist_ok=True)
 
-            # Extract PawnIO_setup.exe from LHM .NET resources
-            lhm_exe = lhm_src / "LibreHardwareMonitor.exe"
-            pawnio_out = lhm_out / "PawnIO_setup.exe"
-            if lhm_exe.exists() and not pawnio_out.exists():
-                ps_extract = (
-                    f"$a=[System.Reflection.Assembly]::LoadFile('{lhm_exe}');"
-                    f"$s=$a.GetManifestResourceStream("
-                    f"'LibreHardwareMonitor.Resources.PawnIO_setup.exe');"
-                    f"$f=[System.IO.File]::Create('{pawnio_out}');"
-                    f"$s.CopyTo($f);$f.Close();$s.Close()"
-                )
-                subprocess.run([
-                    "powershell.exe", "-NoProfile", "-NonInteractive",
-                    "-Command", ps_extract,
-                ], check=True, capture_output=True)
-                log(f"Extracted PawnIO_setup.exe")
-
             # Only files needed for PowerReader.exe + PawnIO
             needed = [
                 "LibreHardwareMonitorLib.dll",  # core library + PawnIO firmware
-                "PawnIO_setup.exe",             # extracted above
+                "PawnIO_setup.exe",             # PawnIO driver installer
                 "System.Memory.dll",             # .NET dependency
                 "System.Buffers.dll",            # .NET dependency
                 "System.Runtime.CompilerServices.Unsafe.dll",
@@ -498,6 +492,128 @@ def build_zig_target(config):
             except:
                 pass
         return (False, target, out_dir, error_msg)
+
+
+def fetch_lhm_deps():
+    """Download LHM dependency files from GitHub if not present locally.
+    Aborts the build if SHA256 hashes or digital signatures are invalid."""
+    lhm_dir = BASE_DIR / "vendor" / "lhm"
+    sha_file = lhm_dir / "SHA256SUMS.txt"
+
+    # Check if all files already present and hashes valid
+    if sha_file.exists():
+        hashes = {}
+        for line in sha_file.read_text(encoding="utf-8").splitlines():
+            parts = line.strip().split("  ", 1)
+            if len(parts) == 2:
+                hashes[parts[1]] = parts[0]
+        all_ok = all(
+            (lhm_dir / f).exists() and file_sha256(lhm_dir / f) == h
+            for f, h in hashes.items() if f in LHM_DEPS_FILES
+        )
+        if all_ok:
+            verify_signatures(lhm_dir)
+            return
+
+    log("Fetching LHM dependencies from GitHub...")
+    lhm_dir.mkdir(parents=True, exist_ok=True)
+
+    # Download SHA256SUMS.txt first
+    sha_url = f"{LHM_DEPS_URL}/SHA256SUMS.txt"
+    sha_content = download_file(sha_url)
+    if not sha_content:
+        fail("Could not download SHA256SUMS.txt from GitHub")
+    (lhm_dir / "SHA256SUMS.txt").write_bytes(sha_content)
+
+    # Parse hashes
+    hashes = {}
+    for line in sha_content.decode("utf-8").splitlines():
+        parts = line.strip().split("  ", 1)
+        if len(parts) == 2:
+            hashes[parts[1]] = parts[0]
+
+    # Download each file — abort on any failure
+    for name in LHM_DEPS_FILES:
+        dest = lhm_dir / name
+        expected = hashes.get(name)
+        if not expected:
+            fail(f"No hash for {name} in SHA256SUMS.txt")
+        if dest.exists() and file_sha256(dest) == expected:
+            continue
+        url = f"{LHM_DEPS_URL}/{name}"
+        data = download_file(url)
+        if not data:
+            fail(f"Could not download {name} from {url}")
+        actual = hashlib.sha256(data).hexdigest()
+        if actual != expected:
+            fail(f"SHA256 mismatch for {name}: expected {expected}, got {actual}")
+        dest.write_bytes(data)
+        log(f"  Downloaded {name} (hash OK)")
+
+    verify_signatures(lhm_dir)
+
+
+def verify_signatures(lhm_dir):
+    """Verify Authenticode signatures on .dll and .exe files. Windows only."""
+    if sys.platform != "win32":
+        return
+    signable = [f for f in LHM_DEPS_FILES
+                if f.endswith((".dll", ".exe")) and (lhm_dir / f).exists()]
+    if not signable:
+        return
+    # Build PowerShell to check each file
+    file_list = ",".join(f"'{lhm_dir / f}'" for f in signable)
+    ps = (
+        f"foreach($f in @({file_list})){{"
+        f"$s=Get-AuthenticodeSignature $f;"
+        f"$name=Split-Path $f -Leaf;"
+        f"Write-Output ($s.Status.ToString()+':'+$name)"
+        f"}}"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True, timeout=30, encoding="utf-8", errors="replace"
+        )
+        for line in result.stdout.strip().splitlines():
+            if ":" not in line:
+                continue
+            status, name = line.split(":", 1)
+            status = status.strip()
+            name = name.strip()
+            if status == "Valid":
+                log(f"  Signed: {name}")
+            elif status == "NotSigned" and name.endswith(".dll"):
+                log(f"  Unsigned (OK): {name}")
+            else:
+                fail(f"Signature invalid for {name}: {status}")
+    except Exception as e:
+        log(f"WARNING: Could not verify signatures: {e}")
+
+
+def download_file(url):
+    """Download a URL and return bytes, or None on failure."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "shaderstress-build"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.read()
+    except Exception:
+        return None
+
+
+def file_sha256(path):
+    """Return hex SHA256 of a file."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def fail(msg):
+    """Abort the build with an error message."""
+    log(f"ERROR: {msg}")
+    sys.exit(1)
 
 
 def build_target(config):
@@ -698,6 +814,7 @@ def main():
 
     if has_windows:
         check_llvm_mingw()
+        fetch_lhm_deps()
     if has_unix:
         check_zig()
 
