@@ -38,9 +38,14 @@ Write-Host "Uninstalling PawnIO driver..."
 & $tempSetup -uninstall
 Remove-Item $tempSetup -Force -ErrorAction SilentlyContinue
 
-# Verify
-if (-not (Test-Path $regPath)) {
+# Verify removal
+$regPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO"
+$service = Get-Service -Name "PawnIO" -ErrorAction SilentlyContinue
+if (-not (Test-Path $regPath) -and -not $service) {
     Write-Host "PawnIO uninstalled successfully."
+} elseif (-not (Test-Path $regPath)) {
+    Write-Host "PawnIO registry removed, but service still registered (reboot required to fully unload)."
 } else {
-    Write-Warning "PawnIO may still be installed. Check Device Manager or reboot."
+    Write-Error "PawnIO uninstallation failed."
+    exit 1
 }

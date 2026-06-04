@@ -42,9 +42,15 @@ Write-Host "Installing PawnIO driver..."
 & $tempSetup -install
 Remove-Item $tempSetup -Force -ErrorAction SilentlyContinue
 
-if (Test-Path $regPath) {
+# Verify installation
+$regPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO"
+$service = Get-Service -Name "PawnIO" -ErrorAction SilentlyContinue
+if ((Test-Path $regPath) -and $service) {
     $ver = Get-ItemProperty -Path $regPath -Name DisplayVersion -ErrorAction SilentlyContinue
-    Write-Host "PawnIO installed successfully (version $($ver.DisplayVersion))."
+    Write-Host "PawnIO installed successfully (version $($ver.DisplayVersion), service: $($service.Status))."
+} elseif (Test-Path $regPath) {
+    Write-Host "PawnIO registered (service not yet active — a reboot may be required)."
 } else {
-    Write-Warning "PawnIO installation may not have completed. Check Device Manager."
+    Write-Error "PawnIO installation failed."
+    exit 1
 }
