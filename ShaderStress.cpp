@@ -786,6 +786,8 @@ static void PrintVerifyResult(const std::wstring &hash, const HashResult &result
 }
 
 static int RunPerfStatsCommand() {
+  g_Cpu = GetCpuInfo();
+  SetFpuFlushMode();
   printf("Performance statistics (complexity=1000, seed=42):\n");
   RunPerfStats();
   return (int)CliExitCode::Success;

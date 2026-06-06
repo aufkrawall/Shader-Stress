@@ -1,10 +1,29 @@
 # Optimization Audit
 
-Audited for maximum power draw, throughput, heat, and utilization (2026-05-14).
+Audited for maximum power draw, throughput, heat, and utilization (initial audit 2026-05-14; latest retune 2026-06-06).
 
-**2026-06-04 — Power-draw inversion**: See "## 2026-06-04 Inversion" at the bottom of this file. The 2026-05-23 design ("L2-miss memory controller activity") was deliberately INVERTED per user note: cache-resident data + expensive compute ops draw more CPU power than DRAM-bound data.
+**2026-06-06 — Current power retune**: The 2026-06-04 div/sqrt-heavy experiment is superseded for synthetic scalar, AVX2, and AVX-512. Current direction favors sustained execution-unit activity: smaller active synthetic buffers, FMA or split mul/add, shuffle/permute pressure, and high-entropy integer multiply/rotate/xor chains. `RunRealisticCompilerSim_V3` remains excluded from retuning.
+
+## 2026-06-06 CPU Power Retune Plus Subsystem Audit
+
+### Current workload contract
+- **Realistic scalar**: `RunRealisticCompilerSim_V3` intentionally unchanged; tests pin its source hash.
+- **Synthetic scalar**: active work set is `SYNTH_WORK_BUF_ELEMS = 8192` doubles (64 KiB per thread). x86 SSE2 split mul/add uses `Sse2SplitMulAddNoContract()` with a local inline-asm barrier so Clang fast-math cannot contract it back to FMA. Hot-loop vector div/sqrt and GPR division are removed; integer pressure comes from `MixGpr()` multiply/rotate/xor chains plus modest SSE/NEON shuffle work.
+- **AVX2**: active work set is 64 KiB, keeps 16 YMM accumulators, removes `_mm256_div_pd`/`_mm256_sqrt_pd`, and uses 16 memory FMA calls plus a small in-register FMA+`_mm256_permute4x64_pd` slice. Assembly spot-check on the Windows v3 compiler produced zero `vdivpd`/`vsqrtpd`, FMA and permute instructions present, and reduced the extra YMM stack moves from the first retune attempt.
+- **AVX-512**: keeps 32 ZMM accumulators and the 256 KiB allocation, removes `_mm512_div_pd`/`_mm512_sqrt_pd`, and uses memory FMA plus a small in-register FMA+`_mm512_shuffle_pd` slice. Validated by build/assembly only on the Ryzen 5700X host.
+- **`--perf-stats`**: now initializes `g_Cpu = GetCpuInfo()` and calls `SetFpuFlushMode()` before timing, so feature gating and FPU state match normal runs.
+
+### RAM/I/O subsystem notes
+- **RAM**: still capped at 1.5 GiB, but streaming now uses the full allocated byte count instead of the rounded-down power-of-two count. Pointer chasing gets a separate `chaseCount`/mask via `RoundDownPowerOfTwo(streamCount)` and full initialization through `InitializeRamChase()`. Active RAM allocation is reused across bursts, with one log line per activation reporting active bytes, stream bytes, chase bytes, and the 90% stream / 10% chase ratio.
+- **I/O**: Windows and Unix direct/no-buffered read paths now share `HashIoBufferForCpuPower()`. The AVX2 part has four independent vector accumulators (`vacc0`..`vacc3`) plus scalar final mixing instead of one dependent vector accumulator. I/O thread policy remains `min(cpu/4, 8)` and startup/open-failure logging records the actual thread count or first failure.
+
+### Follow-up / validation
+- Manual admin power comparison on Ryzen 5700X remains the final validation step for realistic scalar, synthetic scalar, and AVX2 benchmark mode.
+- If AVX2/AVX-512 assembly spill pressure regresses later, reduce the in-loop shuffle/permute slice before changing accumulator counts.
 
 ## Implemented Optimizations
+
+Note: this section preserves older audit history. When it conflicts with the 2026-06-06 section above, treat the 2026-06-06 section as current.
 
 ### Build System (build.py)
 

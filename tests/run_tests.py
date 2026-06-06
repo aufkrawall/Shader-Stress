@@ -17,6 +17,7 @@ import sys
 import os
 import json
 import glob
+import hashlib
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GOLDEN_FILE = os.path.join(os.path.dirname(__file__), "golden_values.json")
@@ -196,7 +197,7 @@ def test_hash_roundtrip(binary):
 
 # ---------------------------------------------------------------------------
 # Source-invariant regression tests (read-only, no CPU stress)
-# These verify the 2026-06-04 power-inversion invariants are intact in the
+# These verify the current workload-shape invariants are intact in the
 # source tree. They grep .cpp / .h files for constants and patterns, and
 # never run the actual stress workload (per AGENTS.md rule).
 # ---------------------------------------------------------------------------
@@ -206,18 +207,41 @@ def _read(path):
         return f.read()
 
 
-def test_invariant_work_buf_elems(binary):
-    """WORK_BUF_ELEMS must be 32768 (256 KB, L2-resident) after the 2026-06-04 inversion."""
+def _extract_function(src, name):
+    start = src.index(f"uint64_t {name}")
+    brace = src.index("{", start)
+    depth = 0
+    for pos in range(brace, len(src)):
+        ch = src[pos]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start:pos + 1]
+    raise ValueError(f"function not closed: {name}")
+
+
+def _stable_source_hash(text):
+    normalized = "\n".join(line.rstrip() for line in text.splitlines())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def test_invariant_synth_work_buf_elems(binary):
+    """Synthetic scalar/AVX2 use 64 KiB; AVX-512 retains the larger allocation."""
     src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
-    check("constexpr size_t WORK_BUF_ELEMS = 32768;" in src,
-          "WORK_BUF_ELEMS == 32768 (256 KB L2-resident)")
+    check("constexpr size_t WORK_BUF_ELEMS = 32768;" in src and
+          "constexpr size_t SYNTH_WORK_BUF_ELEMS = 8192;" in src and
+          "constexpr int MASK_SSE2   = (SYNTH_WORK_BUF_ELEMS - 2);" in src and
+          "constexpr int MASK_AVX2   = (SYNTH_WORK_BUF_ELEMS - 4);" in src,
+          "synthetic scalar/AVX2 active buffer == 64 KiB")
 
 
 def test_invariant_ram_stress_cap(binary):
-    """RAM_STRESS_MAX_BYTES must be 1.5 GB (L3-friendly) after the 2026-06-04 inversion."""
+    """RAM_STRESS_MAX_BYTES must stay at the 1.5 GiB cap."""
     src = _read(os.path.join(PROJECT_ROOT, "Common.h"))
     check("RAM_STRESS_MAX_BYTES = 1536ULL * 1024 * 1024" in src,
-          "RAM_STRESS_MAX_BYTES == 1.5 GB (L3-friendly)")
+          "RAM_STRESS_MAX_BYTES == 1.5 GiB")
 
 
 def test_invariant_decomp_passes(binary):
@@ -227,39 +251,66 @@ def test_invariant_decomp_passes(binary):
           "DecompressLogic PASSES == 256")
 
 
-def test_invariant_avx512_vec_div(binary):
-    """AVX-512 path must use _mm512_div_pd (vec-div/iter, feeds div unit)."""
+def test_invariant_avx512_fma_permute_no_div_sqrt(binary):
+    """AVX-512 uses FMA+shuffle and does not reintroduce hot-loop div/sqrt."""
     src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
-    check("_mm512_div_pd" in src,
-          "AVX-512 uses _mm512_div_pd")
+    check("_mm512_fmadd_pd" in src and "_mm512_shuffle_pd" in src and
+          "_mm512_div_pd" not in src and "_mm512_sqrt_pd" not in src,
+          "AVX-512 uses FMA+shuffle without div/sqrt")
 
 
-def test_invariant_avx512_vec_sqrt(binary):
-    """AVX-512 path must use _mm512_sqrt_pd (vec-sqrt/iter, feeds sqrt unit)."""
+def test_invariant_avx2_fma_permute_no_div_sqrt(binary):
+    """AVX2 uses FMA+permute and does not reintroduce hot-loop div/sqrt."""
     src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
-    check("_mm512_sqrt_pd" in src,
-          "AVX-512 uses _mm512_sqrt_pd")
+    check("_mm256_fmadd_pd" in src and "_mm256_permute4x64_pd" in src and
+          "_mm256_div_pd" not in src and "_mm256_sqrt_pd" not in src,
+          "AVX2 uses FMA+permute without div/sqrt")
 
 
-def test_invariant_avx2_vec_div(binary):
-    """AVX-2 path must use _mm256_div_pd."""
+def test_invariant_sse2_no_contract_no_div_sqrt(binary):
+    """Synthetic scalar SSE2 split mul/add must not compile back into FMA."""
     src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
-    check("_mm256_div_pd" in src,
-          "AVX-2 uses _mm256_div_pd")
+    check("Sse2SplitMulAddNoContract" in src and
+          'asm volatile("" : "+x"(prod))' in src and
+          "_mm_div_pd" not in src and "_mm_sqrt_pd" not in src,
+          "SSE2 split mul/add no-contract barrier, no div/sqrt")
 
 
-def test_invariant_sse2_vec_div(binary):
-    """SSE2 path must use _mm_div_pd (replaces 1-2 of the 48 split-mul-add WORK calls)."""
-    src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
-    check("_mm_div_pd" in src,
-          "SSE2 uses _mm_div_pd")
-
-
-def test_invariant_io_avx2_hash(binary):
-    """IOThread must have an AVX2 second-pass hash on the read buffer."""
+def test_invariant_ram_full_stream_separate_chase(binary):
+    """RAM stream count must cover the allocation and chase must use its own power-of-two mask."""
     src = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
-    check("_mm256_loadu_si256" in src and "_mm256_mul_epu32" in src,
-          "IOThread has AVX2 second-pass hash")
+    check("RoundDownPowerOfTwo(streamCount)" in src and
+          "InitializeRamChase(p, chaseCount)" in src and
+          "RunRamStreamingPass(p, streamCount)" in src and
+          "stream ratio=90%" in src and
+          "if ((rng() % 10) < 9)" in src,
+          "RAM full stream count plus separate chase mask")
+
+
+def test_invariant_io_multi_accumulator_hash(binary):
+    """IOThread must use the shared multi-accumulator CPU-side hash helper."""
+    src = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
+    check("HashIoBufferForCpuPower" in src and
+          "vacc0" in src and "vacc3" in src and
+          src.count("HashIoBufferForCpuPower(p,") >= 2,
+          "I/O shared multi-accumulator hash helper")
+
+
+def test_invariant_perf_stats_initializes_cpu(binary):
+    """--perf-stats must initialize CPU features and FPU flush mode before timing."""
+    src = _read(os.path.join(PROJECT_ROOT, "ShaderStress.cpp"))
+    check("g_Cpu = GetCpuInfo();" in src and
+          "SetFpuFlushMode();" in src and
+          "RunPerfStats();" in src,
+          "--perf-stats initializes CPU features and FPU state")
+
+
+def test_invariant_realistic_unchanged(binary):
+    """RunRealisticCompilerSim_V3 is user-excluded and must remain source-stable."""
+    src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
+    actual = _stable_source_hash(_extract_function(src, "RunRealisticCompilerSim_V3"))
+    check(actual == "e7a0fcebe39e38cb1b0db368a7440dfef0cf9f648928d630046a24fa7ef14425",
+          "RealisticCompilerSim_V3 source hash unchanged")
 
 
 def test_invariant_decomp_idiv(binary):
@@ -267,13 +318,6 @@ def test_invariant_decomp_idiv(binary):
     src = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
     check("acc = acc / ((data[i] & 0xFFFFFFFFULL) | 1ULL)" in src,
           "DecompressLogic has 64-bit IDIV injection")
-
-
-def test_invariant_realistic_unchanged(binary):
-    """RunRealisticCompilerSim_V3 must be byte-identical (user-excluded kernel)."""
-    src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
-    check("RunRealisticCompilerSim_V3" in src and "case start + 31:" in src,
-          "RealisticCompilerSim_V3 banner + 32-case block intact")
 
 
 def test_invariant_lhm_subfolder(binary):
@@ -331,14 +375,15 @@ LIGHTWEIGHT_TESTS = [
     test_repro_missing_args,
     test_repro_partial_args,
     test_hash_roundtrip,
-    test_invariant_work_buf_elems,
+    test_invariant_synth_work_buf_elems,
     test_invariant_ram_stress_cap,
     test_invariant_decomp_passes,
-    test_invariant_avx512_vec_div,
-    test_invariant_avx512_vec_sqrt,
-    test_invariant_avx2_vec_div,
-    test_invariant_sse2_vec_div,
-    test_invariant_io_avx2_hash,
+    test_invariant_avx512_fma_permute_no_div_sqrt,
+    test_invariant_avx2_fma_permute_no_div_sqrt,
+    test_invariant_sse2_no_contract_no_div_sqrt,
+    test_invariant_ram_full_stream_separate_chase,
+    test_invariant_io_multi_accumulator_hash,
+    test_invariant_perf_stats_initializes_cpu,
     test_invariant_decomp_idiv,
     test_invariant_realistic_unchanged,
     test_invariant_lhm_subfolder,
@@ -360,6 +405,11 @@ def test_repro_scalar(binary):
 def test_repro_scalar_sim(binary):
     ret, out, err = run(binary, ["--repro", "42", "100", "--isa", "scalar-sim", "--quiet"])
     check(ret == 0, "--repro scalar-sim")
+
+
+def test_repro_avx2_if_available(binary):
+    ret, out, err = run(binary, ["--repro", "42", "100", "--isa", "avx2", "--quiet"])
+    check(ret == 0, "--repro avx2 quick")
 
 
 def test_mode_steady_short(binary):
@@ -400,6 +450,7 @@ def verify_golden_values(binary):
 STRESS_TESTS = [
     test_repro_scalar,
     test_repro_scalar_sim,
+    test_repro_avx2_if_available,
     test_mode_steady_short,
     test_max_duration_alias_run,
 ]

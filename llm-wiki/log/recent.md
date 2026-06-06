@@ -1,5 +1,15 @@
 # Recent Changes Log
 
+## 2026-06-06 — CPU power retune and RAM/I/O subsystem cleanup
+
+- **Realistic scalar unchanged**: `RunRealisticCompilerSim_V3` was left untouched and is now pinned by a source-hash invariant test.
+- **Synthetic scalar retuned**: Active synthetic buffer is now 64 KiB (`SYNTH_WORK_BUF_ELEMS = 8192`). Hot-loop vector div/sqrt and integer division were removed. x86 SSE2 split mul/add uses a local no-contract barrier (`Sse2SplitMulAddNoContract`) so `-ffast-math` cannot silently contract it to FMA; integer side now uses `MixGpr()` multiply/rotate/xor chains plus modest shuffle pressure.
+- **AVX2/AVX-512 retuned**: AVX2 keeps 16 YMM accumulators and AVX-512 keeps 32 ZMM accumulators, but vector div/sqrt are removed. Both use memory FMA plus a small in-register FMA+permute/shuffle slice. Temporary Windows v3 assembly check found zero `vdivpd`/`vsqrtpd`, with FMA and permutes present; shuffle count was reduced after an initial attempt produced excessive stack moves.
+- **`--perf-stats` fixed**: CPU feature detection and FPU flush mode are initialized before timing, so AVX-512 gating and FP state match normal execution.
+- **RAM stress fixed**: 1.5 GiB cap retained, but streaming now touches the full allocation instead of the rounded-down power-of-two subset. Pointer chasing has a separate power-of-two chase count/mask, Linux initialization fills actual chase entries, active allocations are reused across bursts, and activation logging records effective bytes and the 90% stream / 10% chase ratio.
+- **I/O stress fixed**: Windows and Unix read paths share `HashIoBufferForCpuPower()`. AVX2 CPU-side hashing now uses four independent vector accumulators plus scalar final mixing. I/O thread policy remains `min(cpu/4, 8)` with startup/open-failure logging.
+- **Tests updated**: Invariants now assert the new no-div/sqrt contract, SSE no-contract helper, FMA+permute/shuffle mix, RAM stream/chase separation, shared I/O hash helper, and `--perf-stats` initialization. `--stress` coverage now includes a short AVX2 repro when available.
+
 ## 2026-06-04 — Replace LHM EXE with extracted PawnIO_setup.exe
 
 - **PawnIO_setup.exe extracted at build time**: `build.py` extracts `PawnIO_setup.exe` from LHM's embedded .NET resources during build. Eliminates `LibreHardwareMonitor.exe` (4.3 MB) from lhm/, replaced by standalone `PawnIO_setup.exe` (3.1 MB).

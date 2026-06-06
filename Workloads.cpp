@@ -3,20 +3,19 @@
 #include <cstring>
 #include <vector>
 
-// Work buffer size: 256KB (32768 doubles) — L2-resident on all modern CPUs.
-// Reduced from 512KB (2026-05-23) per user note: data staying in CPU caches
-// yields higher package power than data spilling to RAM (L2/L3-resident hits
-// keep execution units busy, while DRAM-bound access stalls the pipeline).
-// Used as thread-local work area for all max-power workloads (SSE2, NEON,
-// AVX2, AVX-512) which now rely on L2 hit rate + extra expensive compute ops
-// (vec-div/vec-sqrt) rather than memory-controller traffic to heat the cores.
+// Work buffer allocation size: 256 KiB (32768 doubles), retained so the AVX-512
+// path can still use a wider L2-resident region without reallocating TLS.
 constexpr size_t WORK_BUF_ELEMS = 32768;
+// Synthetic scalar and AVX2 use a smaller 64 KiB active region. On Zen 3 this
+// keeps two SMT siblings comfortably inside the shared 512 KiB L2 while leaving
+// headroom for code, stacks, and neighboring hot data.
+constexpr size_t SYNTH_WORK_BUF_ELEMS = 8192;
 // Alignment-safe MASK values derived from buffer size (buffer is power-of-two):
 // SSE2/NEON: clear lowest 1 bit  → 16-byte alignment
 // AVX2:      clear lowest 2 bits → 32-byte alignment
 // AVX-512:   clear lowest 3 bits → 64-byte alignment
-constexpr int MASK_SSE2   = (WORK_BUF_ELEMS - 2);
-constexpr int MASK_AVX2   = (WORK_BUF_ELEMS - 4);
+constexpr int MASK_SSE2   = (SYNTH_WORK_BUF_ELEMS - 2);
+constexpr int MASK_AVX2   = (SYNTH_WORK_BUF_ELEMS - 4);
 constexpr int MASK_AVX512 = (WORK_BUF_ELEMS - 8);
 
 struct WorkBufferTls {
@@ -42,7 +41,23 @@ inline double* GetWorkBuffer() {
   #else
     #include <emmintrin.h>
   #endif
+ALWAYS_INLINE __m128d Sse2SplitMulAddNoContract(__m128d r, __m128d mul,
+                                                const double *addend) {
+  __m128d prod = _mm_mul_pd(r, mul);
+#if defined(__clang__) || defined(__GNUC__)
+  asm volatile("" : "+x"(prod));
 #endif
+  return _mm_add_pd(prod, _mm_load_pd(addend));
+}
+#endif
+
+ALWAYS_INLINE uint64_t MixGpr(uint64_t self, uint64_t a, uint64_t b,
+                              unsigned rot) {
+  uint64_t x = self * 0x9E3779B97F4A7C15ULL;
+  x ^= Rotl64(a + 0xD1B54A32D192ED03ULL, rot);
+  x ^= b >> ((rot & 31u) + 1u);
+  return x + 0x94D049BB133111EBULL;
+}
 
 // ARM NEON intrinsics for ARM64
 #if defined(_M_ARM64) || defined(__aarch64__)
@@ -360,7 +375,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
 
 #if defined(_M_ARM64) || defined(__aarch64__)
   // ARM64: Use NEON for 2x throughput (16 × 128-bit registers)
-  for (int i = 0; i < WORK_BUF_ELEMS; i += 2) {
+  for (int i = 0; i < SYNTH_WORK_BUF_ELEMS; i += 2) {
     memPtr[i] = (double)(seed + i) * 0.00001;
     memPtr[i+1] = (double)(seed + i + 1) * 0.00001;
   }
@@ -386,7 +401,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   // Constants
   float64x2_t mul = vdupq_n_f64(1.000001);
   
-  // 16 GPRs with integer division
+  // 16 GPRs with high-entropy integer multiply/rotate/xor chains.
   uint64_t g0 = seed, g1 = seed + 1, g2 = seed + 2, g3 = seed + 3;
   uint64_t g4 = seed + 4, g5 = seed + 5, g6 = seed + 6, g7 = seed + 7;
   uint64_t g8 = seed + 8, g9 = seed + 9, g10 = seed + 10, g11 = seed + 11;
@@ -399,38 +414,37 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   #define NEON_WORK(r, off) \
     r = vfmaq_f64(vld1q_f64(&memPtr[(idx + off) & MASK]), r, mul); \
     vst1q_f64(&memPtr[(idx + off + 512) & MASK], r)
-  #define NEON_WORK_DIV(r, off) \
-    r = vdivq_f64(r, vld1q_f64(&memPtr[(idx + off) & MASK])); \
-    vst1q_f64(&memPtr[(idx + off + 512) & MASK], r)
-  #define NEON_WORK_SQRT(r, off) \
-    r = vsqrtq_f64(vld1q_f64(&memPtr[(idx + off) & MASK])); \
-    vst1q_f64(&memPtr[(idx + off + 512) & MASK], r)
+  #define NEON_SHUFFLE(r) \
+    r = vaddq_f64(r, vextq_f64(r, r, 1))
 
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
 
     NEON_WORK(r0, 0);   NEON_WORK(r1, 2);   NEON_WORK(r2, 4);   NEON_WORK(r3, 6);
-    g0 = g0 / ((g8 & 0xFFFFFFFF) | 1);  g1 = g1 / ((g9 & 0xFFFFFFFF) | 1);
-    NEON_WORK_DIV(r4, 8);   NEON_WORK(r5, 10);  NEON_WORK(r6, 12);  NEON_WORK(r7, 14);
-    g2 = g2 / ((g10 & 0xFFFFFFFF) | 1); g3 = g3 / ((g11 & 0xFFFFFFFF) | 1);
+    g0 = MixGpr(g0, g8, g9, 17);   g1 = MixGpr(g1, g9, g10, 19);
+    NEON_WORK(r4, 8);   NEON_WORK(r5, 10);  NEON_WORK(r6, 12);  NEON_WORK(r7, 14);
+    g2 = MixGpr(g2, g10, g11, 23); g3 = MixGpr(g3, g11, g12, 29);
     NEON_WORK(r8, 16);  NEON_WORK(r9, 18);  NEON_WORK(r10, 20); NEON_WORK(r11, 22);
-    g4 = g4 / ((g12 & 0xFFFFFFFF) | 1); g5 = g5 / ((g13 & 0xFFFFFFFF) | 1);
-    NEON_WORK(r12, 24); NEON_WORK_SQRT(r13, 26); NEON_WORK(r14, 28); NEON_WORK(r15, 30);
-    g6 = g6 / ((g14 & 0xFFFFFFFF) | 1); g7 = g7 / ((g15 & 0xFFFFFFFF) | 1);
+    g4 = MixGpr(g4, g12, g13, 31); g5 = MixGpr(g5, g13, g14, 37);
+    NEON_WORK(r12, 24); NEON_WORK(r13, 26); NEON_WORK(r14, 28); NEON_WORK(r15, 30);
+    g6 = MixGpr(g6, g14, g15, 41); g7 = MixGpr(g7, g15, g0, 43);
+    NEON_SHUFFLE(r0); NEON_SHUFFLE(r4); NEON_SHUFFLE(r8); NEON_SHUFFLE(r12);
 
     NEON_WORK(r0, 32);  NEON_WORK(r1, 34);  NEON_WORK(r2, 36);  NEON_WORK(r3, 38);
-    g8 = g8 / ((g0 & 0xFFFFFFFF) | 1);  g9 = g9 / ((g1 & 0xFFFFFFFF) | 1);
+    g8 = MixGpr(g8, g0, g1, 47);   g9 = MixGpr(g9, g1, g2, 53);
     NEON_WORK(r4, 40);  NEON_WORK(r5, 42);  NEON_WORK(r6, 44);  NEON_WORK(r7, 46);
-    g10 = g10 / ((g2 & 0xFFFFFFFF) | 1); g11 = g11 / ((g3 & 0xFFFFFFFF) | 1);
-    NEON_WORK_SQRT(r8, 48);  NEON_WORK(r9, 50);  NEON_WORK(r10, 52); NEON_WORK(r11, 54);
-    g12 = g12 / ((g4 & 0xFFFFFFFF) | 1); g13 = g13 / ((g5 & 0xFFFFFFFF) | 1);
-    NEON_WORK(r12, 56); NEON_WORK(r13, 58); NEON_WORK_DIV(r14, 60); NEON_WORK(r15, 62);
-    g14 = g14 / ((g6 & 0xFFFFFFFF) | 1); g15 = g15 / ((g7 & 0xFFFFFFFF) | 1);
+    g10 = MixGpr(g10, g2, g3, 59); g11 = MixGpr(g11, g3, g4, 61);
+    NEON_WORK(r8, 48);  NEON_WORK(r9, 50);  NEON_WORK(r10, 52); NEON_WORK(r11, 54);
+    g12 = MixGpr(g12, g4, g5, 7);  g13 = MixGpr(g13, g5, g6, 11);
+    NEON_WORK(r12, 56); NEON_WORK(r13, 58); NEON_WORK(r14, 60); NEON_WORK(r15, 62);
+    g14 = MixGpr(g14, g6, g7, 13); g15 = MixGpr(g15, g7, g8, 17);
+    NEON_SHUFFLE(r1); NEON_SHUFFLE(r5); NEON_SHUFFLE(r9); NEON_SHUFFLE(r13);
 
     NEON_WORK(r0, 64);  NEON_WORK(r1, 66);  NEON_WORK(r2, 68);  NEON_WORK(r3, 70);
     NEON_WORK(r4, 72);  NEON_WORK(r5, 74);  NEON_WORK(r6, 76);  NEON_WORK(r7, 78);
     NEON_WORK(r8, 80);  NEON_WORK(r9, 82);  NEON_WORK(r10, 84); NEON_WORK(r11, 86);
     NEON_WORK(r12, 88); NEON_WORK(r13, 90); NEON_WORK(r14, 92); NEON_WORK(r15, 94);
+    NEON_SHUFFLE(r2); NEON_SHUFFLE(r6); NEON_SHUFFLE(r10); NEON_SHUFFLE(r14);
 
     g0 ^= g8; g1 ^= g9; g2 ^= g10; g3 ^= g11;
     g4 ^= g12; g5 ^= g13; g6 ^= g14; g7 ^= g15;
@@ -439,8 +453,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   }
 
   #undef NEON_WORK
-  #undef NEON_WORK_DIV
-  #undef NEON_WORK_SQRT
+  #undef NEON_SHUFFLE
   
   // Reduce NEON registers
   float64x2_t sum = vaddq_f64(r0, r1);
@@ -474,7 +487,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   return bits ^ gint;
 #elif defined(_M_IX86) || defined(_M_X64) || defined(__i386__) || defined(__x86_64__)
   // x86/x64: Use SSE2 for 2x throughput
-  for (size_t i = 0; i < WORK_BUF_ELEMS; i += 2) {
+  for (size_t i = 0; i < SYNTH_WORK_BUF_ELEMS; i += 2) {
     memPtr[i] = (double)(seed + i) * 0.00001;
     memPtr[i+1] = (double)(seed + i + 1) * 0.00001;
   }
@@ -511,50 +524,43 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
 
   int iters = (int)std::min<uint64_t>((uint64_t)complexity * 280u, 2000000000u);
 
-  // Load-Multiply-Add-Store pattern — 48 WORK calls (3 passes x 16) saturate
-  // load/store ports. Split mul+add (not FMA) doubles µop count for maximum
-  // pipeline pressure. Integer division adds sustained backpressure.
-  // 2026-06-04: 2 of the 48 calls replaced with vec-div/vec-sqrt to feed
-  // the div/sqrt execution unit (was idle; FMA/mul+add does not exercise it).
+  // Load-multiply-add-store pattern: split mul/add is protected from FMA
+  // contraction locally, while the GPR side uses multiply/rotate/xor chains
+  // instead of low-throughput division.
   #define SSE2_WORK(r, off) \
-    r = _mm_mul_pd(r, mul); \
-    r = _mm_add_pd(r, _mm_load_pd(&memPtr[(idx + off) & MASK])); \
+    r = Sse2SplitMulAddNoContract(r, mul, &memPtr[(idx + off) & MASK]); \
     _mm_store_pd(&memPtr[(idx + off + 512) & MASK], r)
-  #define SSE2_WORK_DIV(r, off) \
-    r = _mm_div_pd(r, _mm_load_pd(&memPtr[(idx + off) & MASK])); \
-    _mm_store_pd(&memPtr[(idx + off + 512) & MASK], r)
-  #define SSE2_WORK_SQRT(r, off) \
-    r = _mm_sqrt_pd(_mm_load_pd(&memPtr[(idx + off) & MASK])); \
-    _mm_store_pd(&memPtr[(idx + off + 512) & MASK], r)
+  #define SSE2_SHUFFLE(r) \
+    r = _mm_add_pd(r, _mm_shuffle_pd(r, r, _MM_SHUFFLE2(0, 1)))
 
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
 
-    // Pass 1: 16 WORK + 8 IDIV
     SSE2_WORK(r0, 0);   SSE2_WORK(r1, 2);   SSE2_WORK(r2, 4);   SSE2_WORK(r3, 6);
-    g0 = g0 / ((g8 & 0xFFFFFFFF) | 1);  g1 = g1 / ((g9 & 0xFFFFFFFF) | 1);
+    g0 = MixGpr(g0, g8, g9, 17);   g1 = MixGpr(g1, g9, g10, 19);
     SSE2_WORK(r4, 8);   SSE2_WORK(r5, 10);  SSE2_WORK(r6, 12);  SSE2_WORK(r7, 14);
-    g2 = g2 / ((g10 & 0xFFFFFFFF) | 1); g3 = g3 / ((g11 & 0xFFFFFFFF) | 1);
+    g2 = MixGpr(g2, g10, g11, 23); g3 = MixGpr(g3, g11, g12, 29);
     SSE2_WORK(r8, 16);  SSE2_WORK(r9, 18);  SSE2_WORK(r10, 20); SSE2_WORK(r11, 22);
-    g4 = g4 / ((g12 & 0xFFFFFFFF) | 1); g5 = g5 / ((g13 & 0xFFFFFFFF) | 1);
+    g4 = MixGpr(g4, g12, g13, 31); g5 = MixGpr(g5, g13, g14, 37);
     SSE2_WORK(r12, 24); SSE2_WORK(r13, 26); SSE2_WORK(r14, 28); SSE2_WORK(r15, 30);
-    g6 = g6 / ((g14 & 0xFFFFFFFF) | 1); g7 = g7 / ((g15 & 0xFFFFFFFF) | 1);
+    g6 = MixGpr(g6, g14, g15, 41); g7 = MixGpr(g7, g15, g0, 43);
+    SSE2_SHUFFLE(r0); SSE2_SHUFFLE(r4); SSE2_SHUFFLE(r8); SSE2_SHUFFLE(r12);
 
-    // Pass 2: 16 WORK + 8 IDIV (different GPR pairs) — 1 div + 1 sqrt inserted
     SSE2_WORK(r0, 32);  SSE2_WORK(r1, 34);  SSE2_WORK(r2, 36);  SSE2_WORK(r3, 38);
-    g8 = g8 / ((g0 & 0xFFFFFFFF) | 1);  g9 = g9 / ((g1 & 0xFFFFFFFF) | 1);
+    g8 = MixGpr(g8, g0, g1, 47);   g9 = MixGpr(g9, g1, g2, 53);
     SSE2_WORK(r4, 40);  SSE2_WORK(r5, 42);  SSE2_WORK(r6, 44);  SSE2_WORK(r7, 46);
-    g10 = g10 / ((g2 & 0xFFFFFFFF) | 1); g11 = g11 / ((g3 & 0xFFFFFFFF) | 1);
-    SSE2_WORK(r8, 48);  SSE2_WORK_SQRT(r9, 50);  SSE2_WORK(r10, 52); SSE2_WORK(r11, 54);
-    g12 = g12 / ((g4 & 0xFFFFFFFF) | 1); g13 = g13 / ((g5 & 0xFFFFFFFF) | 1);
-    SSE2_WORK(r12, 56); SSE2_WORK(r13, 58); SSE2_WORK(r14, 60); SSE2_WORK_DIV(r15, 62);
-    g14 = g14 / ((g6 & 0xFFFFFFFF) | 1); g15 = g15 / ((g7 & 0xFFFFFFFF) | 1);
+    g10 = MixGpr(g10, g2, g3, 59); g11 = MixGpr(g11, g3, g4, 61);
+    SSE2_WORK(r8, 48);  SSE2_WORK(r9, 50);  SSE2_WORK(r10, 52); SSE2_WORK(r11, 54);
+    g12 = MixGpr(g12, g4, g5, 7);  g13 = MixGpr(g13, g5, g6, 11);
+    SSE2_WORK(r12, 56); SSE2_WORK(r13, 58); SSE2_WORK(r14, 60); SSE2_WORK(r15, 62);
+    g14 = MixGpr(g14, g6, g7, 13); g15 = MixGpr(g15, g7, g8, 17);
+    SSE2_SHUFFLE(r1); SSE2_SHUFFLE(r5); SSE2_SHUFFLE(r9); SSE2_SHUFFLE(r13);
 
-    // Pass 3: 16 WORK (no interleaved GPR) + light XOR to break dependency chains
     SSE2_WORK(r0, 64);  SSE2_WORK(r1, 66);  SSE2_WORK(r2, 68);  SSE2_WORK(r3, 70);
     SSE2_WORK(r4, 72);  SSE2_WORK(r5, 74);  SSE2_WORK(r6, 76);  SSE2_WORK(r7, 78);
     SSE2_WORK(r8, 80);  SSE2_WORK(r9, 82);  SSE2_WORK(r10, 84); SSE2_WORK(r11, 86);
     SSE2_WORK(r12, 88); SSE2_WORK(r13, 90); SSE2_WORK(r14, 92); SSE2_WORK(r15, 94);
+    SSE2_SHUFFLE(r2); SSE2_SHUFFLE(r6); SSE2_SHUFFLE(r10); SSE2_SHUFFLE(r14);
 
     g0 ^= g8; g1 ^= g9; g2 ^= g10; g3 ^= g11;
     g4 ^= g12; g5 ^= g13; g6 ^= g14; g7 ^= g15;
@@ -563,8 +569,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   }
 
   #undef SSE2_WORK
-  #undef SSE2_WORK_DIV
-  #undef SSE2_WORK_SQRT
+  #undef SSE2_SHUFFLE
 
   __m128d sum = _mm_add_pd(r0, r1);
   sum = _mm_add_pd(sum, r2);
@@ -597,7 +602,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   return bits ^ gint;
 #else
   // Generic fallback: pure scalar for non-x86, non-ARM64 architectures
-  for (int i = 0; i < WORK_BUF_ELEMS; i++) {
+  for (int i = 0; i < (int)SYNTH_WORK_BUF_ELEMS; i++) {
     memPtr[i] = (double)(seed + i) * 0.00001;
   }
   double r0 = (double)seed * 1.0001, r1 = r0 + 0.01, r2 = r0 + 0.02, r3 = r0 + 0.03;
@@ -609,7 +614,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
   uint64_t g8 = seed + 8, g9 = seed + 9, g10 = seed + 10, g11 = seed + 11;
   uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
   int idx = 0;
-  const int MASK = (int)(WORK_BUF_ELEMS - 1);
+  const int MASK = (int)(SYNTH_WORK_BUF_ELEMS - 1);
   for (int i = 0; i < (int)std::min<uint64_t>((uint64_t)complexity * 280u, 2000000000u); ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
     r0 = r0 * 1.000001 + memPtr[(idx + 0) & MASK];
@@ -628,10 +633,10 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
     r13 = r13 * 1.000001 + memPtr[(idx + 13) & MASK];
     r14 = r14 * 1.000001 + memPtr[(idx + 14) & MASK];
     r15 = r15 * 1.000001 + memPtr[(idx + 15) & MASK];
-    g0 = g0 / ((g1 & 0xFFFFFFFF) | 1);
-    g2 = g2 / ((g3 & 0xFFFFFFFF) | 1);
-    g4 = g4 / ((g5 & 0xFFFFFFFF) | 1);
-    g6 = g6 / ((g7 & 0xFFFFFFFF) | 1);
+    g0 = MixGpr(g0, g1, g2, 17);
+    g2 = MixGpr(g2, g3, g4, 23);
+    g4 = MixGpr(g4, g5, g6, 31);
+    g6 = MixGpr(g6, g7, g0, 41);
     idx = (idx + 16) & MASK;
   }
   uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7 ^
@@ -647,7 +652,7 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
 }
 
 // ============================================================================
-// AVX2 MAX POWER - 16 YMM registers, 8 memory WORK, 8 GPR multiply-XOR chains
+// AVX2 MAX POWER - 16 YMM registers, cached FMA + in-place permutes
 // ============================================================================
 TARGET_AVX2
 uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
@@ -656,7 +661,7 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
   (void)config;
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__AVX2__) || defined(__clang__) || defined(__GNUC__))
   double* memPtr = GetWorkBuffer();
-  for (int i = 0; i < WORK_BUF_ELEMS; i += 4) {
+  for (int i = 0; i < (int)SYNTH_WORK_BUF_ELEMS; i += 4) {
     _mm256_store_pd(&memPtr[i], _mm256_set1_pd((double)(seed + i) * 0.00001));
   }
   
@@ -690,18 +695,15 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
   
   int iters = (int)std::min<uint64_t>((uint64_t)complexity * 180u, 2000000000u);
 
-  // 16 memory WORK calls (4 chunks x 4) — mix of FMA + 1 vec-div + 1 vec-sqrt
-  // to keep div/sqrt unit fed alongside FMA (2026-06-04 power inversion).
-  // No permutes or reg-reg FMAs to keep loop compact in µop cache.
+  // 16 memory WORK calls plus in-register FMA/permute work. Avoid div/sqrt
+  // here: on Zen 3 they throttle progress more than they raise sustained power.
   #define AVX2_WORK(r, off) \
     r = _mm256_fmadd_pd(r, mul, _mm256_load_pd(&memPtr[(idx + off) & MASK])); \
     _mm256_store_pd(&memPtr[(idx + off + 512) & MASK], r)
-  #define AVX2_WORK_DIV(r, off) \
-    r = _mm256_div_pd(r, _mm256_load_pd(&memPtr[(idx + off) & MASK])); \
-    _mm256_store_pd(&memPtr[(idx + off + 512) & MASK], r)
-  #define AVX2_WORK_SQRT(r, off) \
-    r = _mm256_sqrt_pd(_mm256_load_pd(&memPtr[(idx + off) & MASK])); \
-    _mm256_store_pd(&memPtr[(idx + off + 512) & MASK], r)
+  #define AVX2_REG_FMA(r, add) \
+    r = _mm256_fmadd_pd(r, mul, add)
+  #define AVX2_PERMUTE(r) \
+    r = _mm256_permute4x64_pd(r, _MM_SHUFFLE(2, 3, 0, 1))
 
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
@@ -711,7 +713,7 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
     g8 = (g8 * 0x9E3779B97F4A7C15ULL) ^ (g9 >> 17) ^ (g10 << 13);
     g9 = (g9 * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13);
-    AVX2_WORK(r4, 16); AVX2_WORK(r5, 20); AVX2_WORK(r6, 24); AVX2_WORK_SQRT(r7, 28);
+    AVX2_WORK(r4, 16); AVX2_WORK(r5, 20); AVX2_WORK(r6, 24); AVX2_WORK(r7, 28);
     g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
     g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
     g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13);
@@ -721,18 +723,23 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
     g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13);
     g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13);
-    AVX2_WORK(r12, 48); AVX2_WORK_DIV(r13, 52); AVX2_WORK(r14, 56); AVX2_WORK(r15, 60);
+    AVX2_WORK(r12, 48); AVX2_WORK(r13, 52); AVX2_WORK(r14, 56); AVX2_WORK(r15, 60);
     g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
     g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
     g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g8 << 13);
     g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g8 >> 17) ^ (g9 << 13);
 
+    AVX2_REG_FMA(r0, r8);   AVX2_PERMUTE(r0);
+    AVX2_REG_FMA(r1, r9);   AVX2_PERMUTE(r1);
+    AVX2_REG_FMA(r2, r10);  AVX2_PERMUTE(r2);
+    AVX2_REG_FMA(r3, r11);  AVX2_PERMUTE(r3);
+
     idx = (idx + 64) & MASK;
   }
 
   #undef AVX2_WORK
-  #undef AVX2_WORK_DIV
-  #undef AVX2_WORK_SQRT
+  #undef AVX2_REG_FMA
+  #undef AVX2_PERMUTE
 
   __m256d sum = _mm256_add_pd(r0, r1);
   sum = _mm256_add_pd(sum, r2);
@@ -827,56 +834,57 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
   
   int iters = (int)std::min<uint64_t>((uint64_t)complexity * 150u, 2000000000u);
 
-  // 32 WORK-style calls on ALL 32 ZMM registers — mix of FMA + vec-div + vec-sqrt
-  // to feed every execution unit. 4 div + 4 sqrt replace 8 of 32 FMA so the
-  // div/sqrt pipe is not idle (2026-06-04 power inversion: was FMA-only).
+  // 32 memory FMA calls on all ZMM registers plus in-register FMA/shuffle work.
+  // Avoid div/sqrt here for the same reason as AVX2: sustained execution-unit
+  // activity matters more than single low-throughput operations.
   #define WORK(r, off) \
     r = _mm512_fmadd_pd(r, mul, _mm512_load_pd(&memPtr[(idx + off) & MASK])); \
     _mm512_store_pd(&memPtr[(idx + off + 512) & MASK], r)
-  #define WORK_DIV(r, off) \
-    r = _mm512_div_pd(r, _mm512_load_pd(&memPtr[(idx + off) & MASK])); \
-    _mm512_store_pd(&memPtr[(idx + off + 512) & MASK], r)
-  #define WORK_SQRT(r, off) \
-    r = _mm512_sqrt_pd(_mm512_load_pd(&memPtr[(idx + off) & MASK])); \
-    _mm512_store_pd(&memPtr[(idx + off + 512) & MASK], r)
+  #define WORK_REG_FMA(r, add) \
+    r = _mm512_fmadd_pd(r, mul, add)
+  #define WORK_SHUFFLE(r) \
+    r = _mm512_shuffle_pd(r, r, 0x55)
 
   for (int i = 0; i < iters; ++i) {
     if ((i & 63) == 0 && g_App.quit.load(std::memory_order_relaxed)) [[unlikely]] break;
 
-    // Pass 1: 12 FMA + 2 div + 2 sqrt on r0..r15, interleaved with g0..g7 chains
     WORK(r0, 0);   WORK(r1, 8);   WORK(r2, 16);  WORK(r3, 24);
     g0 = (g0 * 0x9E3779B97F4A7C15ULL) ^ (g1 >> 17) ^ (g2 << 13);
     g1 = (g1 * 0x9E3779B97F4A7C15ULL) ^ (g2 >> 17) ^ (g3 << 13);
-    WORK_DIV(r4, 32);  WORK(r5, 40);  WORK(r6, 48);  WORK(r7, 56);
+    WORK(r4, 32);  WORK(r5, 40);  WORK(r6, 48);  WORK(r7, 56);
     g2 = (g2 * 0x9E3779B97F4A7C15ULL) ^ (g3 >> 17) ^ (g4 << 13);
     g3 = (g3 * 0x9E3779B97F4A7C15ULL) ^ (g4 >> 17) ^ (g5 << 13);
-    WORK_SQRT(r8, 64); WORK(r9, 72);  WORK(r10, 80); WORK(r11, 88);
+    WORK(r8, 64); WORK(r9, 72);  WORK(r10, 80); WORK(r11, 88);
     g4 = (g4 * 0x9E3779B97F4A7C15ULL) ^ (g5 >> 17) ^ (g6 << 13);
     g5 = (g5 * 0x9E3779B97F4A7C15ULL) ^ (g6 >> 17) ^ (g7 << 13);
-    WORK(r12, 96);  WORK(r13, 104); WORK_DIV(r14, 112); WORK(r15, 120);
+    WORK(r12, 96);  WORK(r13, 104); WORK(r14, 112); WORK(r15, 120);
     g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
     g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
 
-    // Pass 2: 12 FMA + 2 div + 2 sqrt on r16..r31, interleaved with g8..g15 chains
-    WORK_SQRT(r16, 128); WORK(r17, 136); WORK(r18, 144); WORK(r19, 152);
+    WORK(r16, 128); WORK(r17, 136); WORK(r18, 144); WORK(r19, 152);
     g8  = (g8  * 0x9E3779B97F4A7C15ULL) ^ (g9  >> 17) ^ (g10 << 13);
     g9  = (g9  * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13);
-    WORK(r20, 160); WORK(r21, 168); WORK(r22, 176); WORK_DIV(r23, 184);
+    WORK(r20, 160); WORK(r21, 168); WORK(r22, 176); WORK(r23, 184);
     g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13);
     g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13);
-    WORK(r24, 192); WORK_DIV(r25, 200); WORK(r26, 208); WORK(r27, 216);
+    WORK(r24, 192); WORK(r25, 200); WORK(r26, 208); WORK(r27, 216);
     g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13);
     g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13);
-    WORK(r28, 224); WORK(r29, 232); WORK(r30, 240); WORK_SQRT(r31, 248);
+    WORK(r28, 224); WORK(r29, 232); WORK(r30, 240); WORK(r31, 248);
     g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g8  << 13);
     g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g8  >> 17) ^ (g9  << 13);
+
+    WORK_REG_FMA(r0, r16);   WORK_SHUFFLE(r0);
+    WORK_REG_FMA(r1, r17);   WORK_SHUFFLE(r1);
+    WORK_REG_FMA(r2, r18);   WORK_SHUFFLE(r2);
+    WORK_REG_FMA(r3, r19);   WORK_SHUFFLE(r3);
 
     idx = (idx + 256) & MASK;
   }
 
   #undef WORK
-  #undef WORK_DIV
-  #undef WORK_SQRT
+  #undef WORK_REG_FMA
+  #undef WORK_SHUFFLE
 
   // Reduce all 32 ZMM registers
   __m512d sum = _mm512_add_pd(r0, r1);

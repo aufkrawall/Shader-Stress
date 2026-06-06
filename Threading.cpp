@@ -277,6 +277,100 @@ void WorkerThread(int idx) {
 }
 
 // --- IO/RAM Stress (Cross-Platform) ---
+static size_t RoundDownPowerOfTwo(size_t v) {
+  if (v == 0)
+    return 0;
+  size_t p2 = 1;
+  while (p2 <= (v >> 1))
+    p2 <<= 1;
+  return p2;
+}
+
+static void InitializeRamChase(uint64_t *p, size_t chaseCount) {
+  if (chaseCount == 0)
+    return;
+  const size_t mask = chaseCount - 1;
+  for (size_t i = 0; i < chaseCount; ++i)
+    p[i] = (i + 65537) & mask;
+}
+
+static uint64_t RunRamStreamingPass(uint64_t *p, size_t streamCount) {
+  uint64_t a0 = 0x243F6A8885A308D3ULL, a1 = 0x13198A2E03707344ULL;
+  uint64_t a2 = 0xA4093822299F31D0ULL, a3 = 0x082EFA98EC4E6C89ULL;
+  uint64_t a4 = 0x452821E638D01377ULL, a5 = 0xBE5466CF34E90C6CULL;
+  uint64_t a6 = 0xC0AC29B7C97C50DDULL, a7 = 0x3F84D5B5B5470917ULL;
+  size_t i = 0;
+  for (; i + 8 <= streamCount; i += 8) {
+    a0 = (a0 * 0x9E3779B97F4A7C15ULL) ^ p[i];
+    a1 = (a1 * 0xD1B54A32D192ED03ULL) ^ p[i + 1];
+    a2 = (a2 * 0x94D049BB133111EBULL) ^ p[i + 2];
+    a3 = (a3 * 0x2545F4914F6CDD1DULL) ^ p[i + 3];
+    a4 = (a4 * 0x9E3779B97F4A7C15ULL) ^ p[i + 4];
+    a5 = (a5 * 0xD1B54A32D192ED03ULL) ^ p[i + 5];
+    a6 = (a6 * 0x94D049BB133111EBULL) ^ p[i + 6];
+    a7 = (a7 * 0x2545F4914F6CDD1DULL) ^ p[i + 7];
+    p[i] = a0;     p[i + 1] = a1; p[i + 2] = a2; p[i + 3] = a3;
+    p[i + 4] = a4; p[i + 5] = a5; p[i + 6] = a6; p[i + 7] = a7;
+  }
+  for (; i < streamCount; ++i) {
+    a0 = (a0 * 0x9E3779B97F4A7C15ULL) ^ p[i];
+    p[i] = a0;
+  }
+  return a0 ^ a1 ^ a2 ^ a3 ^ a4 ^ a5 ^ a6 ^ a7;
+}
+
+static uint64_t HashIoBufferForCpuPower(const uint8_t *p, size_t bytes) {
+  uint64_t h0 = 0x243F6A8885A308D3ULL, h1 = 0x13198A2E03707344ULL;
+  uint64_t h2 = 0xA4093822299F31D0ULL, h3 = 0x082EFA98EC4E6C89ULL;
+  size_t j = 0;
+
+#if defined(__AVX2__)
+  const __m256i mul0 = _mm256_set1_epi64x((int64_t)0x9E3779B97F4A7C15ULL);
+  const __m256i mul1 = _mm256_set1_epi64x((int64_t)0xD1B54A32D192ED03ULL);
+  __m256i vacc0 = _mm256_set1_epi64x((int64_t)h0);
+  __m256i vacc1 = _mm256_set1_epi64x((int64_t)h1);
+  __m256i vacc2 = _mm256_set1_epi64x((int64_t)h2);
+  __m256i vacc3 = _mm256_set1_epi64x((int64_t)h3);
+  for (; j + 128 <= bytes; j += 128) {
+    __m256i v0 = _mm256_loadu_si256((const __m256i *)(p + j));
+    __m256i v1 = _mm256_loadu_si256((const __m256i *)(p + j + 32));
+    __m256i v2 = _mm256_loadu_si256((const __m256i *)(p + j + 64));
+    __m256i v3 = _mm256_loadu_si256((const __m256i *)(p + j + 96));
+    vacc0 = _mm256_xor_si256(_mm256_mul_epu32(vacc0, mul0), v0);
+    vacc1 = _mm256_xor_si256(_mm256_mul_epu32(vacc1, mul1), v1);
+    vacc2 = _mm256_xor_si256(_mm256_mul_epu32(vacc2, mul0), v2);
+    vacc3 = _mm256_xor_si256(_mm256_mul_epu32(vacc3, mul1), v3);
+  }
+  alignas(32) uint64_t lanes[16];
+  _mm256_store_si256((__m256i *)&lanes[0], vacc0);
+  _mm256_store_si256((__m256i *)&lanes[4], vacc1);
+  _mm256_store_si256((__m256i *)&lanes[8], vacc2);
+  _mm256_store_si256((__m256i *)&lanes[12], vacc3);
+  for (uint64_t lane : lanes) {
+    h0 = (h0 * 0x9E3779B97F4A7C15ULL) ^ lane;
+    h1 ^= Rotl64(lane, 17);
+  }
+#endif
+
+  for (; j + 32 <= bytes; j += 32) {
+    uint64_t v0, v1, v2, v3;
+    std::memcpy(&v0, p + j, 8);
+    std::memcpy(&v1, p + j + 8, 8);
+    std::memcpy(&v2, p + j + 16, 8);
+    std::memcpy(&v3, p + j + 24, 8);
+    h0 = (h0 * 0x9E3779B97F4A7C15ULL) ^ v0;
+    h1 = (h1 * 0xD1B54A32D192ED03ULL) ^ v1;
+    h2 = (h2 * 0x94D049BB133111EBULL) ^ v2;
+    h3 = (h3 * 0x2545F4914F6CDD1DULL) ^ v3;
+  }
+  for (; j + 8 <= bytes; j += 8) {
+    uint64_t v;
+    std::memcpy(&v, p + j, 8);
+    h0 = (h0 * 0x9E3779B97F4A7C15ULL) ^ v;
+  }
+  return h0 ^ Rotl64(h1, 13) ^ Rotl64(h2, 29) ^ Rotl64(h3, 43);
+}
+
 #ifdef PLATFORM_WINDOWS
 
 void IOThread(int ioIdx) {
@@ -294,6 +388,7 @@ void IOThread(int ioIdx) {
       L"_" + std::to_wstring(GetTick() ^ ((uint64_t)ioIdx * 0x9E3779B97F4A7C15ULL)) + L".tmp";
 
   bool fileCreated = false;
+  bool openFailureLogged = false;
   HANDLE hFile = INVALID_HANDLE_VALUE;
   ScopedMem buf(IO_CHUNK_SIZE);
   std::mt19937_64 rng(GetTick() + ioIdx);
@@ -333,6 +428,11 @@ void IOThread(int ioIdx) {
           hFile = INVALID_HANDLE_VALUE;
         }
       }
+      if (hFile == INVALID_HANDLE_VALUE && !openFailureLogged) {
+        g_App.Log(L"I/O stress: thread " + std::to_wstring(ioIdx) +
+                  L" could not open a direct-read temp file");
+        openFailureLogged = true;
+      }
       fileCreated = true;
     }
 
@@ -356,28 +456,7 @@ void IOThread(int ioIdx) {
     DWORD read;
     uint8_t *p = buf.As<uint8_t>();
     if (ReadFile(hFile, p, (DWORD)IO_CHUNK_SIZE, &read, nullptr) && read == IO_CHUNK_SIZE) {
-      // Process buffer with CPU-side hash to keep core hot alongside I/O.
-      // 2026-06-04: pass 1 (scalar) + pass 2 (AVX2 on x86_64 with __AVX2__)
-      // doubles per-read CPU burst -> higher sustained power on the IO core.
-      uint64_t hash = 0;
-      for (DWORD j = 0; j < read; j += 8) {
-        uint64_t val;
-        std::memcpy(&val, &p[j], 8);
-        hash = (hash * 0x9E3779B97F4A7C15ULL) ^ val;
-      }
-#if defined(__AVX2__)
-      __m256i vhash = _mm256_set1_epi64x((int64_t)0x9E3779B97F4A7C15ULL);
-      __m256i vacc = _mm256_setzero_si256();
-      for (DWORD j = 0; j + 32 <= read; j += 32) {
-        __m256i v = _mm256_loadu_si256((const __m256i*)&p[j]);
-        vacc = _mm256_xor_si256(vacc, _mm256_mul_epu32(v, vhash));
-      }
-      hash ^= (uint64_t)_mm256_extract_epi64(vacc, 0);
-      hash ^= (uint64_t)_mm256_extract_epi64(vacc, 1);
-      hash ^= (uint64_t)_mm256_extract_epi64(vacc, 2);
-      hash ^= (uint64_t)_mm256_extract_epi64(vacc, 3);
-#endif
-      volatile uint64_t sink = hash;
+      volatile uint64_t sink = HashIoBufferForCpuPower(p, read);
       (void)sink;
     }
     w.lastTick = GetTick();
@@ -396,9 +475,17 @@ void RAMThread() {
   SetFpuFlushMode();
   auto &w = g_RAM;
   std::mt19937_64 rng(GetTick());
+  ScopedMem mem(0);
+  uint64_t allocatedSize = 0;
+  bool activationLogged = false;
 
   while (!w.terminate) {
     if (!g_App.ramActive && !g_Repro.active) {
+      if (mem) {
+        mem = ScopedMem(0);
+        allocatedSize = 0;
+      }
+      activationLogged = false;
       std::this_thread::sleep_for(100ms);
       continue;
     }
@@ -421,51 +508,49 @@ void RAMThread() {
       continue;
     }
 
-    ScopedMem mem(safeSize);
-    if (mem.ptr) {
-      uint64_t *p = mem.As<uint64_t>();
-      size_t count = safeSize / sizeof(uint64_t);
-      // Round count down to a power of two so that (count - 1) is a valid mask
-      // for safe pointer-chase indexing on both Windows and Unix paths.
-      if (count & (count - 1)) {
-        size_t p2 = 1;
-        while (p2 <= count >> 1) p2 <<= 1;
-        count = p2;
+    if (!mem || allocatedSize != safeSize) {
+      mem = ScopedMem((size_t)safeSize);
+      allocatedSize = mem ? safeSize : 0;
+      activationLogged = false;
+      if (mem) {
+        uint64_t *p = mem.As<uint64_t>();
+        size_t streamCount = allocatedSize / sizeof(uint64_t);
+        size_t chaseCount = RoundDownPowerOfTwo(streamCount);
+        InitializeRamChase(p, chaseCount);
       }
-      for (size_t i = 0; i < count; i += 16) {
-        p[i] = (i + 16) % count;
-      }
+    }
 
-      uint64_t burstEnd = GetTick() + 5000;
-      while (GetTick() < burstEnd && !w.terminate && g_App.ramActive) {
-        // 70% high-bandwidth stride writes, 30% pointer-chase latency stress
-        if ((rng() % 10) < 7) {
-          // High-bandwidth write pattern: stride=1 (8 bytes) saturates
-          // memory controller with max possible write transactions.
-          // Mixed with integer multiply-chain to keep core hot alongside memory.
-          {
-            uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
-            for (size_t i = 0; i < count; i += 4) {
-              a0 = (a0 * 0x9E3779B97F4A7C15ULL) ^ p[i];
-              a1 = (a1 * 0x9E3779B97F4A7C15ULL) ^ p[i + 1];
-              a2 = (a2 * 0x9E3779B97F4A7C15ULL) ^ p[i + 2];
-              a3 = (a3 * 0x9E3779B97F4A7C15ULL) ^ p[i + 3];
-              p[i]     = a0;
-              p[i + 1] = a1;
-              p[i + 2] = a2;
-              p[i + 3] = a3;
-            }
-          }
-        } else {
-          volatile uint64_t idx = 0;
-          for (int k = 0; k < 100000; ++k) {
-            idx = p[idx & (count - 1)];
-          }
-        }
-        w.lastTick = GetTick();
-      }
-    } else {
+    if (!mem) {
       std::this_thread::sleep_for(1s);
+      continue;
+    }
+
+    uint64_t *p = mem.As<uint64_t>();
+    size_t streamCount = allocatedSize / sizeof(uint64_t);
+    size_t chaseCount = RoundDownPowerOfTwo(streamCount);
+    size_t chaseMask = chaseCount - 1;
+    if (!activationLogged) {
+      g_App.Log(L"RAM stress: active bytes=" + std::to_wstring(allocatedSize) +
+                L", stream bytes=" + std::to_wstring(streamCount * sizeof(uint64_t)) +
+                L", chase bytes=" + std::to_wstring(chaseCount * sizeof(uint64_t)) +
+                L", stream ratio=90%");
+      activationLogged = true;
+    }
+
+    uint64_t burstEnd = GetTick() + 5000;
+    while (GetTick() < burstEnd && !w.terminate &&
+           (g_App.ramActive || g_Repro.active)) {
+      // 90% bandwidth-style cached read/write work, 10% pointer-chase latency.
+      if ((rng() % 10) < 9) {
+        volatile uint64_t sink = RunRamStreamingPass(p, streamCount);
+        (void)sink;
+      } else {
+        volatile uint64_t idx = 0;
+        for (int k = 0; k < 100000; ++k)
+          idx = p[(size_t)idx & chaseMask];
+        (void)idx;
+      }
+      w.lastTick = GetTick();
     }
   }
 }
@@ -489,6 +574,7 @@ void IOThread(int ioIdx) {
   std::string fpath = "/tmp/stress_" + std::to_string(ioIdx) + "_" + std::to_string(randSuffix) + ".tmp";
 
   bool fileCreated = false;
+  bool openFailureLogged = false;
   int hFile = -1;
   ScopedMem buf(IO_CHUNK_SIZE);
   std::mt19937_64 rng(GetTick() + ioIdx);
@@ -538,6 +624,11 @@ void IOThread(int ioIdx) {
           }
         }
       }
+      if (hFile == -1 && !openFailureLogged) {
+        g_App.Log(L"I/O stress: thread " + std::to_wstring(ioIdx) +
+                  L" could not open a direct-read temp file");
+        openFailureLogged = true;
+      }
       fileCreated = true;
     }
 
@@ -560,28 +651,7 @@ void IOThread(int ioIdx) {
     uint8_t *p = buf.As<uint8_t>();
     ssize_t readBytes = read(hFile, p, IO_CHUNK_SIZE);
     if (readBytes == (ssize_t)IO_CHUNK_SIZE) {
-      // Process buffer with CPU-side hash to keep core hot alongside I/O.
-      // 2026-06-04: pass 1 (scalar) + pass 2 (AVX2 on x86_64 with __AVX2__)
-      // doubles per-read CPU burst -> higher sustained power on the IO core.
-      uint64_t hash = 0;
-      for (ssize_t j = 0; j < readBytes; j += 8) {
-        uint64_t val;
-        std::memcpy(&val, &p[j], 8);
-        hash = (hash * 0x9E3779B97F4A7C15ULL) ^ val;
-      }
-#if defined(__AVX2__)
-      __m256i vhash = _mm256_set1_epi64x((int64_t)0x9E3779B97F4A7C15ULL);
-      __m256i vacc = _mm256_setzero_si256();
-      for (ssize_t j = 0; j + 32 <= readBytes; j += 32) {
-        __m256i v = _mm256_loadu_si256((const __m256i*)&p[j]);
-        vacc = _mm256_xor_si256(vacc, _mm256_mul_epu32(v, vhash));
-      }
-      hash ^= (uint64_t)_mm256_extract_epi64(vacc, 0);
-      hash ^= (uint64_t)_mm256_extract_epi64(vacc, 1);
-      hash ^= (uint64_t)_mm256_extract_epi64(vacc, 2);
-      hash ^= (uint64_t)_mm256_extract_epi64(vacc, 3);
-#endif
-      volatile uint64_t sink = hash;
+      volatile uint64_t sink = HashIoBufferForCpuPower(p, (size_t)readBytes);
       (void)sink;
     }
     w.lastTick = GetTick();
@@ -600,9 +670,17 @@ void RAMThread() {
   SetFpuFlushMode();
   auto &w = g_RAM;
   std::mt19937_64 rng(GetTick());
+  ScopedMem mem(0);
+  uint64_t allocatedSize = 0;
+  bool activationLogged = false;
 
   while (!w.terminate) {
     if (!g_App.ramActive && !g_Repro.active) {
+      if (mem) {
+        mem = ScopedMem(0);
+        allocatedSize = 0;
+      }
+      activationLogged = false;
       std::this_thread::sleep_for(100ms);
       continue;
     }
@@ -646,52 +724,49 @@ void RAMThread() {
       continue;
     }
 
-    ScopedMem mem(safeSize);
-    if (mem.ptr) {
-      uint64_t *p = mem.As<uint64_t>();
-      size_t count = safeSize / sizeof(uint64_t);
-      // Round count down to a power of two so that (count - 1) is a valid mask
-      // for safe pointer-chase indexing.
-      if (count & (count - 1)) {
-        size_t p2 = 1;
-        while (p2 <= count >> 1) p2 <<= 1;
-        count = p2;
+    if (!mem || allocatedSize != safeSize) {
+      mem = ScopedMem((size_t)safeSize);
+      allocatedSize = mem ? safeSize : 0;
+      activationLogged = false;
+      if (mem) {
+        uint64_t *p = mem.As<uint64_t>();
+        size_t streamCount = allocatedSize / sizeof(uint64_t);
+        size_t chaseCount = RoundDownPowerOfTwo(streamCount);
+        InitializeRamChase(p, chaseCount);
       }
-      // Initialize to force OS to commit pages
-      for (size_t i = 0; i < count; i += 512) {
-        p[i] = (i + 16) % count;
-      }
+    }
 
-      uint64_t burstEnd = GetTick() + 5000;
-      while (GetTick() < burstEnd && !w.terminate && g_App.ramActive) {
-        // 70% high-bandwidth stride writes, 30% pointer-chase latency stress
-        if ((rng() % 10) < 7) {
-          // High-bandwidth write pattern: stride=1 (8 bytes) saturates
-          // memory controller with max possible write transactions.
-          // Mixed with integer multiply-chain to keep core hot alongside memory.
-          {
-            uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
-            for (size_t i = 0; i < count; i += 4) {
-              a0 = (a0 * 0x9E3779B97F4A7C15ULL) ^ p[i];
-              a1 = (a1 * 0x9E3779B97F4A7C15ULL) ^ p[i + 1];
-              a2 = (a2 * 0x9E3779B97F4A7C15ULL) ^ p[i + 2];
-              a3 = (a3 * 0x9E3779B97F4A7C15ULL) ^ p[i + 3];
-              p[i]     = a0;
-              p[i + 1] = a1;
-              p[i + 2] = a2;
-              p[i + 3] = a3;
-            }
-          }
-        } else {
-          volatile uint64_t idx = 0;
-          for (int k = 0; k < 100000; ++k) {
-            idx = p[idx & (count - 1)]; // Safety mask
-          }
-        }
-        w.lastTick = GetTick();
-      }
-    } else {
+    if (!mem) {
       std::this_thread::sleep_for(1s);
+      continue;
+    }
+
+    uint64_t *p = mem.As<uint64_t>();
+    size_t streamCount = allocatedSize / sizeof(uint64_t);
+    size_t chaseCount = RoundDownPowerOfTwo(streamCount);
+    size_t chaseMask = chaseCount - 1;
+    if (!activationLogged) {
+      g_App.Log(L"RAM stress: active bytes=" + std::to_wstring(allocatedSize) +
+                L", stream bytes=" + std::to_wstring(streamCount * sizeof(uint64_t)) +
+                L", chase bytes=" + std::to_wstring(chaseCount * sizeof(uint64_t)) +
+                L", stream ratio=90%");
+      activationLogged = true;
+    }
+
+    uint64_t burstEnd = GetTick() + 5000;
+    while (GetTick() < burstEnd && !w.terminate &&
+           (g_App.ramActive || g_Repro.active)) {
+      // 90% bandwidth-style cached read/write work, 10% pointer-chase latency.
+      if ((rng() % 10) < 9) {
+        volatile uint64_t sink = RunRamStreamingPass(p, streamCount);
+        (void)sink;
+      } else {
+        volatile uint64_t idx = 0;
+        for (int k = 0; k < 100000; ++k)
+          idx = p[(size_t)idx & chaseMask];
+        (void)idx;
+      }
+      w.lastTick = GetTick();
     }
   }
 }
@@ -716,7 +791,7 @@ void SetWork(int requestComps, int requestDecomp, bool io, bool ram) {
   
   // 1. Calculate Budget
   int cpuTotal = (int)g_Workers.size();
-  // Multi-thread IO: up to min(cpu/4, 4) IO threads for better disk saturation
+  // Multi-thread IO: up to min(cpu/4, 8) IO threads for better disk saturation.
   int maxIO = std::max(1, std::min(cpuTotal / 4, 8));
   int cntIO = io ? maxIO : 0;
   int cntRAM = ram ? 1 : 0;
@@ -769,7 +844,7 @@ void SetWork(int requestComps, int requestDecomp, bool io, bool ram) {
   // Note: We don't join threads when reducing count, just let them idle
   // The WorkerThread checks activeCompilers/activeDecomp to decide work
 
-  // 4. Manage IO Threads (up to 4 for better disk saturation)
+  // 4. Manage IO Threads
   if (io && !s_IOActive) {
     g_IOThreads.clear();
     s_IOThreadHandles.clear();
@@ -780,6 +855,8 @@ void SetWork(int requestComps, int requestDecomp, bool io, bool ram) {
       t->t = std::thread(IOThread, i);
       s_IOThreadHandles.push_back(std::move(t));
     }
+    g_App.Log(L"I/O stress: started " + std::to_wstring(cntIO) +
+              L" thread(s)");
     s_IOActive = true;
   } else if (!io && s_IOActive) {
     for (auto &w : g_IOThreads)
