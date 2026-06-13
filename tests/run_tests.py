@@ -18,6 +18,7 @@ import os
 import json
 import glob
 import hashlib
+import re
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GOLDEN_FILE = os.path.join(os.path.dirname(__file__), "golden_values.json")
@@ -227,21 +228,39 @@ def _stable_source_hash(text):
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def test_invariant_synth_work_buf_elems(binary):
-    """Synthetic scalar/AVX2 use 64 KiB; AVX-512 retains the larger allocation."""
+def test_invariant_synth_upstream_power_profile(binary):
+    """Synthetic kernels use the upstream-style power-maximizing profile.
+
+    Larger 512 KiB/thread working sets, store-every-result, and 64-bit GPR IDIV
+    keep the memory subsystem and integer division units busy alongside FP."""
     src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
-    check("constexpr size_t WORK_BUF_ELEMS = 32768;" in src and
-          "constexpr size_t SYNTH_WORK_BUF_ELEMS = 8192;" in src and
-          "constexpr int MASK_SSE2   = (SYNTH_WORK_BUF_ELEMS - 2);" in src and
-          "constexpr int MASK_AVX2   = (SYNTH_WORK_BUF_ELEMS - 4);" in src,
-          "synthetic scalar/AVX2 active buffer == 64 KiB")
+    # Fixed 65536 doubles/thread buffer (no L1/sparse-store knobs).
+    buf_ok = ("std::make_unique<char[]>(65536 * sizeof(double) + 64)" in src and
+              "#ifndef SYNTH_L1_ELEMS" not in src and
+              "SYNTH_STORE_COUNT" not in src)
+    # GPR integer division in scalar/SSE2/NEON hot loops.
+    idiv_ok = "g0 = g0 / ((g8 & 0xFFFFFFFF) | 1)" in src
+    # Store-every-result in all synthetic kernels.
+    store_ok = ("_mm_storeu_pd(&memPtr[(idx + off + 512) & MASK], r)" in src and
+                "_mm256_store_pd(&memPtr[(idx + off + 512) & MASK], r)" in src and
+                "_mm512_store_pd(&memPtr[(idx + off + 512) & MASK], r)" in src)
+    # No vector div/sqrt in synthetic hot loops.
+    no_vec_divsqrt = ("_mm_div_pd" not in src and "_mm_sqrt_pd" not in src and
+                      "_mm256_div_pd" not in src and "_mm256_sqrt_pd" not in src and
+                      "_mm512_div_pd" not in src and "_mm512_sqrt_pd" not in src)
+    check(buf_ok and idiv_ok and store_ok and no_vec_divsqrt,
+          "synthetic kernels use upstream power profile")
 
 
 def test_invariant_ram_stress_cap(binary):
-    """RAM_STRESS_MAX_BYTES must stay at the 1.5 GiB cap."""
-    src = _read(os.path.join(PROJECT_ROOT, "Common.h"))
-    check("RAM_STRESS_MAX_BYTES = 1536ULL * 1024 * 1024" in src,
-          "RAM_STRESS_MAX_BYTES == 1.5 GiB")
+    """RAM stress uses the upstream 70 % of available RAM / 16 GiB cap."""
+    common = _read(os.path.join(PROJECT_ROOT, "Common.h"))
+    threading = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
+    no_old_cap = "RAM_STRESS_MAX_BYTES" not in common
+    win_formula = "std::min<uint64_t>(ms.ullAvailPhys, ms.ullTotalPhys) * 7 / 10" in threading
+    cap = "16ull * 1024 * 1024 * 1024" in threading
+    check(no_old_cap and win_formula and cap,
+          "RAM stress uses 70%/16 GiB upstream allocation")
 
 
 def test_invariant_decomp_passes(binary):
@@ -251,49 +270,60 @@ def test_invariant_decomp_passes(binary):
           "DecompressLogic PASSES == 256")
 
 
-def test_invariant_avx512_fma_permute_no_div_sqrt(binary):
-    """AVX-512 uses FMA+shuffle and does not reintroduce hot-loop div/sqrt."""
+def test_invariant_avx512_fma_store_no_div_sqrt(binary):
+    """AVX-512 uses FMA+store-every-result and no hot-loop div/sqrt."""
     src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
-    check("_mm512_fmadd_pd" in src and "_mm512_shuffle_pd" in src and
-          "_mm512_div_pd" not in src and "_mm512_sqrt_pd" not in src,
-          "AVX-512 uses FMA+shuffle without div/sqrt")
+    avx512 = _extract_function(src, "RunHyperStress_AVX512")
+    check("_mm512_fmadd_pd" in avx512 and
+          "_mm512_store_pd(&memPtr[(idx + off + 512) & MASK], r)" in avx512 and
+          "_mm512_div_pd" not in avx512 and "_mm512_sqrt_pd" not in avx512,
+          "AVX-512 FMA+store-every-result without div/sqrt")
 
 
-def test_invariant_avx2_fma_permute_no_div_sqrt(binary):
-    """AVX2 uses FMA+permute and does not reintroduce hot-loop div/sqrt."""
+def test_invariant_avx2_fma_store_no_div_sqrt(binary):
+    """AVX2 uses FMA+store-every-result and no hot-loop div/sqrt."""
     src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
-    check("_mm256_fmadd_pd" in src and "_mm256_permute4x64_pd" in src and
-          "_mm256_div_pd" not in src and "_mm256_sqrt_pd" not in src,
-          "AVX2 uses FMA+permute without div/sqrt")
+    avx2 = _extract_function(src, "RunHyperStress_AVX2")
+    check("_mm256_fmadd_pd" in avx2 and
+          "_mm256_store_pd(&memPtr[(idx + off + 512) & MASK], r)" in avx2 and
+          "_mm256_div_pd" not in avx2 and "_mm256_sqrt_pd" not in avx2,
+          "AVX2 FMA+store-every-result without div/sqrt")
 
 
-def test_invariant_sse2_no_contract_no_div_sqrt(binary):
-    """Synthetic scalar SSE2 split mul/add must not compile back into FMA."""
+def test_invariant_sse2_split_mul_add_gpr_idiv(binary):
+    """Synthetic scalar SSE2 uses split mul/add, store-every-result, and GPR IDIV."""
     src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
-    check("Sse2SplitMulAddNoContract" in src and
-          'asm volatile("" : "+x"(prod))' in src and
-          "_mm_div_pd" not in src and "_mm_sqrt_pd" not in src,
-          "SSE2 split mul/add no-contract barrier, no div/sqrt")
+    sse2 = _extract_function(src, "RunHyperStress_Scalar")
+    check("_mm_mul_pd(r, mul)" in sse2 and
+          "_mm_add_pd(r, _mm_loadu_pd" in sse2 and
+          "_mm_storeu_pd(&memPtr[(idx + off + 512) & MASK], r)" in sse2 and
+          "g0 = g0 / ((g8 & 0xFFFFFFFF) | 1)" in sse2 and
+          "_mm_div_pd" not in sse2 and "_mm_sqrt_pd" not in sse2,
+          "SSE2 split mul/add + store-every-result + GPR IDIV")
 
 
-def test_invariant_ram_full_stream_separate_chase(binary):
-    """RAM stream count must cover the allocation and chase must use its own power-of-two mask."""
+def test_invariant_ram_upstream_pattern(binary):
+    """RAM stress uses upstream write-stride + pointer-chase pattern."""
     src = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
-    check("RoundDownPowerOfTwo(streamCount)" in src and
-          "InitializeRamChase(p, chaseCount)" in src and
-          "RunRamStreamingPass(p, streamCount)" in src and
-          "stream ratio=90%" in src and
-          "if ((rng() % 10) < 9)" in src,
-          "RAM full stream count plus separate chase mask")
+    count_var = re.search(r"p\[i\] = \(i \+ 16\) % (\w+)", src)
+    chase_var = re.search(r"idx = p\[idx(?: & \((\w+) - 1\))?\]", src)
+    check("size_t stride = 64" in src and
+          count_var is not None and
+          "volatile uint64_t idx = 0" in src and
+          chase_var is not None and
+          "RoundDownPowerOfTwo" not in src and
+          "RunRamStreamingPass" not in src,
+          "RAM stress upstream write-stride + chase pattern")
 
 
-def test_invariant_io_multi_accumulator_hash(binary):
-    """IOThread must use the shared multi-accumulator CPU-side hash helper."""
+def test_invariant_io_single_thread_minimal_sink(binary):
+    """IOThread uses a single thread and minimal CPU sink."""
     src = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
-    check("HashIoBufferForCpuPower" in src and
-          "vacc0" in src and "vacc3" in src and
-          src.count("HashIoBufferForCpuPower(p,") >= 2,
-          "I/O shared multi-accumulator hash helper")
+    setwork = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
+    check("HashIoBufferForCpuPower" not in src and
+          "volatile uint8_t sink = p[0] ^ p[read - 1]" in src and
+          "int cntIO = io ? 1 : 0" in setwork,
+          "I/O single thread with minimal sink")
 
 
 def test_invariant_perf_stats_initializes_cpu(binary):
@@ -375,14 +405,14 @@ LIGHTWEIGHT_TESTS = [
     test_repro_missing_args,
     test_repro_partial_args,
     test_hash_roundtrip,
-    test_invariant_synth_work_buf_elems,
+    test_invariant_synth_upstream_power_profile,
     test_invariant_ram_stress_cap,
     test_invariant_decomp_passes,
-    test_invariant_avx512_fma_permute_no_div_sqrt,
-    test_invariant_avx2_fma_permute_no_div_sqrt,
-    test_invariant_sse2_no_contract_no_div_sqrt,
-    test_invariant_ram_full_stream_separate_chase,
-    test_invariant_io_multi_accumulator_hash,
+    test_invariant_avx512_fma_store_no_div_sqrt,
+    test_invariant_avx2_fma_store_no_div_sqrt,
+    test_invariant_sse2_split_mul_add_gpr_idiv,
+    test_invariant_ram_upstream_pattern,
+    test_invariant_io_single_thread_minimal_sink,
     test_invariant_perf_stats_initializes_cpu,
     test_invariant_decomp_idiv,
     test_invariant_realistic_unchanged,

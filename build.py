@@ -33,6 +33,13 @@ LLVM_MINGW_BIN = LLVM_MINGW_DIR / "bin"
 VERSION_FILE = BASE_DIR / "VERSION"
 CLI_LAUNCHER_SOURCE = BASE_DIR / "cli_launcher.c"
 
+# Extra preprocessor defines forwarded to every compile, taken from the
+# SHADERSTRESS_EXTRA_DEFINES environment variable (space separated). Used by
+# sweep_power.ps1 to override the power-tuning knobs in Workloads.cpp
+# (e.g. SHADERSTRESS_EXTRA_DEFINES="-DSYNTH_L1_ELEMS=2048 -DSYNTH_STORE_COUNT=2")
+# without editing source.
+EXTRA_DEFINES = os.environ.get("SHADERSTRESS_EXTRA_DEFINES", "").split()
+
 
 def load_version():
     """Load version metadata from VERSION"""
@@ -236,6 +243,7 @@ def build_windows_target(config):
     ])
 
     defines.append("-DDISABLE_SEH")
+    defines.extend(EXTRA_DEFINES)
 
     exe_name = "ShaderStress.exe"
     exe_path = out_path / exe_name
@@ -261,6 +269,8 @@ def build_windows_target(config):
         base_cmd.extend([
             "-std=c++20", "-O3",
             "-ffast-math",
+            "-funroll-loops",
+            "-fno-strict-aliasing",
             "-fno-rtti",
             "-fno-exceptions",
             "-fno-stack-protector",
@@ -411,6 +421,7 @@ def build_zig_target(config):
     ])
 
     defines.append("-DDISABLE_SEH")
+    defines.extend(EXTRA_DEFINES)
 
     exe_name = "shaderstress"
     exe_path = out_path / exe_name
@@ -433,15 +444,18 @@ def build_zig_target(config):
         base_cmd.extend([
             "-std=c++20", "-O3",
             "-ffast-math",
+            "-funroll-loops",
+            "-fno-strict-aliasing",
             "-fno-rtti",
             "-fno-exceptions",
-            "-fno-semantic-interposition",
             "-fno-stack-protector",
             "-fomit-frame-pointer",
             "-ffunction-sections", "-fdata-sections",
             "-fno-asynchronous-unwind-tables",
             "-fno-ident",
         ])
+        if "linux" in target:
+            base_cmd.append("-fno-semantic-interposition")
 
         # Sanitizer build mode (development only)
         if SANITIZER_MODE == "undefined":
@@ -731,6 +745,9 @@ def main():
         print("  macos     - macOS x64 and ARM64")
         print("  v4        - x86_64_v4 targets (AVX-512) only")
         print("  v3        - x86_64_v3 targets (AVX2+FMA) only")
+        print("  win-v3    - Windows x86_64_v3 only (fast single-config build)")
+        print("  win-v4    - Windows x86_64_v4 only (fast single-config build)")
+        print("  win-baseline - Windows baseline x86_64 only (SSE2)")
         print("  native    - Current platform only")
         print("Options:")
         print("  --pgo-gen      Build with profile generation instrumentation")
@@ -770,6 +787,13 @@ def main():
                 configs.extend([c for c in BUILD_CONFIGS if "v4" in c[1]])
             elif t == "v3":
                 configs.extend([c for c in BUILD_CONFIGS if "v3" in c[1]])
+            # Single Windows-config aliases (fast rebuilds for the power sweep).
+            elif t == "win-baseline":
+                configs.extend([c for c in BUILD_CONFIGS if c[1] == "bin/x64-llvm"])
+            elif t == "win-v3":
+                configs.extend([c for c in BUILD_CONFIGS if c[1] == "bin/x64-llvm-v3"])
+            elif t == "win-v4":
+                configs.extend([c for c in BUILD_CONFIGS if c[1] == "bin/x64-llvm-v4"])
             elif t == "native":
                 import platform
                 machine = platform.machine().lower()

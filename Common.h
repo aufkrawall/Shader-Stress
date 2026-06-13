@@ -155,11 +155,6 @@ constexpr uint8_t APP_VERSION_PATCH = static_cast<uint8_t>(APP_VERSION_PATCH_NUM
 constexpr uint64_t GOLDEN_RATIO = 0x9E3779B97F4A7C15ull;
 constexpr size_t IO_CHUNK_SIZE = 256 * 1024;
 constexpr size_t IO_FILE_SIZE = 512 * 1024 * 1024;
-// RAM-stress working set cap. 2026-06-04: reduced from "70 % of available
-// memory, max 16 GB" to a fixed 1.5 GB. It is still well beyond private CPU
-// caches and exercises the RAM subsystem, but avoids the multi-GB allocation
-// churn that made the stress mostly wait on DRAM instead of keeping cores busy.
-constexpr uint64_t RAM_STRESS_MAX_BYTES = 1536ULL * 1024 * 1024;
 constexpr int BENCHMARK_DURATION_SEC = 180;
 // Complexity used for the periodic golden-value verification check.
 // Higher = more execution-unit pressure = better error sensitivity.

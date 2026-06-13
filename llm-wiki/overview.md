@@ -8,7 +8,7 @@ CPU stress-test tool that mimics shader-compiler workloads. Purely CPU-bound (no
 
 - **Windows**: LLVM MinGW 20260519 (LLVM 22.1.6) — `clang++` / `lld` via mstorsjo/llvm-mingw
 - **Linux/macOS**: Zig 0.15.2 cross-compiler (`zig c++` / `zig cc`)
-- C++20, `-O3`, `-ffast-math`, `-fno-rtti`, `-fno-exceptions`, `-fno-stack-protector`, `-fomit-frame-pointer`, and LTO on Windows release builds
+- C++20, `-O3`, `-ffast-math`, `-funroll-loops`, `-fno-strict-aliasing`, `-fno-rtti`, `-fno-exceptions`, `-fno-stack-protector`, `-fomit-frame-pointer`, and LTO on Windows release builds
 - `-mprefer-vector-width=512` on x86_64_v4 targets (forces ZMM for auto-vectorized code)
 - PGO support via `--pgo-gen` / `--pgo-use` flags (2-pass profile-guided optimization)
 - Source files compiled via python build script with ThreadPoolExecutor parallelism
@@ -56,8 +56,8 @@ All runtime params are hardcoded constants (no external config files). CLI flags
 - `#pragma clang fp contract(off)` ensures deterministic FP golden values
 - `NOINLINE` on dispatcher prevents LTO from inlining ISA-specific into generic code
 - 64-byte alignment on hot buffers (AVX-512) and Worker structs
-- 2026-06-06: `WORK_BUF_ELEMS = 32768` remains the max TLS allocation for AVX-512, while synthetic scalar and AVX2 use `SYNTH_WORK_BUF_ELEMS = 8192` (64 KiB active region). Synthetic scalar, AVX2, and AVX-512 deliberately avoid hot-loop vector div/sqrt and instead use FMA or split mul/add, modest shuffle/permute work, and high-entropy integer multiply/rotate/xor chains. `RunRealisticCompilerSim_V3` remains source-stable and user-excluded.
-- RAM stress remains capped at 1.5 GiB, streams over the full allocation, and uses a separate power-of-two chase mask only for pointer chasing. I/O stress uses direct/no-buffered random reads plus a shared 4-accumulator CPU-side hash helper. Decompressor PASSES = 256, with 64-bit IDIV every 64 bytes.
+- 2026-06-13: synthetic scalar/SSE2/NEON, AVX2, and AVX-512 use a fixed 65536 doubles/thread work buffer (512 KiB) with store-every-result. Scalar/SSE2/NEON inject 64-bit GPR integer division into the hot loop; AVX2/AVX-512 keep 8 GPR multiply-xor chains. No hot-loop vector div/sqrt. `RunRealisticCompilerSim_V3` remains source-stable and user-excluded.
+- RAM stress allocates 70 % of available physical RAM capped at 16 GiB, alternating write-stride and pointer-chase bursts. I/O stress uses a single thread with direct/no-buffered random reads and a minimal CPU sink. Decompressor PASSES = 256, with 64-bit IDIV every 64 bytes.
 
 ## Power Measurement (Windows, admin only)
 

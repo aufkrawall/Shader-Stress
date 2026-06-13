@@ -1,25 +1,56 @@
 # Optimization Audit
 
-Audited for maximum power draw, throughput, heat, and utilization (initial audit 2026-05-14; latest retune 2026-06-06).
+Audited for maximum power draw, throughput, heat, and utilization (initial audit 2026-05-14; latest redesign 2026-06-13).
 
-**2026-06-06 — Current power retune**: The 2026-06-04 div/sqrt-heavy experiment is superseded for synthetic scalar, AVX2, and AVX-512. Current direction favors sustained execution-unit activity: smaller active synthetic buffers, FMA or split mul/add, shuffle/permute pressure, and high-entropy integer multiply/rotate/xor chains. `RunRealisticCompilerSim_V3` remains excluded from retuning.
+**2026-06-13 — Upstream-style power redesign (current)**: Measured package power on a PBO-unlocked Ryzen 5700X was higher with the upstream GitHub profile than with the local L1-resident/sparse-store design. Reverted the synthetic kernels to the upstream profile: 65536 doubles/thread (512 KiB) working sets, store-every-result, and 64-bit GPR integer division in scalar/SSE2/NEON hot loops. RAM stress returned to 70 % of available physical RAM capped at 16 GiB. IO stress reverted to a single thread with a minimal CPU sink so heavy synthetic kernels keep cores. Added `-funroll-loops` and `-fno-strict-aliasing` to release builds. `RunRealisticCompilerSim_V3` remains excluded; decompression keeps its local IDIV-heavy 256-pass design.
 
-## 2026-06-06 CPU Power Retune Plus Subsystem Audit
+**2026-06-07 — L1-resident, store-light, dual-cluster redesign (superseded)**: Superseded by the 2026-06-13 upstream-style redesign. The remaining ~25-30 W gap on a PBO-unlocked Ryzen 5700X was structural: the 64 KiB/thread active set was L2- not L1-resident, and storing every WORK result made the single store port the loop bottleneck while the FMA pipes ran half-idle. Fix: keep the active set L1-resident for both SMT siblings (`SYNTH_L1_ELEMS`, default 1024 doubles), issue 2 passes of memory-FMAs to saturate both load AGUs and both FMA pipes, write back only sparsely (`SYNTH_STORE_COUNT`), and let the integer MixGpr chains co-saturate the integer cluster in parallel. Knobs were `-D`-overridable; `sweep_power.ps1` found the per-CPU optimum. Distinct from the failed 2026-05-14 pure reg-reg (kept idle load units) and 2026-05-23 bigger-buffer (DRAM stalls) directions.
+
+**2026-06-06 — Prior power retune (superseded)**: The 2026-06-04 div/sqrt-heavy experiment was superseded for synthetic scalar, AVX2, and AVX-512. That direction favored sustained execution-unit activity: smaller active synthetic buffers, FMA or split mul/add, shuffle/permute pressure, and high-entropy integer multiply/rotate/xor chains.
+
+## 2026-06-13 Upstream-Style Power Redesign Detail
+
+### Why the change
+Direct comparison against the upstream GitHub release showed higher sustained CPU package power on a Ryzen 7 5700X with raised PBO limits. The local L1-resident/sparse-store design maximized FMA throughput but left memory-subsystem and integer-division power on the table.
 
 ### Current workload contract
 - **Realistic scalar**: `RunRealisticCompilerSim_V3` intentionally unchanged; tests pin its source hash.
-- **Synthetic scalar**: active work set is `SYNTH_WORK_BUF_ELEMS = 8192` doubles (64 KiB per thread). x86 SSE2 split mul/add uses `Sse2SplitMulAddNoContract()` with a local inline-asm barrier so Clang fast-math cannot contract it back to FMA. Hot-loop vector div/sqrt and GPR division are removed; integer pressure comes from `MixGpr()` multiply/rotate/xor chains plus modest SSE/NEON shuffle work.
-- **AVX2**: active work set is 64 KiB, keeps 16 YMM accumulators, removes `_mm256_div_pd`/`_mm256_sqrt_pd`, and uses 16 memory FMA calls plus a small in-register FMA+`_mm256_permute4x64_pd` slice. Assembly spot-check on the Windows v3 compiler produced zero `vdivpd`/`vsqrtpd`, FMA and permute instructions present, and reduced the extra YMM stack moves from the first retune attempt.
-- **AVX-512**: keeps 32 ZMM accumulators and the 256 KiB allocation, removes `_mm512_div_pd`/`_mm512_sqrt_pd`, and uses memory FMA plus a small in-register FMA+`_mm512_shuffle_pd` slice. Validated by build/assembly only on the Ryzen 5700X host.
-- **`--perf-stats`**: now initializes `g_Cpu = GetCpuInfo()` and calls `SetFpuFlushMode()` before timing, so feature gating and FPU state match normal runs.
+- **Synthetic scalar/SSE2/NEON**: fixed 65536 doubles/thread buffer (512 KiB, L2/L3 traffic). 16 XMM/NEON registers, store-every-result (`_mm_storeu_pd` / `vst1q_f64`), 64-bit GPR integer division interleaved with the vector WORK. x86 SSE2 uses split `_mm_mul_pd` + `_mm_add_pd` (not FMA) for double µop count. No vector div/sqrt.
+- **AVX2**: 16 YMM registers, one pass of 16 store-every-result FMAs per iteration, 8 GPR multiply-xor chains. 512 KiB buffer.
+- **AVX-512**: 32 ZMM registers, one pass of 32 store-every-result FMAs per iteration, 8 GPR multiply-xor chains. 512 KiB buffer.
+- **Decompression**: keeps the local 256 KiB buffer, 256 passes, and 64-bit IDIV every 64 bytes.
+- **`--perf-stats`**: initializes `g_Cpu = GetCpuInfo()` and calls `SetFpuFlushMode()` before timing.
 
 ### RAM/I/O subsystem notes
-- **RAM**: still capped at 1.5 GiB, but streaming now uses the full allocated byte count instead of the rounded-down power-of-two count. Pointer chasing gets a separate `chaseCount`/mask via `RoundDownPowerOfTwo(streamCount)` and full initialization through `InitializeRamChase()`. Active RAM allocation is reused across bursts, with one log line per activation reporting active bytes, stream bytes, chase bytes, and the 90% stream / 10% chase ratio.
-- **I/O**: Windows and Unix direct/no-buffered read paths now share `HashIoBufferForCpuPower()`. The AVX2 part has four independent vector accumulators (`vacc0`..`vacc3`) plus scalar final mixing instead of one dependent vector accumulator. I/O thread policy remains `min(cpu/4, 8)` and startup/open-failure logging records the actual thread count or first failure.
+- **RAM**: 70 % of available physical RAM, capped at 16 GiB. 5-second bursts alternate between a 64-byte stride write pass and a pointer-chase loop. Allocation is reused across bursts.
+- **I/O**: single thread, direct/unbuffered 256 KiB random reads from a 512 MiB temp file, minimal CPU sink (`p[0] ^ p[read-1]`) so the core budget stays on synthetic workloads.
 
-### Follow-up / validation
-- Manual admin power comparison on Ryzen 5700X remains the final validation step for realistic scalar, synthetic scalar, and AVX2 benchmark mode.
-- If AVX2/AVX-512 assembly spill pressure regresses later, reduce the in-loop shuffle/permute slice before changing accumulator counts.
+### Build flags
+- Added `-funroll-loops` and `-fno-strict-aliasing` to Windows/LLVM-MinGW and Zig release builds.
+- Kept `-O3 -ffast-math -fno-rtti -fno-exceptions -fno-stack-protector -fomit-frame-pointer -flto -s`.
+
+### Tests updated
+- Source-invariant tests now assert the upstream-style profile (65536 buffer, store-every-result, GPR IDIV, 70%/16 GiB RAM, single IO thread).
+- `python tests/run_tests.py --stress --sanitize` passes 46/46.
+
+### Build fixes
+- macOS: renamed RAM-stress loop variable to avoid shadowing the Mach `host_statistics64` `count` parameter.
+- macOS: made `-fno-semantic-interposition` Linux-only to silence unused-argument warnings.
+
+## 2026-06-06 CPU Power Retune Plus Subsystem Audit (superseded)
+
+### Workload contract (historical)
+- **Realistic scalar**: `RunRealisticCompilerSim_V3` intentionally unchanged; tests pin its source hash.
+- **Synthetic scalar**: active work set was `SYNTH_WORK_BUF_ELEMS = 8192` doubles (64 KiB per thread). x86 SSE2 split mul/add used `Sse2SplitMulAddNoContract()` with a local inline-asm barrier so Clang fast-math could not contract it back to FMA. Hot-loop vector div/sqrt and GPR division were removed; integer pressure came from `MixGpr()` multiply/rotate/xor chains plus modest SSE/NEON shuffle work.
+- **AVX2**: active work set was 64 KiB, kept 16 YMM accumulators, removed `_mm256_div_pd`/`_mm256_sqrt_pd`, and used 16 memory FMA calls plus a small in-register FMA+`_mm256_permute4x64_pd` slice.
+- **AVX-512**: kept 32 ZMM accumulators and the 256 KiB allocation, removed `_mm512_div_pd`/`_mm512_sqrt_pd`, and used memory FMA plus a small in-register FMA+`_mm512_shuffle_pd` slice.
+
+### RAM/I/O subsystem notes (historical)
+- **RAM**: capped at 1.5 GiB; streaming used the full allocated byte count. Pointer chasing got a separate `chaseCount`/mask via `RoundDownPowerOfTwo(streamCount)` and initialization through `InitializeRamChase()`.
+- **I/O**: Windows and Unix direct/no-buffered read paths shared `HashIoBufferForCpuPower()` with four independent vector accumulators. I/O thread policy was `min(cpu/4, 8)`.
+
+### Follow-up / validation (historical)
+- Manual admin power comparison on Ryzen 5700X was the final validation step.
 
 ## Implemented Optimizations
 
@@ -108,9 +139,9 @@ Note: this section preserves older audit history. When it conflicts with the 202
 - Each build target compiles without warnings/errors
 - `git status` confirms only intended files changed
 
-## 2026-06-04 Inversion: cache residency + expensive compute ops
+## 2026-06-04 Inversion: cache residency + expensive compute ops (superseded)
 
-**Inverts the 2026-05-23 "L2-miss → memory controller activity" design.** Per user note: data staying in CPU caches yields higher package power than data spilling to DRAM. DRAM-bound access stalls the CPU pipeline; L2-resident data keeps execution units fed at peak IPC.
+Superseded by the 2026-06-13 upstream-style redesign. Historical note: this inverted the 2026-05-23 "L2-miss → memory controller activity" design. Per user note at the time: data staying in CPU caches was thought to yield higher package power than data spilling to DRAM. The 2026-06-13 redesign shows that, for this use case, the upstream L2/L3-resident + store-every-result profile draws more power on a Ryzen 5700X.
 
 ### Reverted 2026-05-23 changes
 - **`WORK_BUF_ELEMS` 65536 → 32768** (512 KB → 256 KB, L2-resident on all modern CPUs). MASK values re-derived.

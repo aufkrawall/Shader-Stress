@@ -277,100 +277,6 @@ void WorkerThread(int idx) {
 }
 
 // --- IO/RAM Stress (Cross-Platform) ---
-static size_t RoundDownPowerOfTwo(size_t v) {
-  if (v == 0)
-    return 0;
-  size_t p2 = 1;
-  while (p2 <= (v >> 1))
-    p2 <<= 1;
-  return p2;
-}
-
-static void InitializeRamChase(uint64_t *p, size_t chaseCount) {
-  if (chaseCount == 0)
-    return;
-  const size_t mask = chaseCount - 1;
-  for (size_t i = 0; i < chaseCount; ++i)
-    p[i] = (i + 65537) & mask;
-}
-
-static uint64_t RunRamStreamingPass(uint64_t *p, size_t streamCount) {
-  uint64_t a0 = 0x243F6A8885A308D3ULL, a1 = 0x13198A2E03707344ULL;
-  uint64_t a2 = 0xA4093822299F31D0ULL, a3 = 0x082EFA98EC4E6C89ULL;
-  uint64_t a4 = 0x452821E638D01377ULL, a5 = 0xBE5466CF34E90C6CULL;
-  uint64_t a6 = 0xC0AC29B7C97C50DDULL, a7 = 0x3F84D5B5B5470917ULL;
-  size_t i = 0;
-  for (; i + 8 <= streamCount; i += 8) {
-    a0 = (a0 * 0x9E3779B97F4A7C15ULL) ^ p[i];
-    a1 = (a1 * 0xD1B54A32D192ED03ULL) ^ p[i + 1];
-    a2 = (a2 * 0x94D049BB133111EBULL) ^ p[i + 2];
-    a3 = (a3 * 0x2545F4914F6CDD1DULL) ^ p[i + 3];
-    a4 = (a4 * 0x9E3779B97F4A7C15ULL) ^ p[i + 4];
-    a5 = (a5 * 0xD1B54A32D192ED03ULL) ^ p[i + 5];
-    a6 = (a6 * 0x94D049BB133111EBULL) ^ p[i + 6];
-    a7 = (a7 * 0x2545F4914F6CDD1DULL) ^ p[i + 7];
-    p[i] = a0;     p[i + 1] = a1; p[i + 2] = a2; p[i + 3] = a3;
-    p[i + 4] = a4; p[i + 5] = a5; p[i + 6] = a6; p[i + 7] = a7;
-  }
-  for (; i < streamCount; ++i) {
-    a0 = (a0 * 0x9E3779B97F4A7C15ULL) ^ p[i];
-    p[i] = a0;
-  }
-  return a0 ^ a1 ^ a2 ^ a3 ^ a4 ^ a5 ^ a6 ^ a7;
-}
-
-static uint64_t HashIoBufferForCpuPower(const uint8_t *p, size_t bytes) {
-  uint64_t h0 = 0x243F6A8885A308D3ULL, h1 = 0x13198A2E03707344ULL;
-  uint64_t h2 = 0xA4093822299F31D0ULL, h3 = 0x082EFA98EC4E6C89ULL;
-  size_t j = 0;
-
-#if defined(__AVX2__)
-  const __m256i mul0 = _mm256_set1_epi64x((int64_t)0x9E3779B97F4A7C15ULL);
-  const __m256i mul1 = _mm256_set1_epi64x((int64_t)0xD1B54A32D192ED03ULL);
-  __m256i vacc0 = _mm256_set1_epi64x((int64_t)h0);
-  __m256i vacc1 = _mm256_set1_epi64x((int64_t)h1);
-  __m256i vacc2 = _mm256_set1_epi64x((int64_t)h2);
-  __m256i vacc3 = _mm256_set1_epi64x((int64_t)h3);
-  for (; j + 128 <= bytes; j += 128) {
-    __m256i v0 = _mm256_loadu_si256((const __m256i *)(p + j));
-    __m256i v1 = _mm256_loadu_si256((const __m256i *)(p + j + 32));
-    __m256i v2 = _mm256_loadu_si256((const __m256i *)(p + j + 64));
-    __m256i v3 = _mm256_loadu_si256((const __m256i *)(p + j + 96));
-    vacc0 = _mm256_xor_si256(_mm256_mul_epu32(vacc0, mul0), v0);
-    vacc1 = _mm256_xor_si256(_mm256_mul_epu32(vacc1, mul1), v1);
-    vacc2 = _mm256_xor_si256(_mm256_mul_epu32(vacc2, mul0), v2);
-    vacc3 = _mm256_xor_si256(_mm256_mul_epu32(vacc3, mul1), v3);
-  }
-  alignas(32) uint64_t lanes[16];
-  _mm256_store_si256((__m256i *)&lanes[0], vacc0);
-  _mm256_store_si256((__m256i *)&lanes[4], vacc1);
-  _mm256_store_si256((__m256i *)&lanes[8], vacc2);
-  _mm256_store_si256((__m256i *)&lanes[12], vacc3);
-  for (uint64_t lane : lanes) {
-    h0 = (h0 * 0x9E3779B97F4A7C15ULL) ^ lane;
-    h1 ^= Rotl64(lane, 17);
-  }
-#endif
-
-  for (; j + 32 <= bytes; j += 32) {
-    uint64_t v0, v1, v2, v3;
-    std::memcpy(&v0, p + j, 8);
-    std::memcpy(&v1, p + j + 8, 8);
-    std::memcpy(&v2, p + j + 16, 8);
-    std::memcpy(&v3, p + j + 24, 8);
-    h0 = (h0 * 0x9E3779B97F4A7C15ULL) ^ v0;
-    h1 = (h1 * 0xD1B54A32D192ED03ULL) ^ v1;
-    h2 = (h2 * 0x94D049BB133111EBULL) ^ v2;
-    h3 = (h3 * 0x2545F4914F6CDD1DULL) ^ v3;
-  }
-  for (; j + 8 <= bytes; j += 8) {
-    uint64_t v;
-    std::memcpy(&v, p + j, 8);
-    h0 = (h0 * 0x9E3779B97F4A7C15ULL) ^ v;
-  }
-  return h0 ^ Rotl64(h1, 13) ^ Rotl64(h2, 29) ^ Rotl64(h3, 43);
-}
-
 #ifdef PLATFORM_WINDOWS
 
 void IOThread(int ioIdx) {
@@ -455,8 +361,8 @@ void IOThread(int ioIdx) {
 
     DWORD read;
     uint8_t *p = buf.As<uint8_t>();
-    if (ReadFile(hFile, p, (DWORD)IO_CHUNK_SIZE, &read, nullptr) && read == IO_CHUNK_SIZE) {
-      volatile uint64_t sink = HashIoBufferForCpuPower(p, read);
+    if (ReadFile(hFile, p, (DWORD)IO_CHUNK_SIZE, &read, nullptr) && read > 0) {
+      volatile uint8_t sink = p[0] ^ p[read - 1];
       (void)sink;
     }
     w.lastTick = GetTick();
@@ -496,11 +402,10 @@ void RAMThread() {
       std::this_thread::sleep_for(1s);
       continue;
     }
-    // 2026-06-04 power inversion: cap at RAM_STRESS_MAX_BYTES (1.5 GB, L3-friendly)
-    // instead of 70% of available memory / 16 GB. DRAM-spilling lowers power.
-    uint64_t safeSize = RAM_STRESS_MAX_BYTES;
-    if (ms.ullAvailPhys > 0 && safeSize > ms.ullAvailPhys)
-      safeSize = ms.ullAvailPhys;
+    uint64_t safeSize =
+        std::min<uint64_t>(ms.ullAvailPhys, ms.ullTotalPhys) * 7 / 10;
+    if (safeSize > 16ull * 1024 * 1024 * 1024)
+      safeSize = 16ull * 1024 * 1024 * 1024;
     safeSize &= ~4095;
 
     if (safeSize < 1024 * 1024) {
@@ -514,9 +419,9 @@ void RAMThread() {
       activationLogged = false;
       if (mem) {
         uint64_t *p = mem.As<uint64_t>();
-        size_t streamCount = allocatedSize / sizeof(uint64_t);
-        size_t chaseCount = RoundDownPowerOfTwo(streamCount);
-        InitializeRamChase(p, chaseCount);
+        size_t ramCount = allocatedSize / sizeof(uint64_t);
+        for (size_t i = 0; i < ramCount; i += 512)
+          p[i] = (i + 16) % ramCount;
       }
     }
 
@@ -526,28 +431,23 @@ void RAMThread() {
     }
 
     uint64_t *p = mem.As<uint64_t>();
-    size_t streamCount = allocatedSize / sizeof(uint64_t);
-    size_t chaseCount = RoundDownPowerOfTwo(streamCount);
-    size_t chaseMask = chaseCount - 1;
+    size_t ramCount = allocatedSize / sizeof(uint64_t);
     if (!activationLogged) {
-      g_App.Log(L"RAM stress: active bytes=" + std::to_wstring(allocatedSize) +
-                L", stream bytes=" + std::to_wstring(streamCount * sizeof(uint64_t)) +
-                L", chase bytes=" + std::to_wstring(chaseCount * sizeof(uint64_t)) +
-                L", stream ratio=90%");
+      g_App.Log(L"RAM stress: active bytes=" + std::to_wstring(allocatedSize));
       activationLogged = true;
     }
 
     uint64_t burstEnd = GetTick() + 5000;
     while (GetTick() < burstEnd && !w.terminate &&
            (g_App.ramActive || g_Repro.active)) {
-      // 90% bandwidth-style cached read/write work, 10% pointer-chase latency.
-      if ((rng() % 10) < 9) {
-        volatile uint64_t sink = RunRamStreamingPass(p, streamCount);
-        (void)sink;
+      if (rng() % 2 == 0) {
+        size_t stride = 64;
+        for (size_t i = 0; i < ramCount; i += stride)
+          p[i] = (p[i] + 1);
       } else {
         volatile uint64_t idx = 0;
         for (int k = 0; k < 100000; ++k)
-          idx = p[(size_t)idx & chaseMask];
+          idx = p[idx & (ramCount - 1)];
         (void)idx;
       }
       w.lastTick = GetTick();
@@ -650,8 +550,8 @@ void IOThread(int ioIdx) {
 
     uint8_t *p = buf.As<uint8_t>();
     ssize_t readBytes = read(hFile, p, IO_CHUNK_SIZE);
-    if (readBytes == (ssize_t)IO_CHUNK_SIZE) {
-      volatile uint64_t sink = HashIoBufferForCpuPower(p, (size_t)readBytes);
+    if (readBytes > 0) {
+      volatile uint8_t sink = p[0] ^ p[readBytes - 1];
       (void)sink;
     }
     w.lastTick = GetTick();
@@ -707,11 +607,11 @@ void RAMThread() {
     }
 #endif
 
-    // 2026-06-04 power inversion: cap at RAM_STRESS_MAX_BYTES (1.5 GB, L3-friendly)
-    // instead of 70% of available memory / 16 GB. DRAM-spilling lowers power.
-    uint64_t safeSize = RAM_STRESS_MAX_BYTES;
-    if (availPhys > 0 && safeSize > availPhys)
-      safeSize = availPhys;
+    uint64_t safeSize = availPhys * 7 / 10;
+
+    // Cap at 16GB like Windows
+    if (safeSize > 16ull * 1024 * 1024 * 1024)
+      safeSize = 16ull * 1024 * 1024 * 1024;
 
     // If detection failed (checks 0), default to 1GB to trigger stress anyway
     if (safeSize == 0)
@@ -730,9 +630,9 @@ void RAMThread() {
       activationLogged = false;
       if (mem) {
         uint64_t *p = mem.As<uint64_t>();
-        size_t streamCount = allocatedSize / sizeof(uint64_t);
-        size_t chaseCount = RoundDownPowerOfTwo(streamCount);
-        InitializeRamChase(p, chaseCount);
+        size_t ramCount = allocatedSize / sizeof(uint64_t);
+        for (size_t i = 0; i < ramCount; i += 512)
+          p[i] = (i + 16) % ramCount;
       }
     }
 
@@ -742,28 +642,23 @@ void RAMThread() {
     }
 
     uint64_t *p = mem.As<uint64_t>();
-    size_t streamCount = allocatedSize / sizeof(uint64_t);
-    size_t chaseCount = RoundDownPowerOfTwo(streamCount);
-    size_t chaseMask = chaseCount - 1;
+    size_t ramCount = allocatedSize / sizeof(uint64_t);
     if (!activationLogged) {
-      g_App.Log(L"RAM stress: active bytes=" + std::to_wstring(allocatedSize) +
-                L", stream bytes=" + std::to_wstring(streamCount * sizeof(uint64_t)) +
-                L", chase bytes=" + std::to_wstring(chaseCount * sizeof(uint64_t)) +
-                L", stream ratio=90%");
+      g_App.Log(L"RAM stress: active bytes=" + std::to_wstring(allocatedSize));
       activationLogged = true;
     }
 
     uint64_t burstEnd = GetTick() + 5000;
     while (GetTick() < burstEnd && !w.terminate &&
            (g_App.ramActive || g_Repro.active)) {
-      // 90% bandwidth-style cached read/write work, 10% pointer-chase latency.
-      if ((rng() % 10) < 9) {
-        volatile uint64_t sink = RunRamStreamingPass(p, streamCount);
-        (void)sink;
+      if (rng() % 2 == 0) {
+        size_t stride = 64;
+        for (size_t i = 0; i < ramCount; i += stride)
+          p[i] = (p[i] + 1);
       } else {
         volatile uint64_t idx = 0;
         for (int k = 0; k < 100000; ++k)
-          idx = p[(size_t)idx & chaseMask];
+          idx = p[idx & (ramCount - 1)];
         (void)idx;
       }
       w.lastTick = GetTick();
@@ -791,11 +686,9 @@ void SetWork(int requestComps, int requestDecomp, bool io, bool ram) {
   
   // 1. Calculate Budget
   int cpuTotal = (int)g_Workers.size();
-  // Multi-thread IO: up to min(cpu/4, 8) IO threads for better disk saturation.
-  int maxIO = std::max(1, std::min(cpuTotal / 4, 8));
-  int cntIO = io ? maxIO : 0;
+  int cntIO = io ? 1 : 0;
   int cntRAM = ram ? 1 : 0;
-  int reserved = cntRAM;
+  int reserved = cntIO + cntRAM;
   int availableForWorkers = std::max(0, cpuTotal - reserved);
 
   // 2. Clamp Worker Counts to Available Budget

@@ -1,5 +1,90 @@
 # Recent Changes Log
 
+## 2026-06-13 — Upstream-style power redesign
+
+Goal: match/beat the upstream GitHub release's sustained CPU package power on a
+PBO-unlocked Ryzen 7 5700X.
+
+Root cause of the local power gap:
+- Local synthetic kernels used a tiny L1-resident buffer and sparse stores to
+  maximize FMA throughput; upstream uses a 512 KiB/thread buffer, store-every-result,
+  and GPR integer division, which keeps the memory subsystem and integer division
+  units busy alongside FP.
+- Local RAM stress was capped at 1.5 GiB; upstream allocates 70 % of available RAM
+  (max 16 GiB), drawing more IMC/DRAM power.
+- Local IO stress used up to 8 threads with AVX2 hashing, stealing cores from the
+  heavy synthetic kernels; upstream uses a single minimal IO thread.
+
+Changes:
+- `build.py`: added `-funroll-loops` and `-fno-strict-aliasing` to release builds.
+- `Workloads.cpp`: reverted synthetic scalar/SSE2/NEON, AVX2, and AVX-512 kernels
+  to the upstream profile (65536 doubles/thread, store-every-result, GPR IDIV in
+  scalar/SSE2/NEON, 8 GPR chains for AVX2/AVX-512).
+- `Common.h`: removed `RAM_STRESS_MAX_BYTES`.
+- `Threading.cpp`: RAM stress now allocates 70 % of available RAM / 16 GiB cap with
+  write-stride + pointer-chase bursts. IO stress reverted to single thread with
+  minimal `p[0] ^ p[read-1]` sink. Removed `HashIoBufferForCpuPower`,
+  `RunRamStreamingPass`, `InitializeRamChase`, and `RoundDownPowerOfTwo`.
+- `tests/run_tests.py`: updated source-invariant tests to assert the upstream-style
+  profile.
+- `llm-wiki/opt-audit.md` and `llm-wiki/index.md`: documented the redesign.
+
+Verification:
+- `python build.py`: 10/10 targets succeeded (Windows/Linux/macOS x64 + ARM64).
+- `python tests/run_tests.py --stress --sanitize`: 46/46 passed.
+- Decompression (`RunDecompressLogic`) kept its local IDIV-heavy 256-pass design.
+
+Fixes during integration:
+- macOS build: renamed RAM-stress loop variable to avoid shadowing the Mach
+  `host_statistics64` `count` parameter.
+- macOS build: made `-fno-semantic-interposition` Linux-only (it is unused on
+  macOS and produced warnings).
+- `tests/run_tests.py`: relaxed `test_invariant_ram_upstream_pattern` regexes
+  to accept the Linux/macOS `ramCount` variable name.
+
+## 2026-06-07 — Synthetic workloads: L1-resident, store-light, dual-cluster redesign (superseded)
+
+Goal: close a measured ~25-30 W package-power gap on a PBO-unlocked Ryzen 5700X
+for synthetic scalar (SSE2) and AVX2 in benchmark/steady mode. Root cause was
+structural, not compiler flags:
+- **L2-resident, not L1.** The 64 KiB/thread active set (`SYNTH_WORK_BUF_ELEMS=8192`,
+  AVX-512 256 KiB) spilled out of the 32 KiB L1D once two SMT siblings shared a
+  core, so L2 latency/bandwidth starved the FMA pipes.
+- **Store-port bottleneck.** Storing every WORK result (~16-48 stores/iter) at
+  ~1 store/cycle capped the loop while the FMA pipes ran ~half-idle.
+- **Single-cluster focus.** Integer pressure alone was tuned up ("power
+  inversion"); the real target is BOTH the FP and integer clusters saturated at
+  once, which needs the FP side un-starved first.
+
+Changes (`Workloads.cpp`, all four synthetic kernels; `RunRealisticCompilerSim_V3`
+untouched):
+- New overridable knobs: `SYNTH_L1_ELEMS` (active set, default 1024 doubles =
+  8 KiB/thread -> 16 KiB for two siblings, L1-resident), `SYNTH_STORE_COUNT`
+  (sparse write-backs/iter, default 4), `SYNTH_L1_ELEMS_512`, and per-ISA
+  `SYNTH_ITERS_MULT_*`. All `#ifndef`-guarded for `-D` override.
+- Hot loops rebuilt as 2 passes of memory-FMAs (32 for SSE2/AVX2/NEON, 64 for
+  AVX-512) reading L1-resident slots to saturate both load AGUs and both FMA
+  pipes, with the integer MixGpr/multiply-xor chains running in parallel.
+  Write-back is now sparse (gated by `SYNTH_STORE_COUNT`) instead of every WORK.
+- SSE2 keeps split mul/add (no FMA) + the `Sse2SplitMulAddNoContract` barrier;
+  AVX2 keeps a small `_mm256_permute4x64_pd` slice; AVX-512 a `_mm512_shuffle_pd`
+  slice; NEON `vextq_f64`. No div/sqrt in any hot loop.
+- Distinct from past dead ends: NOT pure reg-reg (2026-05-14 lost power because
+  load units idled — we keep L1 loads), and NOT bigger buffers (2026-05-23 lost
+  power to DRAM stalls — we go smaller, to L1).
+
+Tooling:
+- `build.py`: forwards `$SHADERSTRESS_EXTRA_DEFINES` to every compile; added
+  single-config aliases `win-baseline` / `win-v3` / `win-v4` for fast rebuilds.
+- New `sweep_power.ps1`: elevated harness that rebuilds across the
+  `SYNTH_L1_ELEMS` x `SYNTH_STORE_COUNT` grid, runs steady mode per ISA, parses
+  `Power: N W` from `ShaderStress.log`, and prints/sorts watts per combo so the
+  per-CPU optimum can be baked in as the new default.
+- Tests: `test_invariant_synth_work_buf_elems` replaced by
+  `test_invariant_synth_l1_resident_knobs` (asserts the L1/sparse-store design);
+  realistic-unchanged source-hash test still passes. 44/44 pass; `--perf-stats`
+  confirms deterministic, finite (non-inf) checksums.
+
 ## 2026-06-06 — CPU power retune and RAM/I/O subsystem cleanup
 
 - **Realistic scalar unchanged**: `RunRealisticCompilerSim_V3` was left untouched and is now pinned by a source-hash invariant test.
