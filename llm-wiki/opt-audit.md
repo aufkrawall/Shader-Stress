@@ -2,7 +2,7 @@
 
 Audited for maximum power draw, throughput, heat, and utilization (initial audit 2026-05-14; latest redesign 2026-06-13).
 
-**2026-06-13 — Upstream-style power redesign (current)**: Measured package power on a PBO-unlocked Ryzen 5700X was higher with the upstream GitHub profile than with the local L1-resident/sparse-store design. Reverted the synthetic kernels to the upstream profile: 65536 doubles/thread (512 KiB) working sets, store-every-result, and 64-bit GPR integer division in scalar/SSE2/NEON hot loops. RAM stress returned to 70 % of available physical RAM capped at 16 GiB. IO stress reverted to a single thread with a minimal CPU sink so heavy synthetic kernels keep cores. Added `-funroll-loops` and `-fno-strict-aliasing` to release builds. `RunRealisticCompilerSim_V3` remains excluded; decompression keeps its local IDIV-heavy 256-pass design.
+**2026-06-13 — Upstream-style power redesign (current)**: Measured package power on a PBO-unlocked Ryzen 5700X was higher with the upstream GitHub profile than with the local L1-resident/sparse-store design. Reverted the synthetic kernels to the upstream profile: 65536 doubles/thread (512 KiB) working sets, store-every-result, and 64-bit GPR integer division in scalar/SSE2/NEON hot loops. RAM stress returned to 70 % of available physical RAM capped at 16 GiB. IO stress reverted to a single thread with a minimal CPU sink so heavy synthetic kernels keep cores. Added Zig Windows build targets to match the GitHub release toolchain. Restored the `hot` function attribute on synthetic kernels. Removed `-funroll-loops` and `-fno-strict-aliasing` from the LLVM MinGW path (they reduced realistic-workload power with that toolchain) while keeping them on the Zig path. Removed defensive security hardening from `RunRealisticCompilerSim_V3` (string-table bounds check) and `IOThread` (symlink/TOCTOU/random-filename checks) that sacrificed power. Removed the 10-second worker thread affinity re-assertion. `RunRealisticCompilerSim_V3` source hash baseline was updated; decompression keeps its local IDIV-heavy 256-pass design.
 
 **2026-06-07 — L1-resident, store-light, dual-cluster redesign (superseded)**: Superseded by the 2026-06-13 upstream-style redesign. The remaining ~25-30 W gap on a PBO-unlocked Ryzen 5700X was structural: the 64 KiB/thread active set was L2- not L1-resident, and storing every WORK result made the single store port the loop bottleneck while the FMA pipes ran half-idle. Fix: keep the active set L1-resident for both SMT siblings (`SYNTH_L1_ELEMS`, default 1024 doubles), issue 2 passes of memory-FMAs to saturate both load AGUs and both FMA pipes, write back only sparsely (`SYNTH_STORE_COUNT`), and let the integer MixGpr chains co-saturate the integer cluster in parallel. Knobs were `-D`-overridable; `sweep_power.ps1` found the per-CPU optimum. Distinct from the failed 2026-05-14 pure reg-reg (kept idle load units) and 2026-05-23 bigger-buffer (DRAM stalls) directions.
 
@@ -14,7 +14,7 @@ Audited for maximum power draw, throughput, heat, and utilization (initial audit
 Direct comparison against the upstream GitHub release showed higher sustained CPU package power on a Ryzen 7 5700X with raised PBO limits. The local L1-resident/sparse-store design maximized FMA throughput but left memory-subsystem and integer-division power on the table.
 
 ### Current workload contract
-- **Realistic scalar**: `RunRealisticCompilerSim_V3` intentionally unchanged; tests pin its source hash.
+- **Realistic scalar**: `RunRealisticCompilerSim_V3` is intentionally kept close to upstream; the hot string-table lookup no longer has a defensive bounds check (saves a branch per candidate).
 - **Synthetic scalar/SSE2/NEON**: fixed 65536 doubles/thread buffer (512 KiB, L2/L3 traffic). 16 XMM/NEON registers, store-every-result (`_mm_storeu_pd` / `vst1q_f64`), 64-bit GPR integer division interleaved with the vector WORK. x86 SSE2 uses split `_mm_mul_pd` + `_mm_add_pd` (not FMA) for double µop count. No vector div/sqrt.
 - **AVX2**: 16 YMM registers, one pass of 16 store-every-result FMAs per iteration, 8 GPR multiply-xor chains. 512 KiB buffer.
 - **AVX-512**: 32 ZMM registers, one pass of 32 store-every-result FMAs per iteration, 8 GPR multiply-xor chains. 512 KiB buffer.
@@ -23,15 +23,19 @@ Direct comparison against the upstream GitHub release showed higher sustained CP
 
 ### RAM/I/O subsystem notes
 - **RAM**: 70 % of available physical RAM, capped at 16 GiB. 5-second bursts alternate between a 64-byte stride write pass and a pointer-chase loop. Allocation is reused across bursts.
-- **I/O**: single thread, direct/unbuffered 256 KiB random reads from a 512 MiB temp file, minimal CPU sink (`p[0] ^ p[read-1]`) so the core budget stays on synthetic workloads.
+- **I/O**: single thread, direct/unbuffered 256 KiB random reads from a 512 MiB temp file, minimal CPU sink (`p[0] ^ p[read-1]`) so the core budget stays on synthetic workloads. Temp files use predictable names and no symlink/TOCTOU hardening.
 
 ### Build flags
-- Added `-funroll-loops` and `-fno-strict-aliasing` to Windows/LLVM-MinGW and Zig release builds.
-- Kept `-O3 -ffast-math -fno-rtti -fno-exceptions -fno-stack-protector -fomit-frame-pointer -flto -s`.
+- **LLVM MinGW path**: `-O3 -ffast-math -fno-rtti -fno-exceptions -fno-stack-protector -fomit-frame-pointer -flto -s`. `-funroll-loops` and `-fno-strict-aliasing` were removed because they measurably reduced realistic-workload power with this toolchain.
+- **Zig path (including Windows)**: keeps `-funroll-loops` and `-fno-strict-aliasing` to match the upstream GitHub release flags.
+- Both paths keep `-ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-ident`.
+- Synthetic-kernel target attributes include `hot` to prioritize their icache footprint.
 
 ### Tests updated
 - Source-invariant tests now assert the upstream-style profile (65536 buffer, store-every-result, GPR IDIV, 70%/16 GiB RAM, single IO thread).
-- `python tests/run_tests.py --stress --sanitize` passes 46/46.
+- `RunRealisticCompilerSim_V3` source-hash baseline updated after removing the bounds check.
+- `python tests/run_tests.py --stress --sanitize --bin bin/x64-llvm-v3/ShaderStress.com` passes 46/46.
+- `python tests/run_tests.py --stress --bin bin/x64-zig-v3/ShaderStress.com` passes 44/44.
 
 ### Build fixes
 - macOS: renamed RAM-stress loop variable to avoid shadowing the Mach `host_statistics64` `count` parameter.

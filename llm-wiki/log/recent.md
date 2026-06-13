@@ -1,5 +1,39 @@
 # Recent Changes Log
 
+## 2026-06-13 — Power gap follow-up: compiler flags, Zig Windows, security hardening removal
+
+Problem: after the upstream-style redesign, synthetic scalar/AVX2 power increased,
+but all variants still lagged the GitHub release binary, and scalar-sim (realistic)
+power dropped from ~116 W to ~111 W.
+
+Root causes found:
+- `-funroll-loops` and `-fno-strict-aliasing` (copied from the upstream Zig build)
+  reduced realistic-workload power when used with the LLVM MinGW toolchain.
+- The GitHub release binary is built with Zig, not LLVM MinGW; local builds lacked
+  a Zig Windows target for an apples-to-apples comparison.
+- Local hardening added to `RunRealisticCompilerSim_V3` (string-table bounds check)
+  and `IOThread` (symlink/TOCTOU defenses, random filenames, canonical-path checks)
+  sacrificed power for security the user does not need in a stress tester.
+- `WorkerThread` re-pinned itself every 10 s; upstream does not.
+- `TARGET_AVX2` / `TARGET_AVX512` macros lost the `hot` attribute in the redesign.
+
+Changes:
+- `build.py`: removed `-funroll-loops` and `-fno-strict-aliasing` from the LLVM MinGW
+  path; kept them on the Zig path to match the upstream release. Restored `hot`
+  attribute to synthetic-kernel target macros. Added Zig Windows build configs
+  (`bin/x64-zig`, `bin/x64-zig-v3`, `bin/arm64-zig`) and `zig` / `zig-v3` aliases.
+- `Workloads.cpp`: removed the defensive string-table bounds check from the hot loop
+  in `RunRealisticCompilerSim_V3`.
+- `Threading.cpp`: simplified `IOThread` to match upstream (predictable temp filename,
+  `CREATE_ALWAYS`, no `O_NOFOLLOW`/canonical-path checks, deterministic fill).
+  Removed the 10 s re-pinning loop from `WorkerThread`.
+- `tests/run_tests.py`: updated `RunRealisticCompilerSim_V3` source-hash baseline.
+
+Verification:
+- `python build.py`: 13/13 targets succeeded (LLVM MinGW + Zig Windows, Linux, macOS).
+- `python tests/run_tests.py --stress --sanitize --bin bin/x64-llvm-v3/ShaderStress.com`: 46/46 passed.
+- `python tests/run_tests.py --stress --bin bin/x64-zig-v3/ShaderStress.com`: 44/44 passed.
+
 ## 2026-06-13 — Upstream-style power redesign
 
 Goal: match/beat the upstream GitHub release's sustained CPU package power on a

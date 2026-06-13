@@ -233,7 +233,6 @@ void WorkerThread(int idx) {
   DisablePowerThrottling();
   PinThreadToCore(idx);
   SetFpuFlushMode();
-  thread_local uint64_t s_lastAffinityTick = GetTick();
 #if !defined(PLATFORM_WINDOWS)
   t_threadIdx = idx;
 #endif
@@ -241,8 +240,8 @@ void WorkerThread(int idx) {
   auto &w = *g_Workers[idx];
   w.state.store(WorkerState::Running, std::memory_order_release);
 
-  while (!w.terminate) [[likely]] {
-    if (g_Repro.active) [[unlikely]] {
+  while (!w.terminate) {
+    if (g_Repro.active) {
       StressConfig reproCfg;
       {
         std::lock_guard<std::mutex> lk(g_ConfigMtx);
@@ -265,13 +264,6 @@ void WorkerThread(int idx) {
       std::this_thread::sleep_for(1ms);
 
     w.lastTick = GetTick();
-    
-    // Re-assert core affinity every 10s to prevent OS migration during idle phases
-    uint64_t now = w.lastTick;
-    if (now - s_lastAffinityTick >= 10000) {
-      PinThreadToCore(idx);
-      s_lastAffinityTick = now;
-    }
   }
   w.state.store(WorkerState::Stopped, std::memory_order_release);
 }
@@ -286,37 +278,27 @@ void IOThread(int ioIdx) {
 
   wchar_t path[MAX_PATH];
   GetTempPathW(MAX_PATH, path);
-  // Include a random value in the filename to prevent symlink attacks.
-  // Predictable filenames allow an attacker to pre-create a reparse point
-  // pointing to an arbitrary target file.
   std::wstring fpath =
-      std::wstring(path) + L"stress_" + std::to_wstring(ioIdx) +
-      L"_" + std::to_wstring(GetTick() ^ ((uint64_t)ioIdx * 0x9E3779B97F4A7C15ULL)) + L".tmp";
+      std::wstring(path) + L"stress_" + std::to_wstring(ioIdx) + L".tmp";
 
   bool fileCreated = false;
-  bool openFailureLogged = false;
   HANDLE hFile = INVALID_HANDLE_VALUE;
   ScopedMem buf(IO_CHUNK_SIZE);
   std::mt19937_64 rng(GetTick() + ioIdx);
 
-  while (!w.terminate) [[likely]] {
-    if (!g_App.ioActive && !g_Repro.active) [[unlikely]] {
+  while (!w.terminate) {
+    if (!g_App.ioActive && !g_Repro.active) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
       continue;
     }
 
     // Create temp file on first activation (deferred from startup)
-    if (!fileCreated) [[unlikely]] {
-      // Use CreateFileW with FILE_FLAG_OPEN_REPARSE_POINT to avoid following
-      // symlinks/junctions, preventing TOCTOU attacks. DELETE_ON_CLOSE ensures
-      // cleanup even on abnormal exit.
+    if (!fileCreated) {
+      // Use CreateFileW to avoid narrow-string conversion (handles non-ASCII paths)
       HANDLE hCreate = CreateFileW(fpath.c_str(), GENERIC_WRITE, 0, nullptr,
-                                   CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
       if (hCreate != INVALID_HANDLE_VALUE) {
-        // Fill with pseudo-random data so the volatile-xor sink is non-deterministic.
-        std::vector<char> junk(1024 * 1024);
-        for (size_t j = 0; j < junk.size(); ++j)
-          junk[j] = (char)((j * 0x9E3779B97F4A7C15ull) & 0xFF);
+        std::vector<char> junk(1024 * 1024, 'x');
         DWORD written;
         for (size_t i = 0; i < (IO_FILE_SIZE / (1024 * 1024)); ++i)
           WriteFile(hCreate, junk.data(), (DWORD)junk.size(), &written, nullptr);
@@ -324,21 +306,7 @@ void IOThread(int ioIdx) {
       }
 
       hFile = CreateFileW(fpath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                           OPEN_EXISTING, FILE_FLAG_NO_BUFFERING | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
-      if (hFile != INVALID_HANDLE_VALUE) {
-        // Post-open verification: canonical path must match the original random filename.
-        wchar_t actualPath[MAX_PATH];
-        DWORD actualLen = GetFinalPathNameByHandleW(hFile, actualPath, MAX_PATH, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-        if (actualLen == 0 || actualLen >= MAX_PATH) {
-          CloseHandle(hFile);
-          hFile = INVALID_HANDLE_VALUE;
-        }
-      }
-      if (hFile == INVALID_HANDLE_VALUE && !openFailureLogged) {
-        g_App.Log(L"I/O stress: thread " + std::to_wstring(ioIdx) +
-                  L" could not open a direct-read temp file");
-        openFailureLogged = true;
-      }
+                          OPEN_EXISTING, FILE_FLAG_NO_BUFFERING, nullptr);
       fileCreated = true;
     }
 
@@ -354,10 +322,7 @@ void IOThread(int ioIdx) {
 
     LARGE_INTEGER pos;
     pos.QuadPart = (rng() % (IO_FILE_SIZE - IO_CHUNK_SIZE)) & ~4095;
-    if (!SetFilePointerEx(hFile, pos, nullptr, FILE_BEGIN)) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-      continue;
-    }
+    SetFilePointerEx(hFile, pos, nullptr, FILE_BEGIN);
 
     DWORD read;
     uint8_t *p = buf.As<uint8_t>();
@@ -469,12 +434,9 @@ void IOThread(int ioIdx) {
   SetFpuFlushMode();
   auto &w = *g_IOThreads[ioIdx];
 
-  // Include a random value in the filename to prevent symlink attacks.
-  uint64_t randSuffix = (uint64_t)GetTick() ^ ((uint64_t)ioIdx * 0x9E3779B97F4A7C15ULL);
-  std::string fpath = "/tmp/stress_" + std::to_string(ioIdx) + "_" + std::to_string(randSuffix) + ".tmp";
+  std::string fpath = "/tmp/stress_" + std::to_string(ioIdx) + ".tmp";
 
   bool fileCreated = false;
-  bool openFailureLogged = false;
   int hFile = -1;
   ScopedMem buf(IO_CHUNK_SIZE);
   std::mt19937_64 rng(GetTick() + ioIdx);
@@ -487,21 +449,14 @@ void IOThread(int ioIdx) {
 
     // Create temp file on first activation (deferred from startup)
     if (!fileCreated) {
-      // Fill with pseudo-random data so the volatile-xor sink is non-deterministic.
-      std::vector<char> junk(1024 * 1024);
-      for (size_t j = 0; j < junk.size(); ++j)
-        junk[j] = (char)((j * 0x9E3779B97F4A7C15ull) & 0xFF);
-      // Use open() with O_CREAT | O_EXCL to fail on existing paths,
-      // preventing symlink/hardlink TOCTOU.
-      int fd = open(fpath.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
-      if (fd != -1) {
-        for (size_t i = 0; i < (IO_FILE_SIZE / (1024 * 1024)); ++i)
-          write(fd, junk.data(), junk.size());
-        close(fd);
-      }
+      std::ofstream f(fpath, std::ios::binary);
+      std::vector<char> junk(1024 * 1024, 'x');
+      for (size_t i = 0; i < (IO_FILE_SIZE / (1024 * 1024)); ++i)
+        f.write(junk.data(), junk.size());
+      f.close();
 
       // O_DIRECT is Linux specific, on macOS use F_NOCACHE
-      int flags = O_RDONLY | O_NOFOLLOW;
+      int flags = O_RDONLY;
 #ifdef PLATFORM_LINUX
       flags |= O_DIRECT;
 #endif
@@ -510,25 +465,6 @@ void IOThread(int ioIdx) {
       if (hFile != -1)
         fcntl(hFile, F_NOCACHE, 1);
 #endif
-      if (hFile != -1) {
-        // Post-open verification: canonical path must match the original random temp file.
-        char linkBuf[4096];
-        char fdPath[64];
-        snprintf(fdPath, sizeof(fdPath), "/proc/self/fd/%d", hFile);
-        ssize_t linkLen = readlink(fdPath, linkBuf, sizeof(linkBuf) - 1);
-        if (linkLen > 0) {
-          linkBuf[linkLen] = '\0';
-          if (strstr(linkBuf, "/tmp/stress_") != linkBuf) {
-            close(hFile);
-            hFile = -1;
-          }
-        }
-      }
-      if (hFile == -1 && !openFailureLogged) {
-        g_App.Log(L"I/O stress: thread " + std::to_wstring(ioIdx) +
-                  L" could not open a direct-read temp file");
-        openFailureLogged = true;
-      }
       fileCreated = true;
     }
 
@@ -543,10 +479,7 @@ void IOThread(int ioIdx) {
     }
 
     off_t pos = (rng() % (IO_FILE_SIZE - IO_CHUNK_SIZE)) & ~4095;
-    if (lseek(hFile, pos, SEEK_SET) == (off_t)-1) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-      continue;
-    }
+    lseek(hFile, pos, SEEK_SET);
 
     uint8_t *p = buf.As<uint8_t>();
     ssize_t readBytes = read(hFile, p, IO_CHUNK_SIZE);

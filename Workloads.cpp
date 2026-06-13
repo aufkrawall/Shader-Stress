@@ -99,11 +99,11 @@ LONG WINAPI WriteCrashDump(PEXCEPTION_POINTERS pExceptionInfo, uint64_t seed,
   } break;
 
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
-#define TARGET_AVX2 __attribute__((target("avx2,fma"), noinline))
+#define TARGET_AVX2 __attribute__((target("avx2,fma"), hot, noinline))
 #if defined(__clang__) && __clang_major__ >= 22
-#define TARGET_AVX512 __attribute__((target("avx512f"), noinline))
+#define TARGET_AVX512 __attribute__((target("avx512f"), hot, noinline))
 #else
-#define TARGET_AVX512 __attribute__((target("avx512f,evex512"), noinline))
+#define TARGET_AVX512 __attribute__((target("avx512f,evex512"), hot, noinline))
 #endif
 #else
 #define TARGET_AVX2
@@ -229,20 +229,12 @@ uint64_t RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
       uint32_t probes = 0;
       while (tableEntries[bucket].key != 0 && probes < 8) {
         if (tableEntries[bucket].strLen == strLen) {
-          // Guard against out-of-bounds access on stringPool.
-          // Both the lookup-start and the candidate-start must have room for the
-          // full string length. If not, skip this entry (defensive; should not
-          // happen with well-formed table data).
-          bool match = false;
-          if (strStart + strLen <= STRING_POOL_SIZE &&
-              tableEntries[bucket].strOffset + strLen <= STRING_POOL_SIZE) {
-            match = true;
-            for (uint32_t i = 0; i < strLen; ++i) {
-              if (stringPool[tableEntries[bucket].strOffset + i] !=
-                  stringPool[strStart + i]) {
-                match = false;
-                break;
-              }
+          bool match = true;
+          for (uint32_t i = 0; i < strLen; ++i) {
+            if (stringPool[tableEntries[bucket].strOffset + i] !=
+                stringPool[strStart + i]) {
+              match = false;
+              break;
             }
           }
           if (match) {

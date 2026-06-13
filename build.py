@@ -75,6 +75,10 @@ BUILD_CONFIGS = [
     ("x86_64-windows-gnu", "bin/x64-llvm-v3", "x86_64_v3", True, "ShaderStress-Windows-x64-v3.7z"),
     ("x86_64-windows-gnu", "bin/x64-llvm-v4", "x86_64_v4", True, "ShaderStress-Windows-x64-v4.7z"),
     ("aarch64-windows-gnu", "bin/arm64-llvm", "generic", True, "ShaderStress-Windows-ARM64.7z"),
+    # Windows (Zig) - matches the GitHub release toolchain
+    ("x86_64-windows-gnu", "bin/x64-zig", "x86_64", True, "ShaderStress-Windows-x64-Zig.7z"),
+    ("x86_64-windows-gnu", "bin/x64-zig-v3", "x86_64_v3", True, "ShaderStress-Windows-x64-v3-Zig.7z"),
+    ("aarch64-windows-gnu", "bin/arm64-zig", "generic", True, "ShaderStress-Windows-ARM64-Zig.7z"),
     # Linux (Zig)
     ("x86_64-linux-gnu", "bin/linux-x64", "x86_64", False, "ShaderStress-Linux-x64.7z"),
     ("x86_64-linux-gnu", "bin/linux-x64-v3", "x86_64_v3", False, "ShaderStress-Linux-x64-v3.7z"),
@@ -269,8 +273,6 @@ def build_windows_target(config):
         base_cmd.extend([
             "-std=c++20", "-O3",
             "-ffast-math",
-            "-funroll-loops",
-            "-fno-strict-aliasing",
             "-fno-rtti",
             "-fno-exceptions",
             "-fno-stack-protector",
@@ -279,6 +281,11 @@ def build_windows_target(config):
             "-fno-asynchronous-unwind-tables",
             "-fno-ident",
         ])
+
+        # NOTE: -funroll-loops and -fno-strict-aliasing mirror the upstream
+        # Zig build, but with LLVM MinGW they measurably reduce the realistic
+        # (scalar-sim) workload power draw (~5 W on Zen 3). Keep them on the
+        # Zig path where they match the GitHub release binary; omit them here.
 
         # Sanitizer build mode (development only)
         if SANITIZER_MODE == "undefined":
@@ -403,15 +410,26 @@ def build_windows_target(config):
 
 
 def build_zig_target(config):
-    """Build a Linux/macOS target using Zig"""
+    """Build a target using Zig (Linux/macOS/Windows)."""
     target, out_dir, cpu, is_windows, archive_name = config
     out_path = BASE_DIR / out_dir
     out_path.mkdir(parents=True, exist_ok=True)
 
     log(f"Starting {target} (cpu={cpu}) using Zig...")
 
-    src_files = SRC_FILES_UNIX[:]
-    defines = ["-DPLATFORM_LINUX" if "linux" in target else "-DPLATFORM_MACOS"]
+    if is_windows:
+        for stale_name in ["ShaderStress.com", "ShaderStressCli.exe", "ShaderStressGui.exe", "ShaderStressCli.cmd"]:
+            stale_path = out_path / stale_name
+            if stale_path.exists():
+                stale_path.unlink()
+
+    src_files = SRC_FILES_WINDOWS[:] if is_windows else SRC_FILES_UNIX[:]
+    if is_windows:
+        defines = ["-DUNICODE", "-D_UNICODE", "-D_WIN32_WINNT=0x0A00"]
+        if "arm64" in target or "aarch64" in target:
+            defines.extend(["-D_M_ARM64", "-D_WIN64"])
+    else:
+        defines = ["-DPLATFORM_LINUX" if "linux" in target else "-DPLATFORM_MACOS"]
 
     defines.extend([
         f'-DAPP_VERSION_TEXT="{APP_VERSION_TEXT}"',
@@ -423,11 +441,10 @@ def build_zig_target(config):
     defines.append("-DDISABLE_SEH")
     defines.extend(EXTRA_DEFINES)
 
-    exe_name = "shaderstress"
+    exe_name = "ShaderStress.exe" if is_windows else "shaderstress"
     exe_path = out_path / exe_name
 
     try:
-        # Main build command
         use_lto = "macos" not in target
 
         base_cmd = [
@@ -441,6 +458,8 @@ def build_zig_target(config):
         if cpu == "x86_64_v4":
             base_cmd.append("-mprefer-vector-width=512")
 
+        # Mirror upstream release flags. These are kept on the Zig path because
+        # the GitHub binary is built with Zig and achieves higher power draw.
         base_cmd.extend([
             "-std=c++20", "-O3",
             "-ffast-math",
@@ -483,18 +502,94 @@ def build_zig_target(config):
             "-Wno-ignored-optimization-argument",
         ])
 
+        if is_windows:
+            base_cmd.append("-municode")
+
         base_cmd.extend(defines)
+
+        # Windows: compile resource file for the icon
+        if is_windows:
+            res_file = out_path / "resource.res"
+            rc_cmd = [
+                str(ZIG_EXE), "rc",
+                str(BASE_DIR / "resource.rc"),
+                str(res_file)
+            ]
+            try:
+                subprocess.run(rc_cmd, check=True, capture_output=True)
+                src_files.append(str(res_file))
+            except subprocess.CalledProcessError as e:
+                log(f"Warning: Could not compile resource.rc for {target}: {e}")
+
         base_cmd.extend(src_files)
 
-        cmd = base_cmd[:] + [
-            "-o", str(exe_path),
-            "-lpthread",
-            "-Wl,--sort-common,--sort-section=alignment",
-            "-Wl,--gc-sections",
-        ]
+        if is_windows:
+            cmd = base_cmd[:] + [
+                "-o", str(exe_path),
+                "-Xlinker", "--subsystem", "-Xlinker", "windows",
+                "-Xlinker", "--gc-sections",
+                "-luser32", "-lgdi32", "-ldwmapi", "-lshcore",
+                "-lshell32", "-lole32", "-loleaut32", "-ldbghelp",
+            ]
+        else:
+            cmd = base_cmd[:] + [
+                "-o", str(exe_path),
+                "-lpthread",
+                "-Wl,--sort-common,--sort-section=alignment",
+                "-Wl,--gc-sections",
+            ]
 
         cmd = [c for c in cmd if c]
         subprocess.run(cmd, check=True, capture_output=True)
+
+        if is_windows:
+            # Build the tiny CLI launcher (.com)
+            launcher_path = out_path / "ShaderStress.com"
+            zig_cc_cmd = [
+                str(ZIG_EXE), "cc",
+                "-target", target,
+            ]
+            if cpu != "generic":
+                zig_cc_cmd.extend(["-mcpu=" + cpu])
+            zig_cc_cmd.extend([
+                "-Oz", "-s",
+                "-ffunction-sections", "-fdata-sections",
+                "-fno-asynchronous-unwind-tables",
+                "-fno-ident",
+                "-municode",
+                str(CLI_LAUNCHER_SOURCE),
+                "-o", str(launcher_path),
+                "-Xlinker", "--subsystem", "-Xlinker", "console",
+                "-Xlinker", "--gc-sections",
+            ])
+            subprocess.run(zig_cc_cmd, check=True, capture_output=True)
+
+            # Compile PowerReader.cs for LHM power reading
+            lhm_src = BASE_DIR / "vendor" / "lhm"
+            power_reader_cs = lhm_src / "PowerReader.cs"
+            if power_reader_cs.exists() and lhm_src.exists():
+                lhm_out = out_path / "lhm"
+                lhm_out.mkdir(parents=True, exist_ok=True)
+                csc = Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / \
+                    "Microsoft.NET" / "Framework64" / "v4.0.30319" / "csc.exe"
+                if csc.exists():
+                    lhm_dll = lhm_src / "LibreHardwareMonitorLib.dll"
+                    pr_exe = lhm_out / "PowerReader.exe"
+                    subprocess.run([
+                        str(csc), "/target:exe", f"/out:{pr_exe}",
+                        "/platform:x64", "/nologo",
+                        f"/reference:{lhm_dll}",
+                        str(power_reader_cs),
+                    ], check=True, capture_output=True)
+                    app_config = lhm_out / "PowerReader.exe.config"
+                    app_config.write_text(
+                        '<?xml version="1.0" encoding="utf-8"?>'
+                        '<configuration><startup><supportedRuntime version="v4.0" sku=".NETFramework,Version=v4.8"/></startup></configuration>',
+                        encoding="utf-8")
+                    for name in LHM_DEPS_FILES:
+                        src = lhm_src / name
+                        if src.exists() and not (lhm_out / name).exists():
+                            shutil.copy2(src, lhm_out / name)
 
         return (True, target, out_dir, archive_name)
 
@@ -748,6 +843,8 @@ def main():
         print("  win-v3    - Windows x86_64_v3 only (fast single-config build)")
         print("  win-v4    - Windows x86_64_v4 only (fast single-config build)")
         print("  win-baseline - Windows baseline x86_64 only (SSE2)")
+        print("  zig       - Windows Zig-built x64 and ARM64")
+        print("  zig-v3    - Windows Zig-built x86_64_v3 only")
         print("  native    - Current platform only")
         print("Options:")
         print("  --pgo-gen      Build with profile generation instrumentation")
@@ -764,6 +861,7 @@ def main():
         print("")
         print("Toolchains:")
         print("  Windows: LLVM MinGW (clang++/lld) - llvm-mingw-*/")
+        print("  Windows (Zig): Zig cross-compilation - zig-x86_64-windows-0.15.2/zig.exe")
         print("  Linux/macOS: Zig cross-compilation - zig-x86_64-windows-0.15.2/zig.exe")
         print("")
         print("Examples:")
@@ -794,6 +892,11 @@ def main():
                 configs.extend([c for c in BUILD_CONFIGS if c[1] == "bin/x64-llvm-v3"])
             elif t == "win-v4":
                 configs.extend([c for c in BUILD_CONFIGS if c[1] == "bin/x64-llvm-v4"])
+            # Zig Windows aliases (matches GitHub release toolchain).
+            elif t == "zig":
+                configs.extend([c for c in BUILD_CONFIGS if "windows" in c[0] and "zig" in c[1]])
+            elif t == "zig-v3":
+                configs.extend([c for c in BUILD_CONFIGS if c[1] == "bin/x64-zig-v3"])
             elif t == "native":
                 import platform
                 machine = platform.machine().lower()
@@ -849,7 +952,14 @@ def main():
     max_workers = min(len(configs), multiprocessing.cpu_count())
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_config = {executor.submit(build_target, config): config for config in configs}
+        future_to_config = {}
+        for config in configs:
+            # Zig-built Windows targets use the Zig toolchain; everything else
+            # uses the existing LLVM MinGW (Windows) or Zig (Unix) builders.
+            if config[3] and "zig" in config[1]:
+                future_to_config[executor.submit(build_zig_target, config)] = config
+            else:
+                future_to_config[executor.submit(build_target, config)] = config
 
         for future in as_completed(future_to_config):
             config = future_to_config[future]
