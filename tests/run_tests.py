@@ -316,14 +316,14 @@ def test_invariant_ram_upstream_pattern(binary):
           "RAM stress upstream write-stride + chase pattern")
 
 
-def test_invariant_io_single_thread_minimal_sink(binary):
-    """IOThread uses a single thread and minimal CPU sink."""
+def test_invariant_io_single_thread_buffer_hash(binary):
+    """IOThread uses a single thread and CPU-side buffer hash."""
     src = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
     setwork = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
-    check("HashIoBufferForCpuPower" not in src and
-          "volatile uint8_t sink = p[0] ^ p[read - 1]" in src and
+    check("uint64_t h = (uint64_t)read * 0x9E3779B97F4A7C15ULL" in src and
+          "h = (h * 0x9E3779B97F4A7C15ULL) ^ (uint64_t)p[j]" in src and
           "int cntIO = io ? 1 : 0" in setwork,
-          "I/O single thread with minimal sink")
+          "I/O single thread with buffer hash")
 
 
 def test_invariant_perf_stats_initializes_cpu(binary):
@@ -414,7 +414,7 @@ LIGHTWEIGHT_TESTS = [
     test_invariant_avx2_fma_store_no_div_sqrt,
     test_invariant_sse2_split_mul_add_gpr_idiv,
     test_invariant_ram_upstream_pattern,
-    test_invariant_io_single_thread_minimal_sink,
+    test_invariant_io_single_thread_buffer_hash,
     test_invariant_perf_stats_initializes_cpu,
     test_invariant_decomp_idiv,
     test_invariant_realistic_unchanged,

@@ -224,6 +224,11 @@ static void RunDecompressLogic(int idx) {
       if ((i & 63) == 0) {
         acc = acc / ((data[i] & 0xFFFFFFFFULL) | 1ULL);
       }
+      // Additional IDIV at offsets 16 and 32 for more port-0 pipeline backpressure
+      if ((i & 63) == 16)
+        acc = acc / ((data[i] & 0xFFFFFFFFULL) | 1ULL);
+      if ((i & 63) == 32)
+        acc = acc / ((data[i] & 0xFFFFFFFFULL) | 1ULL);
       data[i] ^= (uint8_t)acc;
     }
   }
@@ -327,7 +332,10 @@ void IOThread(int ioIdx) {
     DWORD read;
     uint8_t *p = buf.As<uint8_t>();
     if (ReadFile(hFile, p, (DWORD)IO_CHUNK_SIZE, &read, nullptr) && read > 0) {
-      volatile uint8_t sink = p[0] ^ p[read - 1];
+      uint64_t h = (uint64_t)read * 0x9E3779B97F4A7C15ULL;
+      for (DWORD j = 0; j < read; ++j)
+        h = (h * 0x9E3779B97F4A7C15ULL) ^ (uint64_t)p[j];
+      volatile uint64_t sink = h;
       (void)sink;
     }
     w.lastTick = GetTick();
@@ -406,9 +414,19 @@ void RAMThread() {
     while (GetTick() < burstEnd && !w.terminate &&
            (g_App.ramActive || g_Repro.active)) {
       if (rng() % 2 == 0) {
+        uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
         size_t stride = 64;
-        for (size_t i = 0; i < ramCount; i += stride)
-          p[i] = (p[i] + 1);
+        for (size_t i = 0; i < ramCount; i += stride) {
+          a0 ^= p[i]; a1 ^= p[i + 1]; a2 ^= p[i + 2]; a3 ^= p[i + 3];
+          a0 = a0 * 0x9E3779B97F4A7C15ULL;
+          a1 = a1 * 0x9E3779B97F4A7C15ULL;
+          a2 = a2 * 0x9E3779B97F4A7C15ULL;
+          a3 = a3 * 0x9E3779B97F4A7C15ULL;
+          p[i] ^= (uint64_t)a0; p[i + 1] ^= (uint64_t)a1;
+          p[i + 2] ^= (uint64_t)a2; p[i + 3] ^= (uint64_t)a3;
+        }
+        volatile uint64_t sink = a0 ^ a1 ^ a2 ^ a3;
+        (void)sink;
       } else {
         volatile uint64_t idx = 0;
         for (int k = 0; k < 100000; ++k)
@@ -484,7 +502,10 @@ void IOThread(int ioIdx) {
     uint8_t *p = buf.As<uint8_t>();
     ssize_t readBytes = read(hFile, p, IO_CHUNK_SIZE);
     if (readBytes > 0) {
-      volatile uint8_t sink = p[0] ^ p[readBytes - 1];
+      uint64_t h = (uint64_t)readBytes * 0x9E3779B97F4A7C15ULL;
+      for (ssize_t j = 0; j < readBytes; ++j)
+        h = (h * 0x9E3779B97F4A7C15ULL) ^ (uint64_t)p[j];
+      volatile uint64_t sink = h;
       (void)sink;
     }
     w.lastTick = GetTick();
@@ -585,9 +606,19 @@ void RAMThread() {
     while (GetTick() < burstEnd && !w.terminate &&
            (g_App.ramActive || g_Repro.active)) {
       if (rng() % 2 == 0) {
+        uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
         size_t stride = 64;
-        for (size_t i = 0; i < ramCount; i += stride)
-          p[i] = (p[i] + 1);
+        for (size_t i = 0; i < ramCount; i += stride) {
+          a0 ^= p[i]; a1 ^= p[i + 1]; a2 ^= p[i + 2]; a3 ^= p[i + 3];
+          a0 = a0 * 0x9E3779B97F4A7C15ULL;
+          a1 = a1 * 0x9E3779B97F4A7C15ULL;
+          a2 = a2 * 0x9E3779B97F4A7C15ULL;
+          a3 = a3 * 0x9E3779B97F4A7C15ULL;
+          p[i] ^= (uint64_t)a0; p[i + 1] ^= (uint64_t)a1;
+          p[i + 2] ^= (uint64_t)a2; p[i + 3] ^= (uint64_t)a3;
+        }
+        volatile uint64_t sink = a0 ^ a1 ^ a2 ^ a3;
+        (void)sink;
       } else {
         volatile uint64_t idx = 0;
         for (int k = 0; k < 100000; ++k)

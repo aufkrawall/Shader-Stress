@@ -1,5 +1,23 @@
 # Recent Changes Log
 
+## 2026-06-17 — CPU power draw improvements: IO/RAM/decomp compute, AVX2/AVX-512 16 GPRs, permutes, mask ops
+
+Goal: increase CPU package power for synthetic workloads (scalar, AVX2, AVX-512, NEON, RAM, IO, decompression) by adding execution-unit pressure beyond the upstream-style 2026-06-13 profile.
+
+Changes:
+- **Threading.cpp — IO thread**: Replaced minimal `volatile uint8_t sink = p[0] ^ p[read - 1]` with a full-buffer FNV-1a-like multiply-XOR hash over the 256 KiB read buffer. Keeps the IO core's integer execution units active alongside storage operations. Applied to both Windows and Linux paths.
+- **Threading.cpp — RAM thread**: Replaced `p[i] = (p[i] + 1)` write-stride pass with a 4-accumulator integer multiply chain (read 4→hash→write 4), using four independent `a0..a3` registers and the golden-ratio constant. Keeps the RAM core's integer cluster hot during memory stress. Applied to both Windows and Linux paths.
+- **Threading.cpp — Decompression**: Added 2 more 64-bit IDIV operations at offsets 16 and 32 within each 64-byte window (was 1 IDIV at offset 0, now 3 total). Triples high-latency port-0 backpressure.
+- **Workloads.cpp — AVX2**: GPR chains expanded from 8 to 16 (g0–g15). 4 `_mm256_permute4x64_pd` operations added per iteration for port-5 shuffle pressure.
+- **Workloads.cpp — AVX-512**: GPR chains expanded from 8 to 16 (g0–g15). 4 `_mm512_permutex_pd` operations added per iteration for port-5 shuffle pressure. `_mm512_cmp_pd_mask` + `_mm512_mask_blend_pd` added for mask register file pressure.
+- **build.py**: Restored `-funroll-loops` and `-fno-strict-aliasing` to the LLVM MinGW path. Added `-nounroll` build variants (`win-v3-nounroll`, `zig-v3-nounroll`) that omit these flags for comparison. Zig path also gates these flags behind the nounroll suffix.
+- **tests/run_tests.py**: Updated IO invariant test to check for the new buffer hash pattern. Renamed test function accordingly. All 44 non-stress + 5 stress + 2 golden + 2 UBSan tests pass.
+
+Verification:
+- `python build.py win-v3 win-v3-nounroll zig-v3 zig-v3-nounroll`: 4/4 targets succeeded.
+- `python tests/run_tests.py --stress --bin bin/x64-llvm-v3/ShaderStress.com`: 44/44 passed.
+- `python tests/run_tests.py --sanitize`: 39/39 passed (no stress).
+
 ## 2026-06-13 — Power gap follow-up: compiler flags, Zig Windows, security hardening removal
 
 Problem: after the upstream-style redesign, synthetic scalar/AVX2 power increased,

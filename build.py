@@ -73,11 +73,13 @@ BUILD_CONFIGS = [
     # Windows (LLVM MinGW)
     ("x86_64-windows-gnu", "bin/x64-llvm", "x86_64", True, "ShaderStress-Windows-x64.7z"),
     ("x86_64-windows-gnu", "bin/x64-llvm-v3", "x86_64_v3", True, "ShaderStress-Windows-x64-v3.7z"),
+    ("x86_64-windows-gnu", "bin/x64-llvm-v3-nounroll", "x86_64_v3", True, "ShaderStress-Windows-x64-v3-nounroll.7z"),
     ("x86_64-windows-gnu", "bin/x64-llvm-v4", "x86_64_v4", True, "ShaderStress-Windows-x64-v4.7z"),
     ("aarch64-windows-gnu", "bin/arm64-llvm", "generic", True, "ShaderStress-Windows-ARM64.7z"),
     # Windows (Zig) - matches the GitHub release toolchain
     ("x86_64-windows-gnu", "bin/x64-zig", "x86_64", True, "ShaderStress-Windows-x64-Zig.7z"),
     ("x86_64-windows-gnu", "bin/x64-zig-v3", "x86_64_v3", True, "ShaderStress-Windows-x64-v3-Zig.7z"),
+    ("x86_64-windows-gnu", "bin/x64-zig-v3-nounroll", "x86_64_v3", True, "ShaderStress-Windows-x64-v3-Zig-nounroll.7z"),
     ("aarch64-windows-gnu", "bin/arm64-zig", "generic", True, "ShaderStress-Windows-ARM64-Zig.7z"),
     # Linux (Zig)
     ("x86_64-linux-gnu", "bin/linux-x64", "x86_64", False, "ShaderStress-Linux-x64.7z"),
@@ -282,10 +284,11 @@ def build_windows_target(config):
             "-fno-ident",
         ])
 
-        # NOTE: -funroll-loops and -fno-strict-aliasing mirror the upstream
-        # Zig build, but with LLVM MinGW they measurably reduce the realistic
-        # (scalar-sim) workload power draw (~5 W on Zen 3). Keep them on the
-        # Zig path where they match the GitHub release binary; omit them here.
+        # -funroll-loops / -fno-strict-aliasing: restored for synthetic workload
+        # power.  Nounroll variants (out_dir ending in "-nounroll") omit them so
+        # the user can compare the impact on their CPU.
+        if not out_dir.endswith("-nounroll"):
+            base_cmd.extend(["-funroll-loops", "-fno-strict-aliasing"])
 
         # Sanitizer build mode (development only)
         if SANITIZER_MODE == "undefined":
@@ -460,11 +463,15 @@ def build_zig_target(config):
 
         # Mirror upstream release flags. These are kept on the Zig path because
         # the GitHub binary is built with Zig and achieves higher power draw.
+        # Nounroll variants (out_dir ending in "-nounroll") omit -funroll-loops
+        # and -fno-strict-aliasing for comparison.
         base_cmd.extend([
             "-std=c++20", "-O3",
             "-ffast-math",
-            "-funroll-loops",
-            "-fno-strict-aliasing",
+        ])
+        if not out_dir.endswith("-nounroll"):
+            base_cmd.extend(["-funroll-loops", "-fno-strict-aliasing"])
+        base_cmd.extend([
             "-fno-rtti",
             "-fno-exceptions",
             "-fno-stack-protector",
@@ -892,6 +899,11 @@ def main():
                 configs.extend([c for c in BUILD_CONFIGS if c[1] == "bin/x64-llvm-v3"])
             elif t == "win-v4":
                 configs.extend([c for c in BUILD_CONFIGS if c[1] == "bin/x64-llvm-v4"])
+            # Nounroll variants (no -funroll-loops / -fno-strict-aliasing) for comparison.
+            elif t == "win-v3-nounroll":
+                configs.extend([c for c in BUILD_CONFIGS if c[1] == "bin/x64-llvm-v3-nounroll"])
+            elif t == "zig-v3-nounroll":
+                configs.extend([c for c in BUILD_CONFIGS if c[1] == "bin/x64-zig-v3-nounroll"])
             # Zig Windows aliases (matches GitHub release toolchain).
             elif t == "zig":
                 configs.extend([c for c in BUILD_CONFIGS if "windows" in c[0] and "zig" in c[1]])

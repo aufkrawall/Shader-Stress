@@ -661,6 +661,8 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
 
   uint64_t g0 = seed, g1 = seed + 1, g2 = seed + 2, g3 = seed + 3;
   uint64_t g4 = seed + 4, g5 = seed + 5, g6 = seed + 6, g7 = seed + 7;
+  uint64_t g8 = seed + 8, g9 = seed + 9, g10 = seed + 10, g11 = seed + 11;
+  uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
 
   int idx = 0;
   // Ensure 32-byte alignment for AVX2 (4 doubles = 32 bytes)
@@ -697,7 +699,22 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
     g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
     g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
     
+    g8 = (g8 * 0x9E3779B97F4A7C15ULL) ^ (g9 >> 17) ^ (g10 << 13);
+    g9 = (g9 * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13);
+    g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13);
+    g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13);
+    g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13);
+    g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13);
+    g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g8 << 13);
+    g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g8 >> 17) ^ (g9 << 13);
+    
     #undef WORK
+    
+    // Shuffle pressure: saturate port 5 (4 permutes per iter)
+    r0 = _mm256_permute4x64_pd(r0, 0x4E);
+    r4 = _mm256_permute4x64_pd(r4, 0x4E);
+    r8 = _mm256_permute4x64_pd(r8, 0x4E);
+    r12 = _mm256_permute4x64_pd(r12, 0x4E);
     
     idx = (idx + 64) & MASK;
   }
@@ -720,7 +737,8 @@ uint64_t RunHyperStress_AVX2(uint64_t seed, int complexity,
   
   double out[4];
   _mm256_storeu_pd(out, sum);
-  uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7;
+  uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7 ^
+                  g8 ^ g9 ^ g10 ^ g11 ^ g12 ^ g13 ^ g14 ^ g15;
   double final_val = out[0] + out[1] + out[2] + out[3] + (double)gint;
   volatile double sink = final_val;
   (void)sink;
@@ -783,9 +801,11 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
   
   __m512d mul = _mm512_set1_pd(1.000001);
 
-  // 8 GPRs
+  // 16 GPRs
   uint64_t g0 = seed, g1 = seed + 1, g2 = seed + 2, g3 = seed + 3;
   uint64_t g4 = seed + 4, g5 = seed + 5, g6 = seed + 6, g7 = seed + 7;
+  uint64_t g8 = seed + 8, g9 = seed + 9, g10 = seed + 10, g11 = seed + 11;
+  uint64_t g12 = seed + 12, g13 = seed + 13, g14 = seed + 14, g15 = seed + 15;
 
   int idx = 0;
   // Ensure 64-byte alignment for AVX-512 (8 doubles = 64 bytes)
@@ -823,6 +843,15 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
     g6 = (g6 * 0x9E3779B97F4A7C15ULL) ^ (g7 >> 17) ^ (g0 << 13);
     g7 = (g7 * 0x9E3779B97F4A7C15ULL) ^ (g0 >> 17) ^ (g1 << 13);
     
+    g8 = (g8 * 0x9E3779B97F4A7C15ULL) ^ (g9 >> 17) ^ (g10 << 13);
+    g9 = (g9 * 0x9E3779B97F4A7C15ULL) ^ (g10 >> 17) ^ (g11 << 13);
+    g10 = (g10 * 0x9E3779B97F4A7C15ULL) ^ (g11 >> 17) ^ (g12 << 13);
+    g11 = (g11 * 0x9E3779B97F4A7C15ULL) ^ (g12 >> 17) ^ (g13 << 13);
+    g12 = (g12 * 0x9E3779B97F4A7C15ULL) ^ (g13 >> 17) ^ (g14 << 13);
+    g13 = (g13 * 0x9E3779B97F4A7C15ULL) ^ (g14 >> 17) ^ (g15 << 13);
+    g14 = (g14 * 0x9E3779B97F4A7C15ULL) ^ (g15 >> 17) ^ (g8 << 13);
+    g15 = (g15 * 0x9E3779B97F4A7C15ULL) ^ (g8 >> 17) ^ (g9 << 13);
+    
     // Second half of 32 ZMM registers
     WORK(r16, 128); WORK(r17, 136); WORK(r18, 144); WORK(r19, 152);
     WORK(r20, 160); WORK(r21, 168); WORK(r22, 176); WORK(r23, 184);
@@ -830,6 +859,16 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
     WORK(r28, 224); WORK(r29, 232); WORK(r30, 240); WORK(r31, 248);
     
     #undef WORK
+    
+    // Shuffle pressure: saturate port 5 (4 permutes per iter)
+    r0 = _mm512_permutex_pd(r0, 0x4E);
+    r8 = _mm512_permutex_pd(r8, 0x4E);
+    r16 = _mm512_permutex_pd(r16, 0x4E);
+    r24 = _mm512_permutex_pd(r24, 0x4E);
+    
+    // Mask register pressure: compare and blend
+    __mmask8 mk0 = _mm512_cmp_pd_mask(r0, r8, _CMP_NEQ_OQ);
+    r0 = _mm512_mask_blend_pd(mk0, r0, r8);
     
     idx = (idx + 256) & MASK;
   }
@@ -854,7 +893,8 @@ uint64_t RunHyperStress_AVX512(uint64_t seed, int complexity,
   
   double out[8];
   _mm512_storeu_pd(out, sum);
-  uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7;
+  uint64_t gint = g0 ^ g1 ^ g2 ^ g3 ^ g4 ^ g5 ^ g6 ^ g7 ^
+                  g8 ^ g9 ^ g10 ^ g11 ^ g12 ^ g13 ^ g14 ^ g15;
   double final_val = out[0] + out[1] + out[2] + out[3] +
                      out[4] + out[5] + out[6] + out[7] + (double)gint;
   volatile double sink = final_val;
