@@ -105,10 +105,16 @@ constexpr int kReaderIntervalMs = 1000; // contiguous measurement windows
 std::mutex g_powerMutex;
 CpuPowerSample g_cachedPower;
 PowerSampleQueue g_sampleQueue; // every reading, for the watchdog's sample log
+uint64_t g_lastPublishedTick = 0;
 void PublishPower(CpuPowerSample sample) {
   std::lock_guard<std::mutex> lock(g_powerMutex);
   if (sample.watts > 0) {
-    sample.tick = GetTick();
+    uint64_t now = GetTick();
+    if (now <= g_lastPublishedTick) {
+      now = g_lastPublishedTick + 1;
+    }
+    g_lastPublishedTick = now;
+    sample.tick = now;
     g_cachedPower = sample;
     g_sampleQueue.Push(sample);
   } else {
@@ -346,6 +352,10 @@ void PowerThreadMain() {
 
 void StartPowerMeasurement() {
   if (g_powerThread.joinable()) return;
+  {
+    std::lock_guard<std::mutex> lock(g_powerMutex);
+    g_lastPublishedTick = 0;
+  }
   PublishPower(CpuPowerSample{});
   if (!g_stopEvent) g_stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (!g_stopEvent) return;

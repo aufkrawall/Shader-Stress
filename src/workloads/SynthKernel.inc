@@ -7,6 +7,8 @@
 //   SK_STORE(p, v)      aligned store
 //   SK_SET1(x)          broadcast
 //   SK_MUL(a, b)        a * b
+//   SK_ADD(a, b)        a + b
+//   SK_SUB(a, b)        a - b
 //   SK_FMADD(a, b, c)   a * b + c   (fused on FMA ISAs, mul+add otherwise)
 //   SK_FNMADD(a, b, c)  c - a * b
 //   SK_BLOCKS           radix-4 blocks per complexity unit
@@ -42,16 +44,19 @@
 
   // Butterfly with twiddle w:      (x, y) -> (k*x + w*y,  w*y - k*x)
   // Butterfly with twiddle conj(w):(x, y) -> (k*x + w'*y, w'*y - k*x)
+  // Unfused k*x multiply + add/sub exercises Zen 3 FADD pipes (FP2/FP3)
+  // in parallel with FMA/MUL (FP0/FP1).
 #define SK_BFLY(xr, xi, yr, yi)                                               \
   do {                                                                        \
     SK_VEC p_ = SK_MUL(wr, yr), q_ = SK_MUL(wr, yi);                          \
     SK_VEC tr_ = SK_FNMADD(wi, yi, p_); /* wr*yr - wi*yi */                   \
     SK_VEC ti_ = SK_FMADD(wi, yr, q_);  /* wr*yi + wi*yr */                   \
-    SK_VEC nr_ = SK_FMADD(xr, kk, tr_);                                       \
-    yr = SK_FNMADD(xr, kk, tr_);                                              \
+    SK_VEC kxr_ = SK_MUL(xr, kk), kxi_ = SK_MUL(xi, kk);                      \
+    SK_VEC nr_ = SK_ADD(kxr_, tr_);                                           \
+    yr = SK_SUB(tr_, kxr_);                                                   \
     xr = nr_;                                                                 \
-    SK_VEC ni_ = SK_FMADD(xi, kk, ti_);                                       \
-    yi = SK_FNMADD(xi, kk, ti_);                                              \
+    SK_VEC ni_ = SK_ADD(kxi_, ti_);                                           \
+    yi = SK_SUB(ti_, kxi_);                                                   \
     xi = ni_;                                                                 \
   } while (0)
 #define SK_BFLY_CONJ(xr, xi, yr, yi)                                          \
@@ -59,11 +64,12 @@
     SK_VEC p_ = SK_MUL(wr, yr), q_ = SK_MUL(wr, yi);                          \
     SK_VEC tr_ = SK_FMADD(wi, yi, p_);  /* wr*yr + wi*yi */                   \
     SK_VEC ti_ = SK_FNMADD(wi, yr, q_); /* wr*yi - wi*yr */                   \
-    SK_VEC nr_ = SK_FMADD(xr, kk, tr_);                                       \
-    yr = SK_FNMADD(xr, kk, tr_);                                              \
+    SK_VEC kxr_ = SK_MUL(xr, kk), kxi_ = SK_MUL(xi, kk);                      \
+    SK_VEC nr_ = SK_ADD(kxr_, tr_);                                           \
+    yr = SK_SUB(tr_, kxr_);                                                   \
     xr = nr_;                                                                 \
-    SK_VEC ni_ = SK_FMADD(xi, kk, ti_);                                       \
-    yi = SK_FNMADD(xi, kk, ti_);                                              \
+    SK_VEC ni_ = SK_ADD(kxi_, ti_);                                           \
+    yi = SK_SUB(ti_, kxi_);                                                   \
     xi = ni_;                                                                 \
   } while (0)
 

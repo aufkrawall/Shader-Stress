@@ -145,6 +145,8 @@ NOINLINE uint64_t SynthKernel128(uint64_t seed, int complexity, KernelDiag *diag
 #define SK_STORE(p, v) vst1q_f64((p), (v))
 #define SK_SET1(x) vdupq_n_f64(x)
 #define SK_MUL(a, b) vmulq_f64((a), (b))
+#define SK_ADD(a, b) vaddq_f64((a), (b))
+#define SK_SUB(a, b) vsubq_f64((a), (b))
 #define SK_FMADD(a, b, c) vfmaq_f64((c), (a), (b))
 #define SK_FNMADD(a, b, c) vfmsq_f64((c), (a), (b))
 #define SK_BLOCKS SYNTH_BLOCKS_SSE2
@@ -156,6 +158,8 @@ NOINLINE uint64_t SynthKernel128(uint64_t seed, int complexity, KernelDiag *diag
 #define SK_STORE(p, v) _mm_store_pd((p), (v))
 #define SK_SET1(x) _mm_set1_pd(x)
 #define SK_MUL(a, b) _mm_mul_pd((a), (b))
+#define SK_ADD(a, b) _mm_add_pd((a), (b))
+#define SK_SUB(a, b) _mm_sub_pd((a), (b))
 #define SK_FMADD(a, b, c) _mm_add_pd(_mm_mul_pd((a), (b)), (c))
 #define SK_FNMADD(a, b, c) _mm_sub_pd((c), _mm_mul_pd((a), (b)))
 #define SK_BLOCKS SYNTH_BLOCKS_SSE2
@@ -167,6 +171,8 @@ NOINLINE uint64_t SynthKernel128(uint64_t seed, int complexity, KernelDiag *diag
 #define SK_STORE(p, v) (*(p) = (v))
 #define SK_SET1(x) (x)
 #define SK_MUL(a, b) ((a) * (b))
+#define SK_ADD(a, b) ((a) + (b))
+#define SK_SUB(a, b) ((a) - (b))
 #define SK_FMADD(a, b, c) ((a) * (b) + (c))
 #define SK_FNMADD(a, b, c) ((c) - (a) * (b))
 #define SK_BLOCKS SYNTH_BLOCKS_GENERIC
@@ -178,6 +184,8 @@ NOINLINE uint64_t SynthKernel128(uint64_t seed, int complexity, KernelDiag *diag
 #undef SK_STORE
 #undef SK_SET1
 #undef SK_MUL
+#undef SK_ADD
+#undef SK_SUB
 #undef SK_FMADD
 #undef SK_FNMADD
 #undef SK_BLOCKS

@@ -89,6 +89,7 @@ def summarize_samples(log, warmup, measure, exit_code=0, interval=1.0, max_gap=3
         raise ValueError(f"workload exited with code {exit_code}; measurement rejected")
     samples = []
     previous_tick = -1
+    previous_sample = None
     first_ms = round((warmup + interval) * 1000)  # first window starting after warmup
     end_ms = round((warmup + measure) * 1000)
     for line in log.splitlines():
@@ -98,9 +99,13 @@ def summarize_samples(log, warmup, measure, exit_code=0, interval=1.0, max_gap=3
         tick, watts, jobs = int(match[1]), float(match[2]), int(match[3])
         if not math.isfinite(watts) or not 0 < watts < 1000:
             raise ValueError("invalid power reading")
-        if tick <= previous_tick:
+        curr_sample = (watts, jobs, match[4], match[5], match[6])
+        if tick < previous_tick or (tick == previous_tick and curr_sample == previous_sample):
             raise ValueError("duplicate/out-of-order acquisition timestamp")
+        if tick == previous_tick:
+            tick = previous_tick + 1
         previous_tick = tick
+        previous_sample = curr_sample
         if first_ms <= tick <= end_ms:
             samples.append((tick, watts, jobs, sensor(match[4]), sensor(match[5]),
                             sensor(match[6])))

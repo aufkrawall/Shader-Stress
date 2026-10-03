@@ -21,15 +21,20 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
 
 - Buffer `SYNTH_BUF_KIB` (512) per thread, AoSoA complex vectors (re[W], im[W]).
 - Pass = radix-4 blocks {j, j+s, j+2s, j+3s}, stride s cycles 1/4/16/64. Each block:
-  8 loads, `SYNTH_ROUNDS` (2) x 4 butterflies (8 FMA-pipe ops each: 2 MUL + 6 FMA),
-  8 stores, plus 4 IMUL/rotate/xor chains, 3 adds and one 64-bit DIV.
+  8 loads, `SYNTH_ROUNDS` (2) x 4 butterflies (10 FP ops each: 4 MUL + 2 FMA on
+  FP0/FP1 pipes, plus 2 ADD + 2 SUB on dedicated FP2/FP3 pipes; 80 FP ops total
+  per block), 8 stores, plus 4 IMUL/rotate/xor chains, 3 adds and one 64-bit DIV.
 - Butterfly (x, y) -> (k x + w y, w y - k x), w = e^i/sqrt2, conj(w) in stage 2.
+  `k x` is multiplied once on FP0/FP1 and combined with `w y` via explicit `SK_ADD`/`SK_SUB`
+  on dedicated FADD pipes (FP2/FP3 on Zen 3), activating all 4 FP execution pipes
+  simultaneously. Package power effect: +4.4 W AVX2 on Ryzen 7 5700X (P004).
 - Budget: `complexity * SYNTH_BLOCKS_<ISA>` blocks, rounded up to whole passes.
-- SSE2 path uses separate mul/add (no FMA; twice the FP uops); NEON/AVX2/AVX-512 fused.
+- SSE2 path uses separate mul/add (no FMA; twice the FP uops); NEON/AVX2/AVX-512 use
+  explicit SIMD with separated ADD/SUB and FMA/MUL.
 - Measured single-thread (Ryzen 7 5700X, `--perf-stats`, TSC 3.4 GHz vs ~4.6 GHz core):
-  AVX2 ~28.4 TSC cycles/block = ~1.67 FMA-pipe ops per core cycle (83% of 2/cycle);
-  SSE2 ~29 TSC cycles/block = ~2.4 FP ops per core cycle (of 4 pipes). 3.5.4: AVX2
-  0.31, SSE2 ~0.9 — on `inf` data.
+  AVX2 ~28.4 TSC cycles/block = ~1.67 FMA-pipe ops per core cycle;
+  SSE2 ~29 TSC cycles/block = ~2.4 FP ops per core cycle (of 4 pipes). AVX2 now
+  exercises both FMA units and FADD units concurrently without register spills.
 
 ## Other workloads
 
@@ -63,11 +68,11 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
   LLVM's SLP vectorizer packed the integer mul/rotate/xor chains into ymm/zmm registers,
   so the AVX2 loop spilled/reloaded three ymm registers per block and the 128-bit
   "SSE2" kernel ran ymm integer code on v3 builds. LTO re-runs SLP at link time, hence
-  native objects. Now: 0 ymm/zmm stack ops, 48 explicit FMAs per wide kernel, one DIV
-  per block in every x64 build (`tests/run_tests.py` `test_kernel_codegen`); the
-  `win-v3-slp` variant reproduces the spills. Zig v3 (Clang 20) showed no ymm spills
-  before the change. Package-power effect: measured in P002 (no significant delta —
-  see [power-ledger.md](power-ledger.md)).
+  native objects. Now: 0 ymm/zmm stack ops, 16 explicit FMAs + 32 MUL + 16 ADD + 16 SUB
+  per wide kernel, one DIV per block in every x64 build (`tests/run_tests.py`
+  `test_kernel_codegen`); the `win-v3-slp` variant reproduces the spills. Zig v3 (Clang 20)
+  showed no ymm spills before the change. Package-power effect: +4.4 W AVX2 on 5700X
+  (see [power-ledger.md](power-ledger.md) P004).
 - **Native MSVC comparison build** (`bin/x64-msvc-v3`): `/O2 /Ob3 /fp:strict /arch:AVX2
   /GL` (+`/LTCG`), kernels `/GL-` with `#pragma loop(no_vector)` on the block loop.
   Every object uses the same `/arch`: header inline functions are COMDATs and the linker

@@ -30,6 +30,8 @@ uint64_t SynthKernelAVX2(uint64_t seed, int complexity, KernelDiag *diag) {
 #define SK_STORE(p, v) _mm256_store_pd((p), (v))
 #define SK_SET1(x) _mm256_set1_pd(x)
 #define SK_MUL(a, b) _mm256_mul_pd((a), (b))
+#define SK_ADD(a, b) _mm256_add_pd((a), (b))
+#define SK_SUB(a, b) _mm256_sub_pd((a), (b))
 #define SK_FMADD(a, b, c) _mm256_fmadd_pd((a), (b), (c))
 #define SK_FNMADD(a, b, c) _mm256_fnmadd_pd((a), (b), (c))
 #define SK_BLOCKS SYNTH_BLOCKS_AVX2
@@ -40,6 +42,8 @@ uint64_t SynthKernelAVX2(uint64_t seed, int complexity, KernelDiag *diag) {
 #undef SK_STORE
 #undef SK_SET1
 #undef SK_MUL
+#undef SK_ADD
+#undef SK_SUB
 #undef SK_FMADD
 #undef SK_FNMADD
 #undef SK_BLOCKS
@@ -57,6 +61,8 @@ uint64_t SynthKernelAVX512(uint64_t seed, int complexity, KernelDiag *diag) {
 #define SK_STORE(p, v) _mm512_store_pd((p), (v))
 #define SK_SET1(x) _mm512_set1_pd(x)
 #define SK_MUL(a, b) _mm512_mul_pd((a), (b))
+#define SK_ADD(a, b) _mm512_add_pd((a), (b))
+#define SK_SUB(a, b) _mm512_sub_pd((a), (b))
 #define SK_FMADD(a, b, c) _mm512_fmadd_pd((a), (b), (c))
 #define SK_FNMADD(a, b, c) _mm512_fnmadd_pd((a), (b), (c))
 #define SK_BLOCKS SYNTH_BLOCKS_AVX512
@@ -67,6 +73,8 @@ uint64_t SynthKernelAVX512(uint64_t seed, int complexity, KernelDiag *diag) {
 #undef SK_STORE
 #undef SK_SET1
 #undef SK_MUL
+#undef SK_ADD
+#undef SK_SUB
 #undef SK_FMADD
 #undef SK_FNMADD
 #undef SK_BLOCKS

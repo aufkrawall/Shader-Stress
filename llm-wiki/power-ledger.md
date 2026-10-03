@@ -46,7 +46,7 @@ heavier per-cycle current, matching the boost/backoff model).
 | P001 | compiler | Establish the first measured baseline and the best toolchain: `x64-llvm-v3` (baseline) vs `x64-zig-v3` vs `x64-msvc-v3`, same commit | all | accepted (MSVC power baseline; short-mode only, needs benchmark confirm) |
 | P002 | flag | Quantify the SLP fix: `x64-llvm-v3-slp` (old kernel codegen, ymm spills) vs `x64-llvm-v3` | scalar, avx2 | inconclusive on power (+-0.2 W); fix kept for throughput (+15-18% score per watt) |
 | P003 | knob | Smaller buffer / more rounds: two SMT threads x 512 KiB overflow the 512 KiB L2; start with 128 KiB x 4 rounds (`--sweep`) | scalar, avx2 | accepted (keep 512x2 default: all alternatives lose 7-22 W) |
-| P004 | kernel | Zen 3 FADD pipes idle in the AVX2 kernel: butterflies issue only MUL/FMA (FP0/FP1), so FP2/FP3 sit idle; add independent norm-preserving add/sub work on live data (verify pipe mapping first) | avx2 (scalar shares the body) | open |
+| P004 | kernel | Zen 3 FADD pipes idle in the AVX2 kernel: butterflies issue only MUL/FMA (FP0/FP1), so FP2/FP3 sit idle; add independent norm-preserving add/sub work on live data (verify pipe mapping first) | avx2 (scalar shares the body) | accepted (+4.4 W avx2, -14 MHz eff clock, +26 jobs/s; keeps Zen 3 FADD pipes active) |
 | P005 | kernel | Integer network: the g0..g7 chains are serial across blocks (multiply+rotate latency, one 64-bit DIV); restructure for more independent GPR work, keep DIV + verification | scalar, avx2 | open |
 | P006 | flag | `-mtune=znver3` (`win-v3-znver3`) — mostly codegen of the realistic sim | all | rejected (+1.7 W avx2 at 91 C thermal cap — untrustworthy; sim/scalar within noise) |
 | P007 | flag | `-funroll-loops` / LTO / strict aliasing one at a time (`win-v3-nounroll`, `-nolto`, `-strictalias`) for the realistic sim | scalar-sim | done: nounroll + nolto rejected (noise); strictalias accepted (+1.9 W sim, no thermal cap) |
@@ -58,6 +58,41 @@ heavier per-cycle current, matching the boost/backoff model).
 ## Entries
 
 Newest first. Copy the template.
+
+### P004 — Zen 3 dedicated FADD pipes active: +4.4 W avx2, -14 MHz eff clock (accepted)
+- Date: 2026-10-03. Type: kernel.
+- Change (exactly one): In `SynthKernel.inc`, separated vector scaling by `kk` and twiddle
+  rotation into explicit `SK_ADD`/`SK_SUB` operations alongside FMADD/MUL (`SK_BFLY` and
+  `SK_BFLY_CONJ`). Instead of computing `kk*x` twice in FMA on FP0/FP1, `kk*x` is computed once
+  on FP0/FP1, and addition/subtraction execute on Zen 3 dedicated FADD pipes (FP2/FP3) in parallel.
+  Codegen audit: wide kernels shift from 48 FMA / 0 spills to 16 FMA + 32 MUL + 16 ADD + 16 SUB
+  (80 FP ops total, 48 on FP0/FP1, 32 on FP2/FP3; 0 spills).
+  Also includes measurement infrastructure fix in `src/core/PowerMeasure.cpp` (monotonically
+  strictly increasing sample ticks to prevent Windows 15.6 ms timer tick collisions).
+- Baseline: P004-base (GitHead 510dabb, clean LLVM v3 build) — measured on top of P007c.
+- Candidate(s): P004-fadd.
+- Conditions: short mode (8 s warmup + 15 s window, 5 interleaved repeats, 30 s preheat
+  on P004-base avx2), all 3 ISAs, all 16 threads, background load 7.8-9.9% per run
+  (light browser load by the user), avx2 Tmax 90.9-91.6 C (thermal-limit flag set, all arms alike).
+- Command: python scripts/power_measure.py --label P004-fadd --exe audit/power-baselines/P004-base/ShaderStress.com,audit/power-baselines/P004-fadd/ShaderStress.com --baseline P004-base --sample-interval 1.3
+- Result:
+  | Candidate | ISA | Runs | W (SD) | dW vs base (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Vcore | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | P004-fadd | scalar-sim | 5 | 112.9 (0.4) | -0.4 +-0.6 | 4467 | -1 +-5 | 82.4 | 1.233 | 5079 | inconclusive (within noise) |
+  | P004-fadd | scalar | 5 | 118.6 (0.4) | -0.3 +-0.9 | 4402 | -1 +-6 | 88.0 | 1.194 | 252 | inconclusive (within noise) |
+  | P004-fadd | avx2 | 5 | 133.3 (0.3) | +4.4 +-0.8 | 4278 | -14 +-6 | 91.6 (thermal limit) | 1.144 | 269 | better (more power) |
+  | P004-base | scalar-sim | 5 | 113.2 (0.2) | - | 4467 | - | 82.3 | 1.233 | 5081 | baseline |
+  | P004-base | scalar | 5 | 118.9 (0.4) | - | 4403 | - | 87.9 | 1.188 | 250 | baseline |
+  | P004-base | avx2 | 5 | 128.9 (0.5) | - | 4292 | - | 91.1 (thermal limit) | 1.155 | 243 | baseline |
+- Verdict: accepted for AVX2 — +4.4 W package power (statistically significant, CI +-0.8 W),
+  lower effective clock (-14 MHz, heavier per-cycle current causing boost back-off), and higher
+  throughput (+26 jobs/s, 269 vs 243). Neither scalar-sim (-0.4 W) nor scalar (-0.3 W) are worse
+  (both within noise and clocks tied within 1 MHz).
+- Side effects: golden checksums: scalar and scalar-sim identical, avx2 golden checksum updated
+  from 0x809cbbbe4712cf23 to 0x72c9ed423773e060 (re-recorded via `run_tests.py --stress --record-golden`);
+  test suite 161/161 green incl. UBSan/ASan.
+- Evidence: audit/power-measurements/P004-fadd-20261003-200919-27452-00/ (local).
+- Follow-ups: P005 integer network restructuring next. Confirm in benchmark mode (P000).
 
 ```
 ### P007c — strict aliasing on: +1.9 W scalar-sim, the sim's first real move (accepted)

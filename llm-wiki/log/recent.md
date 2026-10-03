@@ -1,5 +1,25 @@
 # Recent Changes Log
 
+## 2026-10-03 — P004 Zen 3 FADD pipes active: +4.4 W AVX2 (accepted), timestamp monotonicity fix
+
+- P004 (`P004-fadd` vs `P004-base` LLVM v3, 3 ISAs x 5 interleaved repeats, 16 threads):
+  AVX2 package power +4.4 ± 0.8 W (133.3 W vs 128.9 W, decisive accept), effective clock
+  -14 ± 6 MHz (heavier workload per cycle backs off boost), throughput +26 jobs/s (269 vs 243).
+  Scalar (-0.3 W) and scalar-sim (-0.4 W) tied within noise and clocks tied within 1 MHz.
+  Mechanism: `SynthKernel.inc` separated vector scaling by `kk` and twiddle rotation into
+  explicit `SK_ADD`/`SK_SUB` operations alongside FMADD/MUL. Instead of computing `kk*x` twice
+  in FMA on FP0/FP1, `kk*x` is computed once on FP0/FP1, and addition/subtraction execute
+  on Zen 3 dedicated FADD pipes (FP2/FP3) in parallel, activating all 4 FP execution pipes.
+  Codegen audit: wide kernels shift from 48 FMA / 0 spills to 16 FMA + 32 MUL + 16 ADD + 16 SUB
+  (80 FP ops total, 48 on FP0/FP1, 32 on FP2/FP3; 0 spills).
+- Golden checksum: scalar and scalar-sim identical; avx2 re-recorded from 0x809cbbbe4712cf23
+  to 0x72c9ed423773e060. Tests: 161/161 green incl. UBSan/ASan.
+- Tooling/logging fix: `PublishPower` (`src/core/PowerMeasure.cpp`) now enforces strict
+  timestamp monotonicity (`now = g_lastPublishedTick + 1` if within same 15.6 ms Windows
+  timer tick), and `scripts/power_measure.py` accommodates distinct same-tick readings
+  without falsely flagging duplicate readings.
+- Next in backlog: P005 integer network restructuring, P008 PGO, P000 benchmark validation.
+
 ## 2026-10-03 — Handoff: power session paused, state ready to resume (P001-P007 done)
 
 - Working tree is clean at 3993947; `run_tests.py` 121/121 and `--stress --sanitize`

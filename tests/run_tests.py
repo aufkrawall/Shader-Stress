@@ -383,7 +383,7 @@ def test_kernel_codegen(b):
         for name, expect in widest.items():
             r = report.get(name)
             ok = (r is not None and not r["spills"] and r["div"] == 1 and r["widest"] == expect and
-                  (name == "SynthKernel128" or r["fma"] == 48))
+                  (name == "SynthKernel128" or r["fma"] == 16))
             check(ok, f"{build} {name}: explicit SIMD only, no wide spills",
                   str({k: v for k, v in (r or {}).items() if k != "spills"}) +
                   (" " + "; ".join(r["spills"][:3]) if r else ""))

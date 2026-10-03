@@ -81,12 +81,13 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
 
 ## Open questions / stale-risk
 
-- Power state after P001-P007 (short-mode A/B on the 5700X): MSVC v3 draws most on the
-  synthetics (power baseline for kernel/knob work); strict aliasing is the accepted
-  default (+1.9 W sim); SLP-free kernels, `-funroll-loops`, `-flto` and 512 KiB x 2
-  defaults all kept. Absolute benchmark-mode watts vs the targets (>= ~115 W sim,
-  >= ~135 W scalar, >= ~140-145 W AVX2) are still unmeasured — first benchmark-mode
-  session is backlog item P000. Procedure and full history: [power-ledger.md](power-ledger.md).
+- Power state after P001-P007, P004 (short-mode A/B on the 5700X): FADD pipe separation
+  accepted for wide kernels (+4.4 W AVX2); strict aliasing is the accepted
+  default (+1.9 W sim); MSVC v3 draws most on the synthetics (power baseline for kernel/knob work);
+  SLP-free kernels, `-funroll-loops`, `-flto` and 512 KiB x 2 defaults all kept.
+  Absolute benchmark-mode watts vs the targets (>= ~115 W sim, >= ~135 W scalar,
+  >= ~140-145 W AVX2) are still unmeasured — first benchmark-mode session is backlog item P000.
+  Procedure and full history: [power-ledger.md](power-ledger.md).
 - AVX-512 kernel only compile-tested (no AVX-512 CPU available locally), including the MSVC build; `SYNTH_BLOCKS_AVX512` calibration is an estimate.
 - MSVC build: Windows x64 only, no ARM64/baseline/v4 variants, no sanitizer/PGO support.
 - Linux/macOS binaries are cross-compiled only; not executed in this environment.

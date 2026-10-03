@@ -21,6 +21,7 @@ Target version: 3.6.0 (`VERSION`).
 - **Synthetic kernels lost register space to compiler auto-vectorization.** LLVM's SLP vectorizer packed the integer multiply/rotate network into vector registers, so the AVX2 hot loop of the x64-v3 build spilled and reloaded three 256-bit registers per block, and the 128-bit (SSE2) kernel executed 256-bit integer code on v3 builds. The kernels are now built without SLP and outside LTO; disassembly of every x64 build shows no 256/512-bit spills (checked by the test suite). Effect on package power: not yet measured.
 - **Text with non-ASCII characters was truncated byte-wise** in console output, the wizard and Linux temp paths; numeric options accepted look-alike characters (`--threads ı` ran with 1 thread).
 - **Power readout lost its decimals on systems with a decimal-comma locale** (e.g. German Windows).
+- **Power readout timestamp collisions during rapid sensor reads**: when LibreHardwareMonitor returned multiple readings within the 15.6 ms Windows timer tick resolution, `PublishPower` now guarantees strictly monotonic acquisition timestamps, preventing spurious duplicate-timestamp errors during high-load power measurements.
 
 ### New
 
@@ -43,6 +44,7 @@ Target version: 3.6.0 (`VERSION`).
 ### Improved
 
 - **Synthetic kernels rebuilt as unitary radix-4 butterfly networks** (FFT-like, store-every-result over a 512 KiB/thread buffer) with an independent integer multiply/rotate/divide network. Single-thread `--perf-stats` on a Ryzen 7 5700X: AVX2 issues about 5x more FMA-pipe operations per cycle than 3.5.4 (about 83% of peak), and SSE2 about 2.7x more FP operations per cycle. Package power was not measured in this change; use `sweep_power.ps1` (elevated) to measure and tune.
+- **Synthetic kernel butterflies utilize dedicated FADD execution units**: in `SynthKernel.inc`, vector scaling by `kk` and twiddle rotation are computed with explicit `SK_ADD`/`SK_SUB` operations alongside FMADD/MUL. On Zen 3 (Ryzen 7 5700X), this keeps dedicated 256-bit FADD execution units (FP2/FP3) fully active in parallel with FMA/MUL (FP0/FP1), increasing measured AVX2 package power by +4.4 ± 0.8 W (133.3 W vs 128.9 W, short A/B, 5 interleaved repeats, all 16 logical CPUs; ledger P004) with -14 MHz effective clock and +26 jobs/s.
 - **Topology-aware thread placement**: one thread per physical core before any SMT sibling, fastest cores first on hybrid CPUs (Windows EfficiencyClass, Linux `cpu_core`/`cpu_atom`/`cpu_capacity`), honouring the process affinity mask.
 - **Dynamic mode**: instant event-driven start/stop of workers, preemption of running jobs on role changes, 1 ms timer resolution while running, a staircase ramp phase (was a no-op loop), randomized cores for the 1-2 thread phases, and a single-core boost sweep phase. The phase name is shown in the GUI and CLI.
 - **Golden values** now run every 8 jobs in core-cycle mode.

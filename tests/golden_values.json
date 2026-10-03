@@ -5,7 +5,7 @@
     "x64": {
       "scalar": "0x7d2ec09626ec66d1",
       "scalar-sim": "0x58b1a15ca01f7216",
-      "avx2": "0x809cbbbe4712cf23"
+      "avx2": "0x72c9ed423773e060"
     }
   }
 }
