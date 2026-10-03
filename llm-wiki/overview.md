@@ -1,6 +1,6 @@
 # ShaderStress Overview
 
-Last verified: 2026-10-03 (v3.6.0 working tree; all 13 release targets built, `run_tests.py --stress --sanitize` green on Windows x64 / Ryzen 7 5700X).
+Last verified: 2026-10-03 (v3.6.0 working tree at 3993947; all 14 release targets built, `run_tests.py --stress --sanitize` 161/161 green on Windows x64 / Ryzen 7 5700X).
 
 ## Summary
 
@@ -54,10 +54,10 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
 ## Build
 
 - Windows: LLVM MinGW 20260519 (LLVM 22) and Zig 0.15.2 variants; Linux/macOS: Zig.
-- Flags: `-std=c++20 -O3 -fno-math-errno -funroll-loops -fno-strict-aliasing -fno-rtti -fno-exceptions -fno-stack-protector -fomit-frame-pointer -flto` (no LTO on macOS). **No `-ffast-math`** (bit-reproducibility).
+- Flags: `-std=c++20 -O3 -fno-math-errno -funroll-loops -fno-rtti -fno-exceptions -fno-stack-protector -fomit-frame-pointer -flto` (no LTO on macOS; strict aliasing is ON since P007c — see [power-ledger.md](power-ledger.md), so type-punning through unrelated pointer types is UB). **No `-ffast-math`** (bit-reproducibility).
 - Synthetic kernel sources are compiled as separate native objects (`-fno-lto -ffp-contract=off -fno-slp-vectorize`, `scripts/build_kernels.py`) so SLP cannot pack the integer chains into vector registers (see [opt-audit.md](opt-audit.md)).
 - Symbols: Windows PDB (`-g -gcodeview -Wl,--pdb=`), Linux split `shaderstress.debug`, macOS stripped.
-- Release targets (13): x64 baseline/v3/v4 + ARM64 for Windows (LLVM MinGW), x64/v3/ARM64 Windows (Zig), Linux x64/v3/v4/ARM64, macOS x64/ARM64.
+- Release targets (14): x64 baseline/v3/v4 + ARM64 for Windows (LLVM MinGW), x64/v3/ARM64 Windows (Zig), Linux x64/v3/v4/ARM64, macOS x64/ARM64, plus native MSVC v3 (`bin/x64-msvc-v3`, Windows-only) when VS C++ x64 tools are found.
 - `bin/x64-msvc-v3`: native MSVC comparison build, part of `all`/`windows` when VS C++ x64 tools are found (skipped otherwise and for `--sanitize`/PGO; error when requested explicitly via `msvc`); never archived. Discovery: `debug-tool-manifest.json`, then `vswhere`, then an existing x64 developer shell.
 - `experimental` = one-setting comparison builds (`win-v3-{nounroll,znver3,nolto,strictalias-off,slp}`, `zig-v3-nounroll`; `win-v3-strictalias` is a compat alias for `strictalias-off`); every `bin/<dir>` name is also a target alias.
 - `SHADERSTRESS_EXTRA_DEFINES` builds go to `<out>-tuning` without archives.
@@ -81,7 +81,12 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
 
 ## Open questions / stale-risk
 
-- Package power of the 3.6 kernels has not been measured yet (procedure: [power-optimization.md](power-optimization.md)); defaults (`SYNTH_BUF_KIB=512`, `SYNTH_ROUNDS=2`) are reasoned, not measured.
+- Power state after P001-P007 (short-mode A/B on the 5700X): MSVC v3 draws most on the
+  synthetics (power baseline for kernel/knob work); strict aliasing is the accepted
+  default (+1.9 W sim); SLP-free kernels, `-funroll-loops`, `-flto` and 512 KiB x 2
+  defaults all kept. Absolute benchmark-mode watts vs the targets (>= ~115 W sim,
+  >= ~135 W scalar, >= ~140-145 W AVX2) are still unmeasured — first benchmark-mode
+  session is backlog item P000. Procedure and full history: [power-ledger.md](power-ledger.md).
 - AVX-512 kernel only compile-tested (no AVX-512 CPU available locally), including the MSVC build; `SYNTH_BLOCKS_AVX512` calibration is an estimate.
 - MSVC build: Windows x64 only, no ARM64/baseline/v4 variants, no sanitizer/PGO support.
 - Linux/macOS binaries are cross-compiled only; not executed in this environment.

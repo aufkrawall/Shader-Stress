@@ -1,9 +1,9 @@
 # Power Optimization Runbook ("continue power draw optimization")
 
 Last verified: 2026-10-03. Stale-risk: medium — tooling verified by unit tests plus
-two full-load short sessions (P001: 3 toolchains x 3 ISAs x 5 repeats; P002: LLVM
-vs SLP codegen x 2 ISAs x 5 repeats) and one readable-evidence check; no
-benchmark-mode (180 s) session has been run with it yet.
+seven full-load short sessions (P001-P003, P006-P007 incl. flag-trio arms) and one
+readable-evidence check; no benchmark-mode (180 s) session has been run with it yet
+(backlog P000).
 
 When the user says **"continue power draw optimization"** (or similar), follow this page.
 Results go into [power-ledger.md](power-ledger.md); kernel/flag design background is in
@@ -136,7 +136,7 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
    preheat + arms x ISAs x repeats x ~30 s (2 x 3 x 5 = 30 runs ~ 15 min). Run it as a
    background command (agent shells time out); the elevated child keeps going even if the
    parent is killed and writes everything to
-   `audit/power-measurements/session-<time>-<label>-*/`. Restrict `--isas` only when the
+   `audit/power-measurements/<label>-<stamp>-<pid>-<nn>/`. Restrict `--isas` only when the
    change provably cannot affect the others.
    After accepting a change (or before claiming a target), confirm in the real benchmark:
    `python scripts/power_measure.py --mode benchmark --label P012-confirm --exe <base>,<cand>`
@@ -202,8 +202,8 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
 
 ## Open questions / stale-risk
 
-- First full-load sessions with this tooling have run (P001: 3 toolchains x 3 ISAs;
-  P002: LLVM vs SLP codegen). Observed short-mode noise floor at 5 repeats: paired
+- First full-load short sessions with this tooling have run (P001-P003, P006-P007
+  incl. flag-trio arms). Observed short-mode noise floor at 5 repeats: paired
   power CI95 ~1.3-2.5 W (runbook thresholds: 1 W power, 15 MHz clock). Ledger item P000
   still validates the short protocol against the benchmark (per-second power trace:
   is 8 s warmup past the boost/temperature transient? do short and benchmark A/B

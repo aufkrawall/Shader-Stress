@@ -1,7 +1,7 @@
 # Power Experiment Ledger
 
-Last verified: 2026-10-03. Stale-risk: low — P001/P002/P003 measured short-mode
-(benchmark-mode numbers still open).
+Last verified: 2026-10-03. Stale-risk: low — P001-P007 measured short-mode
+(benchmark-mode numbers still open: P000).
 
 Durable record of every power experiment (procedure and decision rules:
 [power-optimization.md](power-optimization.md)). Rules: one entry per experiment ID, one
@@ -324,5 +324,5 @@ Newest first. Copy the template.
 - Follow-ups: <new hypotheses, retry conditions>.
 ```
 
-(Measured entries: P001, P002 below. Tooling for effective clock/temperature/Vcore
+(Measured entries: P001-P003, P006-P007 below. Tooling for effective clock/temperature/Vcore
 capture, UAC self-elevation, snapshots and paired A/B summaries landed 2026-10-03.)

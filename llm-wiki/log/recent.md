@@ -1,5 +1,25 @@
 # Recent Changes Log
 
+## 2026-10-03 — Handoff: power session paused, state ready to resume (P001-P007 done)
+
+- Working tree is clean at 3993947; `run_tests.py` 121/121 and `--stress --sanitize`
+  161/161 green. Measured so far (all short-mode A/B on the 5700X, all in the ledger):
+  P001 toolchain choice (MSVC = power baseline, LLVM = release baseline),
+  P002 SLP codegen (noise — fix kept for throughput), P003 buffer/rounds (512 KiB x 2
+  default wins by 7-22 W), P006 znver3 (rejected, thermally capped), P007 flag trio
+  (nounroll/nolto noise, strictalias accepted +1.9 W sim and now the default).
+- To resume: read [power-ledger.md](../power-ledger.md) (backlog: P000 benchmark
+  validation, P004 FADD pipes, P005 integer network, P008 PGO, P009 scalar integer
+  scheduling, P003b/P010 retries) and [power-optimization.md](../power-optimization.md)
+  (runbook), rebuild with `python build.py`, re-snapshot the baseline (old P002-llvm
+  etc. snapshots record ebc7357-era binaries — reuse only if `SNAPSHOT.json` GitHead
+  equals HEAD and is clean), and continue one-change A/B per the runbook. Unused local
+  snapshots `P002-msvc-base` (dirty, never measured) and `P004-base` (fresh LLVM build
+  at 3993947, clean, never measured) sit in `audit/power-baselines/` (git-ignored):
+  keep `P004-base` as the next kernel baseline, delete `P002-msvc-base`.
+- Last verified: 2026-10-03. Next agent: take P000 or P004, set the ledger row to
+  `running` before measuring, and record background load per the runbook.
+
 ## 2026-10-03 — P007 flag trio done: strict aliasing +1.9 W sim (accepted), unroll/LTO noise
 
 - `win-v3-nounroll` and `win-v3-nolto` vs LLVM v3: all ISAs within noise (keep both

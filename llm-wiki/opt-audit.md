@@ -1,6 +1,6 @@
 # Power / Heat Design ("opt-audit")
 
-Last verified: 2026-10-03. Stale-risk: medium (defaults reasoned + single-thread measured; package power not yet measured — see [power-ledger.md](power-ledger.md); codegen verified by disassembly).
+Last verified: 2026-10-03. Stale-risk: medium (short-mode A/B measured P001-P007 on the 5700X — see [power-ledger.md](power-ledger.md); absolute benchmark-mode watts still open; codegen verified by disassembly).
 History before 3.6.0: [log/archive/opt-audit-2026-05-to-06.md](log/archive/opt-audit-2026-05-to-06.md) — its power comparisons are confounded (kernels ran on `inf`).
 
 ## Summary
@@ -66,7 +66,8 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
   native objects. Now: 0 ymm/zmm stack ops, 48 explicit FMAs per wide kernel, one DIV
   per block in every x64 build (`tests/run_tests.py` `test_kernel_codegen`); the
   `win-v3-slp` variant reproduces the spills. Zig v3 (Clang 20) showed no ymm spills
-  before the change. Package-power effect: **unmeasured**.
+  before the change. Package-power effect: measured in P002 (no significant delta —
+  see [power-ledger.md](power-ledger.md)).
 - **Native MSVC comparison build** (`bin/x64-msvc-v3`): `/O2 /Ob3 /fp:strict /arch:AVX2
   /GL` (+`/LTCG`), kernels `/GL-` with `#pragma loop(no_vector)` on the block loop.
   Every object uses the same `/arch`: header inline functions are COMDATs and the linker
@@ -112,9 +113,9 @@ load); never part of tests. Essentials:
 
 ## Open questions
 
-- Package power of the defaults is unmeasured; targets (5700X: scalar-sim >= ~115 W,
-  scalar >= ~135 W, AVX2 >= ~140-145 W) and the ordered hypotheses (compiler baseline,
-  SLP effect, buffer/rounds, idle Zen 3 FADD pipes, integer network dependencies, flags)
-  live in [power-ledger.md](power-ledger.md).
+- Absolute benchmark-mode watts vs the targets (5700X: scalar-sim >= ~115 W,
+  scalar >= ~135 W, AVX2 >= ~140-145 W) are still unmeasured; the ordered backlog
+  (P000 benchmark validation, P004 idle FADD pipes, P005 integer network, P008 PGO,
+  P009 scalar integer scheduling, P003b/P010 retries) lives in [power-ledger.md](power-ledger.md).
 - Raptor Lake and Zen 4/5 AVX-512 systems need their own measurements; consider
   per-CPU-family defaults if the optimum differs strongly.
