@@ -27,17 +27,29 @@ LHM_DEPS_FILES = [
     "LICENSE-MPL-2.0.txt",
     "NOTICE.txt",
 ]
-ZIG_DIR = BASE_DIR / "zig-x86_64-windows-0.15.2"
+SRC_DIR = BASE_DIR / "src"
+RESOURCE_RC = BASE_DIR / "resources" / "resource.rc"
+CLI_LAUNCHER_SOURCE = SRC_DIR / "launcher" / "cli_launcher.c"
+VERSION_FILE = BASE_DIR / "VERSION"
+
+
+def toolchain_dir(*parts):
+    """Toolchains live (git-ignored) under toolchains/; the repo root is a fallback
+    for older checkouts that extracted them there."""
+    preferred = BASE_DIR / "toolchains" / Path(*parts)
+    legacy = BASE_DIR / Path(*parts)
+    return preferred if preferred.exists() or not legacy.exists() else legacy
+
+
+ZIG_DIR = toolchain_dir("zig-x86_64-windows-0.15.2")
 ZIG_EXE = ZIG_DIR / "zig.exe"
-LLVM_MINGW_DIR = BASE_DIR / "llvm-mingw-20260519-ucrt-x86_64" / "llvm-mingw-20260519-ucrt-x86_64"
+LLVM_MINGW_DIR = toolchain_dir("llvm-mingw-20260519-ucrt-x86_64", "llvm-mingw-20260519-ucrt-x86_64")
 LLVM_MINGW_BIN = LLVM_MINGW_DIR / "bin"
 LLVM_OBJCOPY = LLVM_MINGW_BIN / "llvm-objcopy.exe"
-VERSION_FILE = BASE_DIR / "VERSION"
-CLI_LAUNCHER_SOURCE = BASE_DIR / "cli_launcher.c"
 
 # Extra preprocessor defines forwarded to every compile, taken from the
 # SHADERSTRESS_EXTRA_DEFINES environment variable (space separated). Used by
-# sweep_power.ps1 to override the kernel tuning knobs in Workloads.h
+# scripts/sweep_power.ps1 to override the kernel tuning knobs in src/workloads/Workloads.h
 # (e.g. SHADERSTRESS_EXTRA_DEFINES="-DSYNTH_BUF_KIB=256 -DSYNTH_ROUNDS=3").
 EXTRA_DEFINES = os.environ.get("SHADERSTRESS_EXTRA_DEFINES", "").split()
 
@@ -60,21 +72,25 @@ def load_version():
     return version_text, major, minor, patch
 
 
-# Source files
+# Source files (relative to the repo root; headers are included as "<dir>/<file>.h"
+# with -Isrc).
 SRC_COMMON = [
-    "Common.cpp", "CpuFeatures.cpp", "Topology.cpp", "Platform.cpp",
-    "SynthKernels.cpp", "SynthKernelsX86.cpp", "WorkloadRealistic.cpp",
-    "Decompress.cpp", "Verification.cpp", "Worker.cpp", "Scheduler.cpp",
-    "Watchdog.cpp", "RamStress.cpp", "IoStress.cpp", "PowerMeasure.cpp",
-    "CliArgs.cpp", "CliRun.cpp", "SelfTest.cpp", "CpuGuard.cpp", "ShaderStress.cpp",
+    "src/core/Common.cpp", "src/core/CpuFeatures.cpp", "src/core/Topology.cpp",
+    "src/core/Platform.cpp", "src/core/PowerMeasure.cpp", "src/core/CpuGuard.cpp",
+    "src/workloads/SynthKernels.cpp", "src/workloads/SynthKernelsX86.cpp",
+    "src/workloads/WorkloadRealistic.cpp", "src/workloads/Decompress.cpp",
+    "src/engine/Verification.cpp", "src/engine/Worker.cpp", "src/engine/Scheduler.cpp",
+    "src/engine/Watchdog.cpp", "src/engine/RamStress.cpp", "src/engine/IoStress.cpp",
+    "src/app/CliArgs.cpp", "src/app/CliRun.cpp", "src/app/SelfTest.cpp",
+    "src/app/ShaderStress.cpp",
 ]
 
 # Windows v3/v4 builds start in CpuGuard.cpp, which verifies the CPU supports the
 # build's ISA level before the CRT and static constructors run.
 GUARDED_CPUS = ("x86_64_v3", "x86_64_v4")
 GUARD_ENTRY = "ShaderStressGuardedEntry"
-SRC_FILES_WINDOWS = SRC_COMMON + ["Gui.cpp"]
-SRC_FILES_UNIX = SRC_COMMON + ["TerminalUtils.cpp"]
+SRC_FILES_WINDOWS = SRC_COMMON + ["src/app/Gui.cpp"]
+SRC_FILES_UNIX = SRC_COMMON + ["src/app/TerminalUtils.cpp"]
 
 # Build configurations
 # (target, out_dir, cpu, is_windows, archive_name, experimental)
@@ -141,7 +157,7 @@ def effective_out_dir(out_dir):
 def check_zig():
     if not ZIG_EXE.exists():
         log(f"ERROR: Zig not found at {ZIG_EXE}")
-        log("Please download Zig 0.15.2 and extract to zig-x86_64-windows-0.15.2/")
+        log("Please download Zig 0.15.2 and extract to toolchains/zig-x86_64-windows-0.15.2/")
         sys.exit(1)
 
 
@@ -149,7 +165,8 @@ def check_llvm_mingw():
     clang = LLVM_MINGW_BIN / "x86_64-w64-mingw32-clang++.exe"
     if not clang.exists():
         log(f"ERROR: LLVM MinGW not found at {LLVM_MINGW_DIR}")
-        log("Please download llvm-mingw and extract to llvm-mingw-*/")
+        log("Please download llvm-mingw 20260519 (ucrt-x86_64) and extract to "
+            "toolchains/llvm-mingw-20260519-ucrt-x86_64/")
         sys.exit(1)
 
 
@@ -171,6 +188,7 @@ def common_cxx_flags(out_dir):
     """
     flags = [
         "-std=c++20", "-O3",
+        "-I", str(SRC_DIR),
         "-fno-math-errno",
         "-fno-rtti",
         "-fno-exceptions",
@@ -216,14 +234,14 @@ def collect_warnings(stderr_bytes):
 def build_windows_resource(out_path):
     """Compile .rc resource file using llvm-windres"""
     res_file = out_path / "resource.res"
-    rc_src = BASE_DIR / "resource.rc"
+    rc_src = RESOURCE_RC
     if not rc_src.exists():
-        log("Warning: resource.rc not found, skipping resource compilation")
+        log("Warning: resources/resource.rc not found, skipping resource compilation")
         return None
     windres = LLVM_MINGW_BIN / "llvm-windres.exe"
     try:
         subprocess.run([str(windres), str(rc_src), "-o", str(res_file)],
-                       check=True, capture_output=True, cwd=BASE_DIR)
+                       check=True, capture_output=True, cwd=rc_src.parent)
         return str(res_file)
     except subprocess.CalledProcessError as e:
         log(f"Warning: Could not compile resource.rc: {e}")
@@ -444,8 +462,8 @@ def build_zig_target(config):
         if is_windows:
             res_file = out_path / "resource.res"
             try:
-                subprocess.run([str(ZIG_EXE), "rc", str(BASE_DIR / "resource.rc"), str(res_file)],
-                               check=True, capture_output=True, cwd=BASE_DIR)
+                subprocess.run([str(ZIG_EXE), "rc", str(RESOURCE_RC), str(res_file)],
+                               check=True, capture_output=True, cwd=RESOURCE_RC.parent)
                 src_files.append(str(res_file))
             except subprocess.CalledProcessError as e:
                 log(f"Warning: Could not compile resource.rc for {target}: {e}")

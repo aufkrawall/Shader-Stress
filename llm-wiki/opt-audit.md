@@ -17,7 +17,7 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
 3. **No serializing bottlenecks** (long dependent IDIV chains, latency-bound GPR chains).
 4. **Sharp transients** in dynamic mode (instant start/stop, preemption, 1 ms timer).
 
-## Synthetic kernel (SynthKernel.inc)
+## Synthetic kernel (src/workloads/SynthKernel.inc)
 
 - Buffer `SYNTH_BUF_KIB` (512) per thread, AoSoA complex vectors (re[W], im[W]).
 - Pass = radix-4 blocks {j, j+s, j+2s, j+3s}, stride s cycles 1/4/16/64. Each block:
@@ -57,7 +57,7 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
 
 ## Tuning
 
-`sweep_power.ps1` (elevated, creates full load) rebuilds with `SYNTH_BUF_KIB` x
+`scripts/sweep_power.ps1` (elevated, creates full load) rebuilds with `SYNTH_BUF_KIB` x
 `SYNTH_ROUNDS` grids and measures package watts in compute-only steady runs
 (`--no-ram --no-io --no-decompress`). After changing defaults, re-record golden
 checksums (`python tests/run_tests.py --stress --record-golden`).

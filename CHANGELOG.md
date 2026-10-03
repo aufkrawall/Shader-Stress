@@ -47,4 +47,5 @@ Target version: 3.6.0 (`VERSION`).
 - **Benchmark hashes** carry version 3.6. Scalar-sim (benchmark default) results stay comparable; AVX2/AVX-512/SSE2 jobs/s are not comparable with 3.5.x.
 - **GUI**: the redundant "Close" button is now "Core Cycle"; the ISA buttons are renamed to AVX-512 / AVX2 / SSE2 (or NEON) / Scalar (Realistic).
 - **Wizard**: added Core Cycle as option 4; Verify Hash moved to option 5.
+- **Repository layout**: sources moved to `src/{core,workloads,engine,app,launcher}`, plus `resources/`, `docs/` (`cli-report.md` is now `docs/cli.md`), `scripts/` (`sweep_power.ps1`, `measure.ps1`) and a git-ignored `toolchains/` folder (the old root-level toolchain location still works). Tests run binaries in `bin/test-work/`, so logs no longer land in the repo root.
 - **Experimental `-nounroll` builds** are no longer part of `python build.py` / release archives (`python build.py experimental`).

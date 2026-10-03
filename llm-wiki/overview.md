@@ -11,6 +11,13 @@ storage testers run on extra threads. Every job/pass is verified (see
 
 ## Source map
 
+Sources live under `src/<area>/` and are included as `"<area>/<file>.h"` (`-Isrc`).
+Areas: `core/` (Common, CpuFeatures, Topology, Platform, PowerMeasure, CpuGuard),
+`workloads/` (Workloads.h, SynthKernel*, WorkloadRealistic, Decompress), `engine/`
+(Scheduler, Worker, Watchdog, Verification, AuxStress, RamStress, IoStress), `app/` (Cli*,
+ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other folders:
+`resources/`, `docs/`, `scripts/`, `tools/`, `tests/`, git-ignored `toolchains/`.
+
 | File | Purpose |
 |------|---------|
 | `Common.h/.cpp` | Shared types, `AppState g_App`, `RunOptions g_RunOpts`, `WorkAssignment` packing, formatting helpers, workload resolution, golden init, benchmark hash |
@@ -31,7 +38,7 @@ storage testers run on extra threads. Every job/pass is verified (see
 | `Cli.h`, `CliArgs.cpp`, `CliRun.cpp`, `ShaderStress.cpp` | CLI parsing/help/wizard, commands + dashboard, entry points |
 | `SelfTest.cpp` | `--self-test` in-binary unit tests |
 | `Gui.cpp` | Windows GDI UI |
-| `build.py` | Build orchestration (LLVM MinGW + Zig), sanitizers, symbols, archives |
+| `build.py` | Build orchestration (LLVM MinGW + Zig from `toolchains/`), sanitizers, symbols, archives |
 | `tests/run_tests.py` | Test runner (lightweight / `--stress` smoke / `--sanitize`) |
 
 ## Modes (`RunMode`)
@@ -53,7 +60,7 @@ storage testers run on extra threads. Every job/pass is verified (see
 
 ## Tests
 
-- `python tests/run_tests.py`: CLI contract, source invariants, `--self-test`.
+- `python tests/run_tests.py`: CLI contract, source invariants (incl. repo layout), `--self-test`. Binaries run with cwd `bin/test-work/`.
 - `--stress`: bounded smoke runs (2 threads, 64 MiB RAM, 16 MiB I/O, <= 3 s) and golden checksums from `tests/golden_values.json` (x64; seed 42, complexity 1000).
 - `--sanitize`: UBSan and ASan builds of `win-baseline` running `--self-test`, hash roundtrip and repro.
 
@@ -67,6 +74,6 @@ storage testers run on extra threads. Every job/pass is verified (see
 
 ## Open questions / stale-risk
 
-- Package power of the 3.6 kernels has not been measured yet (needs elevated `sweep_power.ps1` on the target CPUs); defaults (`SYNTH_BUF_KIB=512`, `SYNTH_ROUNDS=2`) are reasoned, not measured.
+- Package power of the 3.6 kernels has not been measured yet (needs elevated `scripts/sweep_power.ps1` on the target CPUs); defaults (`SYNTH_BUF_KIB=512`, `SYNTH_ROUNDS=2`) are reasoned, not measured.
 - AVX-512 kernel only compile-tested (no AVX-512 CPU available locally); `SYNTH_BLOCKS_AVX512` calibration is an estimate.
 - Linux/macOS binaries are cross-compiled only; not executed in this environment.

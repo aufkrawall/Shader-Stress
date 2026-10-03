@@ -74,7 +74,27 @@ ShaderStress.com --repro 12345 1000 --isa avx2
 
 ## CLI Documentation
 
-The full command-line contract, platform behavior, exit codes, and examples are documented in [cli-report.md](cli-report.md).
+The full command-line contract, platform behavior, exit codes, and examples are documented in [docs/cli.md](docs/cli.md).
+
+## Repository layout
+
+```text
+src/core/        shared types, CPU detection/topology, platform, crash handling, power readout
+src/workloads/   synthetic SIMD kernels, realistic compiler sim, LZ decompression
+src/engine/      scheduler, workers, verification, watchdog, RAM/storage testers
+src/app/         CLI, GUI (Windows), entry points, built-in self-test
+src/launcher/    tiny Windows console launcher (ShaderStress.com)
+resources/       icon and Windows resource script
+docs/            CLI reference
+scripts/         power measurement / tuning helpers (create full load; run elevated)
+tests/           test runner and golden checksums
+tools/           non-mutating debug-tool discovery
+llm-wiki/        maintained project knowledge for agents/maintainers
+lhm-deps/        LibreHardwareMonitor runtime files fetched by build.py (path is part of the download URL)
+vendor/lhm/      PowerReader.cs helper, PawnIO scripts, downloaded LHM files (git-ignored binaries)
+toolchains/      LLVM MinGW / Zig (git-ignored)
+bin/, dist/      build output and release archives (git-ignored)
+```
 
 ## Build
 
@@ -85,8 +105,9 @@ Shader Stress uses:
 ### Requirements
 
 - Python 3
-- Windows: LLVM MinGW 20260519+ extracted under `llvm-mingw-*-ucrt-x86_64/`
-- Linux/macOS (and the Zig Windows variants): Zig 0.15.2 extracted under `zig-x86_64-windows-0.15.2/`
+- Windows: LLVM MinGW 20260519 (ucrt-x86_64) extracted to `toolchains/llvm-mingw-20260519-ucrt-x86_64/`
+- Linux/macOS (and the Zig Windows variants): Zig 0.15.2 extracted to `toolchains/zig-x86_64-windows-0.15.2/`
+- (`toolchains/` is git-ignored; the repo root is still accepted as a fallback location.)
 
 ### Build Commands
 

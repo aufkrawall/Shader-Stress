@@ -12,7 +12,7 @@ on `inf`, which masked errors.
 
 | Mechanism | Covers | Source anchors |
 |---|---|---|
-| Paired jobs | Every compute job: `NextComputeJob` hands out sequence numbers; pair id = seq >> 1 determines seed and complexity, so two consecutive jobs compute the same problem, normally on different cores. Results meet in `PairTable` (1024 slots, key = workload type + pair id + complexity). | `Verification.cpp: NextComputeJob, PairTable::Submit`; `Worker.cpp: RunComputeJob` |
+| Paired jobs | Every compute job: `NextComputeJob` hands out sequence numbers; pair id = seq >> 1 determines seed and complexity, so two consecutive jobs compute the same problem, normally on different cores. Results meet in `PairTable` (1024 slots, key = workload type + pair id + seed + complexity; the seed guards against stale jobs after a job-stream reset). | `src/engine/Verification.cpp: NextComputeJob, PairTable::Submit`; `src/engine/Worker.cpp: RunComputeJob` |
 | Mismatch resolution | Third run on the detecting core decides: reproduces own result -> suspect peer; matches peer -> suspect self; third value -> self non-deterministic. Logged with both CPUs, checksums and a `--repro` line. | `Worker.cpp: ResolveMismatch` |
 | Golden values | Seed 42, complexity 1000, computed at startup on the main thread; checked every 128 jobs (64 benchmark, 8 core-cycle). Catches faults common to all cores. | `Common.cpp: InitGoldenValues`, `Worker.cpp` |
 | Decompression | Every pass's output hash vs. the original data hash; failing datasets are rebuilt. | `Decompress.cpp: RunDecompressJob` |

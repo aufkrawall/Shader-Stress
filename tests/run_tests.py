@@ -44,9 +44,15 @@ def find_binary():
     return matches[0] if matches else None
 
 
+# Binaries write ShaderStress.log / Crash_* into their working directory; keep
+# those out of the repo root.
+WORK_DIR = os.path.join(PROJECT_ROOT, "bin", "test-work")
+
+
 def run(binary, args, timeout=60):
+    os.makedirs(WORK_DIR, exist_ok=True)
     try:
-        r = subprocess.run([binary] + args, capture_output=True, timeout=timeout, cwd=PROJECT_ROOT)
+        r = subprocess.run([binary] + args, capture_output=True, timeout=timeout, cwd=WORK_DIR)
         return r.returncode, r.stdout.decode(errors="replace"), r.stderr.decode(errors="replace")
     except subprocess.TimeoutExpired:
         return -1, "", "TIMEOUT"
@@ -175,7 +181,7 @@ def test_invariant_realistic_unchanged(b):
     """RunRealisticCompilerSim_V3 is user-pinned. Only change: 3.6.0 masked the
     rotate's right-shift count (`>> 64` was UB when src2 & 63 == 0; found by
     UBSan). Output is bit-identical (golden checksum 0x58b1a15ca01f7216)."""
-    src = _read("WorkloadRealistic.cpp")
+    src = _read("src/workloads/WorkloadRealistic.cpp")
     actual = _stable_source_hash(_extract_function(src, "RunRealisticCompilerSim_V3"))
     check(actual == "02290c1a756fd7099c973a4ea1662617c8fb92200ac9f26fcf6c477c2ffb3270",
           "RealisticCompilerSim_V3 source hash unchanged", actual)
@@ -183,8 +189,8 @@ def test_invariant_realistic_unchanged(b):
 
 def test_invariant_kernels_unitary_bounded(b):
     """Synthetic kernels: unitary butterflies (|w| == k), no inf-prone growth."""
-    hdr = _read("Workloads.h")
-    inc = _read("SynthKernel.inc")
+    hdr = _read("src/workloads/Workloads.h")
+    inc = _read("src/workloads/SynthKernel.inc")
     m_re = re.search(r"SYNTH_TW_RE = ([0-9.e-]+);", hdr)
     m_im = re.search(r"SYNTH_TW_IM = ([0-9.e-]+);", hdr)
     m_k = re.search(r"SYNTH_SCALE = ([0-9.e-]+);", hdr)
@@ -192,14 +198,14 @@ def test_invariant_kernels_unitary_bounded(b):
     if ok:
         wr, wi, k = float(m_re.group(1)), float(m_im.group(1)), float(m_k.group(1))
         ok = abs((wr * wr + wi * wi) - 0.5) < 1e-15 and abs(k * k - 0.5) < 1e-15
-    old_growth = "1.000001" in _read("SynthKernels.cpp") + inc
+    old_growth = "1.000001" in _read("src/workloads/SynthKernels.cpp") + inc
     check(ok and not old_growth and "SK_BFLY_CONJ" in inc and "SK_STORE(pa, ar)" in inc,
           "synthetic kernels are unitary (bounded, error-preserving)")
 
 
 def test_invariant_kernels_preemptible_and_strict_fp(b):
-    inc = _read("SynthKernel.inc")
-    k = _read("SynthKernels.cpp") + _read("SynthKernelsX86.cpp")
+    inc = _read("src/workloads/SynthKernel.inc")
+    k = _read("src/workloads/SynthKernels.cpp") + _read("src/workloads/SynthKernelsX86.cpp")
     build = _read("build.py")
     check("StopRequested()" in inc and k.count("#pragma clang fp contract(off)") >= 3 and
           '"-ffast-math"' not in build and "NOINLINE uint64_t RunComputeWorkload" in k,
@@ -207,23 +213,23 @@ def test_invariant_kernels_preemptible_and_strict_fp(b):
 
 
 def test_invariant_paired_verification(b):
-    worker = _read("Worker.cpp")
+    worker = _read("src/engine/Worker.cpp")
     check("GlobalPairTable().Submit" in worker and "ResolveMismatch" in worker and
           "g_Golden.values[type]" in worker and "RunDecompressJob" in worker,
           "every compute job paired + golden checks + verified decompression")
 
 
 def test_invariant_event_driven_scheduler(b):
-    sched = _read("Scheduler.cpp")
-    worker = _read("Worker.cpp")
+    sched = _read("src/engine/Scheduler.cpp")
+    worker = _read("src/engine/Worker.cpp")
     check("s_workCv.wait" in sched and "sleep_for(1ms)" not in worker and
-          "s_auxCv.wait" in sched and "WorkerSlotForCoreRank" in _read("Topology.h"),
+          "s_auxCv.wait" in sched and "WorkerSlotForCoreRank" in _read("src/core/Topology.h"),
           "workers/testers wake on events (no idle polling), topology-aware slots")
 
 
 def test_invariant_ram_io_verified(b):
-    ram = _read("RamStress.cpp")
-    io = _read("IoStress.cpp")
+    ram = _read("src/engine/RamStress.cpp")
+    io = _read("src/engine/IoStress.cpp")
     check("VerifyPattern" in ram and "RandomVerify" in ram and "16ull << 30" in ram and
           "VerifyIoChunk" in io and "FILE_FLAG_NO_BUFFERING" in io and "O_DIRECT" in io,
           "RAM and I/O testers verify every word (70%/16 GiB default RAM size)")
@@ -263,16 +269,16 @@ def test_cpu_level_guard(b):
             check(ret == 3 and "requires an x86-64-v" in err, f"cpu guard {rel}: clear refusal",
                   f"exit {ret}: {out}{err}")
     build = _read("build.py")
-    check("GUARD_ENTRY" in build and "constructor(101)" in _read("CpuGuard.cpp"),
+    check("GUARD_ENTRY" in build and "constructor(101)" in _read("src/core/CpuGuard.cpp"),
           "cpu guard wired into build (PE entry / ELF constructor)")
 
 
 def test_invariant_lhm(b):
-    power = _read("PowerMeasure.cpp")
-    hdr = _read("Common.h")
-    main_src = _read("CliRun.cpp")
+    power = _read("src/core/PowerMeasure.cpp")
+    hdr = _read("src/core/Common.h")
+    main_src = _read("src/app/CliRun.cpp")
     check('L"lhm\\\\PawnIO_setup.exe"' in power and "ShutdownPowerMeasurement" in hdr and
-          "ShutdownPowerMeasurement()" in main_src and 'L"Power: "' in _read("Watchdog.cpp") and
+          "ShutdownPowerMeasurement()" in main_src and 'L"Power: "' in _read("src/engine/Watchdog.cpp") and
           '"lhm"' in _read("build.py"),
           "LHM power readout wiring (lhm/ subfolder, shutdown, periodic log)")
 
@@ -280,12 +286,26 @@ def test_invariant_lhm(b):
 def test_invariant_file_sizes(b):
     """AGENTS.md: keep source files roughly <= 800 lines."""
     too_big = []
-    for f in glob.glob(os.path.join(PROJECT_ROOT, "*.cpp")) + glob.glob(os.path.join(PROJECT_ROOT, "*.h")):
+    for f in glob.glob(os.path.join(PROJECT_ROOT, "src", "**", "*.*"), recursive=True):
+        if not f.endswith((".cpp", ".h", ".inc", ".c")):
+            continue
         with open(f, encoding="utf-8", errors="replace") as fh:
             n = sum(1 for _ in fh)
         if n > 800:
             too_big.append(f"{os.path.basename(f)}={n}")
     check(not too_big, "source files <= 800 lines", ", ".join(too_big))
+
+
+def test_invariant_repo_layout(b):
+    """Sources live under src/<area>/, scripts/docs/resources in their folders."""
+    stray = [f for f in os.listdir(PROJECT_ROOT)
+             if f.endswith((".cpp", ".h", ".inc", ".c", ".rc", ".ico", ".ps1"))]
+    needed = ["src/core/Common.h", "src/workloads/Workloads.h", "src/engine/Scheduler.h",
+              "src/app/Cli.h", "src/launcher/cli_launcher.c", "resources/resource.rc",
+              "docs/cli.md", "scripts/sweep_power.ps1", "lhm-deps/SHA256SUMS.txt"]
+    missing = [n for n in needed if not os.path.exists(os.path.join(PROJECT_ROOT, n))]
+    check(not stray and not missing, "repository layout (no stray root sources)",
+          f"stray={stray} missing={missing}")
 
 
 LIGHTWEIGHT_TESTS = [
@@ -304,6 +324,7 @@ LIGHTWEIGHT_TESTS = [
     test_invariant_lhm,
     test_invariant_file_sizes,
     test_cpu_level_guard,
+    test_invariant_repo_layout,
 ]
 
 

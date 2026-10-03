@@ -148,14 +148,14 @@ upgrades; keep in sync with `LLVM_MINGW_DIR` / `ZIG_DIR` in `build.py`).
 | Windows symbols | `bin/<target>/ShaderStress.pdb` | CodeView via `-g -gcodeview -Wl,--pdb=` (LLVM MinGW); Zig builds emit their own PDB. Exe is stripped. |
 | Linux symbols | `bin/linux-*/shaderstress.debug` | Split with `llvm-objcopy --only-keep-debug`; binary carries a `.gnu_debuglink`. |
 | macOS symbols | none | Stripped, no dSYM (coverage gap). |
-| Crash report | `Crash_<date>_<time>_W<worker>/crash_info.txt` + `crash.dmp` in the working directory | Written by `CrashFilter` (`Platform.cpp`). Compact minidump (no full memory — RAM-test buffers would make it many GiB). Contains exception code, module offset, worker, logical CPU, workload, seed, complexity and a `--repro` line. |
-| Unix crash | stderr `[CRASH]` block | `CrashSignalHandler` (`Platform.cpp`): signal, worker, CPU, workload, seed, repro line. |
-| Run log | `ShaderStress.log` (working directory) | Topology, worker->CPU order, golden values, phase changes, per-minute health line, all CPU/RAM/I/O error details with suspect CPU. |
+| Crash report | `Crash_<date>_<time>_W<worker>/crash_info.txt` + `crash.dmp` in the working directory | Written by `CrashFilter` (`src/core/Platform.cpp`). Compact minidump (no full memory — RAM-test buffers would make it many GiB). Contains exception code, module offset, worker, logical CPU, workload, seed, complexity and a `--repro` line. |
+| Unix crash | stderr `[CRASH]` block | `CrashSignalHandler` (`src/core/Platform.cpp`): signal, worker, CPU, workload, seed, repro line. |
+| Run log | `ShaderStress.log` (working directory; `bin/test-work/` for test runs) | Topology, worker->CPU order, golden values, phase changes, per-minute health line, all CPU/RAM/I/O error details with suspect CPU. |
 | Sanitizer builds | `bin/<target>-ubsan`, `-asan`, `-tsan` | `python build.py --sanitize[=address|thread] <target>`; console subsystem on Windows so reports reach stderr; ASan copies its runtime DLLs next to the exe. |
 
 ### Project-pinned LLVM tools
 
-`llvm-mingw-20260519-ucrt-x86_64/llvm-mingw-20260519-ucrt-x86_64/bin/` contains `lldb.exe`,
+`toolchains/llvm-mingw-20260519-ucrt-x86_64/llvm-mingw-20260519-ucrt-x86_64/bin/` contains `lldb.exe`,
 `llvm-objdump.exe`, `llvm-readobj.exe`, `llvm-nm.exe`, `llvm-pdbutil.exe`,
 `llvm-symbolizer.exe`, `llvm-objcopy.exe`. Set `LLVM_ROOT` in `tool-paths.env` to use them
 with `tools/discover-debug-tools.ps1`.
@@ -188,4 +188,4 @@ ShaderStress.com --perf-stats
   never run them during tests or diagnosis unless explicitly asked. The app itself
   auto-installs PawnIO only when started elevated with the `lhm/` folder present.
 - `SHADERSTRESS_EXTRA_DEFINES` (env) forwards `-D` kernel knobs to every compile
-  (`sweep_power.ps1`).
+  (`scripts/sweep_power.ps1`).

@@ -1,5 +1,18 @@
 # Recent Changes Log
 
+## 2026-10-03 — Repository layout: src/<area>/, resources/, docs/, scripts/, toolchains/
+
+- Sources moved with `git mv` into `src/{core,workloads,engine,app,launcher}`; headers
+  included as `"<area>/<file>.h"` with `-Isrc` (`SynthKernel.inc` stays a same-directory include).
+- `resources/` (icon + rc; windres/zig rc run with cwd `resources/`), `docs/cli.md`
+  (was `cli-report.md`), `scripts/` (`sweep_power.ps1`, `measure.ps1` resolve the repo root
+  as their parent dir), toolchains moved to git-ignored `toolchains/` (`build.py`
+  `toolchain_dir()` falls back to the old root location).
+- `lhm-deps/` intentionally stays at the root: `build.py` (also in older checkouts)
+  downloads `.../Shader-Stress/main/lhm-deps/*`.
+- Tests run binaries with cwd `bin/test-work/` (no more `ShaderStress.log` in the root);
+  new `test_invariant_repo_layout` rejects stray root sources.
+
 ## 2026-10-03 — Repository published to GitHub (origin/main)
 
 - `origin` = https://github.com/aufkrawall/Shader-Stress.git; local branch renamed

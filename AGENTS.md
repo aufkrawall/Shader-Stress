@@ -53,6 +53,7 @@
 - Preserve intended features, compatibility guarantees, performance characteristics (power draw and heat are the product), and public contracts unless the requested change intentionally alters them.
 - Keep behavioral diffs focused; do not mix unrelated formatting, generated churn, cleanup, or opportunistic refactors when they can be separated.
 - Keep source files roughly 600-800 lines maximum; split up files when needed!
+- Keep the repository layout: sources under `src/<area>/` (core, workloads, engine, app, launcher), headers included as `"<area>/<file>.h"` (`-Isrc`), scripts in `scripts/`, docs in `docs/`, resources in `resources/`, toolchains in git-ignored `toolchains/`; nothing new in the repo root unless it is a top-level project file.
 - Treat dumps, logs, media, captures, credentials, private keys, tokens, symbols, and user data as sensitive!
 - Do not commit secrets, dumps, logs, captures, private-symbol PDBs, large generated artifacts, user names or private user data!
 
@@ -60,7 +61,7 @@
 
 - Do not disable features to avoid fixing bugs!
 - Regression unit tests, smoke tests etc. must not run the actual stresstest workloads, we do not want our program to cause heat and system load during development! The only exception are the bounded `--stress` smoke runs in `tests/run_tests.py` (seconds, <= 2 worker threads, 64 MiB RAM test, 16 MiB I/O file); never add full-thread or long-running stress to tests.
-- `RunRealisticCompilerSim_V3` (`WorkloadRealistic.cpp`) is user-pinned by a source-hash test: change it only for correctness (e.g. UB) and only when the golden checksum proves bit-identical output.
+- `RunRealisticCompilerSim_V3` (`src/workloads/WorkloadRealistic.cpp`) is user-pinned by a source-hash test: change it only for correctness (e.g. UB) and only when the golden checksum proves bit-identical output.
 - Every compute result must stay bit-reproducible (strict IEEE FP, no `-ffast-math`, kernels behind one non-inlined dispatcher): the redundant cross-core verification depends on it.
 
 ## Build, diagnostics, and tests
@@ -71,7 +72,7 @@ Regression coverage and diagnosability are first-class deliverables, not optiona
 - We are paranoid about having sufficient regression tests, better too many than too few!
 - For every bug fix or behavioral correction, explicitly assess both regression coverage and diagnostics even when existing tests pass. Strongly prefer a focused automated regression test that fails before the fix and passes after it.
 - Add focused regression tests where possible, especially tests that would have failed before the fix!
-- Unit tests live in the binary (`--self-test`, `SelfTest.cpp`) and in `tests/run_tests.py`; extend them rather than adding ad-hoc scripts.
+- Unit tests live in the binary (`--self-test`, `src/app/SelfTest.cpp`) and in `tests/run_tests.py`; extend them rather than adding ad-hoc scripts.
 - If additional regression coverage or diagnostics are deliberately not added for a non-trivial behavioral change, state the reason.
 - Do not add sleeps or timing assumptions to tests!
 - Check whether touched/new code has sufficient unit coverage, and add new test units accordingly!
