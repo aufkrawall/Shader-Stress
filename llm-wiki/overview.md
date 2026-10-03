@@ -1,69 +1,72 @@
 # ShaderStress Overview
 
-## Architecture
+Last verified: 2026-10-03 (v3.6.0 working tree; all 13 release targets built, `run_tests.py --stress --sanitize` green on Windows x64 / Ryzen 7 5700X).
 
-CPU stress-test tool that mimics shader-compiler workloads. Purely CPU-bound (no GPU compute).
+## Summary
 
-### Build System (build.py)
+CPU/RAM stress and stability tester. Workers run compute jobs (synthetic SIMD power
+kernels or a realistic compiler simulation) and LZ decompression jobs; optional RAM and
+storage testers run on extra threads. Every job/pass is verified (see
+[verification.md](verification.md)). Windows GUI + cross-platform CLI.
 
-- **Windows**: LLVM MinGW 20260519 (LLVM 22.1.6) — `clang++` / `lld` via mstorsjo/llvm-mingw
-- **Linux/macOS**: Zig 0.15.2 cross-compiler (`zig c++` / `zig cc`)
-- C++20, `-O3`, `-ffast-math`, `-funroll-loops`, `-fno-strict-aliasing`, `-fno-rtti`, `-fno-exceptions`, `-fno-stack-protector`, `-fomit-frame-pointer`, and LTO on Windows release builds
-- `-mprefer-vector-width=512` on x86_64_v4 targets (forces ZMM for auto-vectorized code)
-- PGO support via `--pgo-gen` / `--pgo-use` flags (2-pass profile-guided optimization)
-- Source files compiled via python build script with ThreadPoolExecutor parallelism
-- Build targets: `build.py [all|windows|linux|macos|v4|native]`
-- `x86_64`, `x86_64_v3`, `x86_64_v4` CPU levels + ARM64 generic
-
-### Build Configs (as of v3.5.4)
-
-| CPU Level | Features | Windows (LLVM MinGW) | Linux (Zig) | macOS (Zig) |
-|-----------|----------|---------------------|-------------|-------------|
-| x86_64 | Baseline x86-64 | ✓ | ✓ | ✓ |
-| x86_64_v3 | AVX2, BMI, FMA, POPCNT | ✓ | ✓ | — |
-| x86_64_v4 | AVX-512F/BW/CD/DQ/VL | ✓ | ✓ | — |
-| ARM64 | Generic AArch64 | ✓ | ✓ | ✓ |
-
-Output directories: `bin/x64-llvm/`, `bin/x64-llvm-v3/`, `bin/x64-llvm-v4/`, `bin/arm64-llvm/` (Windows) and `bin/linux-x64/`, `bin/linux-arm64/`, `bin/macos-*/` (Zig).
-
-### Test System
-
-- `tests/run_tests.py` — Python test runner
-- Tests must not run actual stress-test workloads (no heat/system load during dev)
-- Golden value verification via `--benchmark` + `--verify <hash>`
-
-## Key Source Files
+## Source map
 
 | File | Purpose |
 |------|---------|
-| `ShaderStress.cpp` | Entry, CLI, dispatch, main loop |
-| `Common.h` | Shared types, macros, CpuFeatures struct |
-| `Workloads.cpp` | Stress workload kernels (SSE2, AVX2, AVX-512, NEON, scalar) + CPU power sampling |
-| `Threading.cpp` | Worker threads, dynamic mode, watchdog |
-| `Platform.cpp` | Power mgmt, thread pinning, crash dumps |
-| `CpuFeatures.cpp` | CPUID-based feature detection |
+| `Common.h/.cpp` | Shared types, `AppState g_App`, `RunOptions g_RunOpts`, `WorkAssignment` packing, formatting helpers, workload resolution, golden init, benchmark hash |
+| `Workloads.h` | Kernel API, tuning knobs (`SYNTH_BUF_KIB`, `SYNTH_ROUNDS`, `SYNTH_BLOCKS_*`), `JobContext`, `StopRequested()` |
+| `SynthKernel.inc` | ISA-generic kernel body (macro-parameterized; included per ISA) |
+| `SynthKernels.cpp` | Shared kernel helpers, 128-bit kernel (SSE2 / NEON / scalar), `RunComputeWorkload` dispatcher, `--perf-stats`, job context |
+| `SynthKernelsX86.cpp` | AVX2/FMA and AVX-512 kernels via function target attributes |
+| `WorkloadRealistic.cpp` | `RunRealisticCompilerSim_V3` (user-pinned, source-hash tested) |
+| `Decompress.h/.cpp` | LZ77 codec, data generator, `HashBytes`, self-verifying decompression job |
+| `Verification.h/.cpp` | Job stream (pair ids), `PairTable`, error accounting per source/CPU, stats |
+| `Worker.cpp` | Worker thread loop, compute job + pairing + golden checks, decompress job |
+| `Scheduler.h/.cpp` | `SetWork`, event-driven role waits, RAM/IO tester lifecycle, `StartModeWork`, `DynamicLoop` (16 phases), `CoreCycleLoop` |
+| `Topology.h/.cpp` | Logical CPU enumeration, worker order, pinning, `DescribeLp` |
+| `RamStress.cpp` / `IoStress.cpp` / `AuxStress.h` | Verified RAM and storage testers, pattern helpers |
+| `Watchdog.cpp` | Rates, benchmark minutes/hash, max duration, health log every 60 s |
+| `Platform.cpp` | Power request + 1 ms timer (Windows), throttling opt-out, FTZ/DAZ, crash handlers |
+| `PowerMeasure.cpp` | LHM `PowerReader.exe` package-power sampling (Windows, admin) |
+| `Cli.h`, `CliArgs.cpp`, `CliRun.cpp`, `ShaderStress.cpp` | CLI parsing/help/wizard, commands + dashboard, entry points |
+| `SelfTest.cpp` | `--self-test` in-binary unit tests |
 | `Gui.cpp` | Windows GDI UI |
-| `cli_launcher.c` | Windows CLI launcher stub |
-| `build.py` | Build orchestration |
+| `build.py` | Build orchestration (LLVM MinGW + Zig), sanitizers, symbols, archives |
+| `tests/run_tests.py` | Test runner (lightweight / `--stress` smoke / `--sanitize`) |
 
-## Runtime Configuration
+## Modes (`RunMode`)
 
-All runtime params are hardcoded constants (no external config files). CLI flags control mode, ISA, duration.
+- `MODE_DYNAMIC` (2, default): 16 phases x 10 s (`DynamicPhaseName`): full load, mixed + RAM/IO, 500 ms on/off, decompress-heavy, random counts, 1-2 threads on random cores, bursts, 100 ms compute<->decompress, 50 ms square wave, staircase ramp, decompress + RAM/IO, single-core sweep.
+- `MODE_STEADY` (1): `cpu - min(4, cpu/2)` compute + decompress, RAM + IO testers.
+- `MODE_BENCHMARK` (0): all workers compute, 180 s, no RAM/IO; default ISA scalar-sim.
+- `MODE_CORE_CYCLE` (3): one compute worker on each physical core's primary thread for `--dwell` seconds (default 60), fastest cores first.
+
+## Build
+
+- Windows: LLVM MinGW 20260519 (LLVM 22) and Zig 0.15.2 variants; Linux/macOS: Zig.
+- Flags: `-std=c++20 -O3 -fno-math-errno -funroll-loops -fno-strict-aliasing -fno-rtti -fno-exceptions -fno-stack-protector -fomit-frame-pointer -flto` (no LTO on macOS). **No `-ffast-math`** (bit-reproducibility).
+- Symbols: Windows PDB (`-g -gcodeview -Wl,--pdb=`), Linux split `shaderstress.debug`, macOS stripped.
+- Release targets (13): x64 baseline/v3/v4 + ARM64 for Windows (LLVM MinGW), x64/v3/ARM64 Windows (Zig), Linux x64/v3/v4/ARM64, macOS x64/ARM64. `experimental` = nounroll comparison builds.
+- `--sanitize[=address|thread]` builds go to `<out>-ubsan|-asan|-tsan` (Windows: console subsystem, ASan runtime DLLs copied).
+- v3/v4 builds start in `CpuGuard.cpp` (Windows PE `--entry ShaderStressGuardedEntry`, Linux priority-101 constructor; baseline-only code via `target("arch=x86-64")`) and exit 3 with a message on CPUs lacking the ISA level.
+- AVX2/AVX-512 kernels are compiled into every x64 binary via target attributes and dispatched at runtime; `-march` levels only affect the rest of the code.
+
+## Tests
+
+- `python tests/run_tests.py`: CLI contract, source invariants, `--self-test`.
+- `--stress`: bounded smoke runs (2 threads, 64 MiB RAM, 16 MiB I/O, <= 3 s) and golden checksums from `tests/golden_values.json` (x64; seed 42, complexity 1000).
+- `--sanitize`: UBSan and ASan builds of `win-baseline` running `--self-test`, hash roundtrip and repro.
 
 ## Invariants
 
-- `volatile` sink variables prevent DCE of computed results
-- `#pragma clang fp contract(off)` ensures deterministic FP golden values
-- `NOINLINE` on dispatcher prevents LTO from inlining ISA-specific into generic code
-- 64-byte alignment on hot buffers (AVX-512) and Worker structs
-- 2026-06-13: synthetic scalar/SSE2/NEON, AVX2, and AVX-512 use a fixed 65536 doubles/thread work buffer (512 KiB) with store-every-result. Scalar/SSE2/NEON inject 64-bit GPR integer division into the hot loop; AVX2/AVX-512 keep 8 GPR multiply-xor chains. No hot-loop vector div/sqrt. `RunRealisticCompilerSim_V3` remains source-stable and user-excluded.
-- RAM stress allocates 70 % of available physical RAM capped at 16 GiB, alternating write-stride and pointer-chase bursts. I/O stress uses a single thread with direct/no-buffered random reads and a minimal CPU sink. Decompressor PASSES = 256, with 64-bit IDIV every 64 bytes.
+- Kernel results are bit-exact across x64 builds (verified: baseline and v3 produce identical checksums). Re-record golden checksums only for intended kernel changes.
+- All compute goes through `RunComputeWorkload` (NOINLINE) so golden values, paired jobs and repro share one compiled body.
+- `WorkAssignment` is published as one packed atomic plus `workGen`; workers wait on `s_workCv`, aux testers on `s_auxCv` (no idle polling).
+- Logical-CPU slot order: fastest perf class first, SMT primaries before siblings.
+- Benchmark/core-cycle modes force RAM/IO off; `--no-*` options always win.
 
-## Power Measurement (Windows, admin only)
+## Open questions / stale-risk
 
-- `lhm/` subfolder contains: `PowerReader.exe` + config, `LibreHardwareMonitorLib.dll` (core lib + PawnIO firmware), `PawnIO_setup.exe` (extracted at build from LHM), `System.Memory/Buffers/Unsafe.dll` (.NET deps), `install-pawnio.ps1` / `uninstall-pawnio.ps1` (standalone scripts), license files
-- `SampleCpuPackagePower()` in `Workloads.cpp` launches PowerReader.exe via `CreateProcess` + stdout pipe, 3s cache
-- PawnIO driver auto-installed on first run (extracted from LHM embedded resources)
-- Requires admin privileges (PawnIO reads RAPL MSRs)
-- Returns -1.0 gracefully when not admin, unsupported hardware, or PowerReader not found
-- Power logged to `ShaderStress.log` every ~5s during benchmarks, included in benchmark report
+- Package power of the 3.6 kernels has not been measured yet (needs elevated `sweep_power.ps1` on the target CPUs); defaults (`SYNTH_BUF_KIB=512`, `SYNTH_ROUNDS=2`) are reasoned, not measured.
+- AVX-512 kernel only compile-tested (no AVX-512 CPU available locally); `SYNTH_BLOCKS_AVX512` calibration is an estimate.
+- Linux/macOS binaries are cross-compiled only; not executed in this environment.

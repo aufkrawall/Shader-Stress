@@ -2,26 +2,32 @@
 """
 ShaderStress test runner.
 
-Default: runs only lightweight CLI-level tests (no CPU stress).
-Use --stress to include workload / repro / benchmark tests.
+Default: lightweight tests only (CLI contract, source invariants, the in-binary
+--self-test unit suite). Nothing here starts the multi-threaded stress run.
 
-Usage:
-    python tests/run_tests.py                         # CLI-only tests
-    python tests/run_tests.py --stress                 # Also run CPU-stressing workload tests
-    python tests/run_tests.py --stress --record-golden # Record golden-value baseline
-    python tests/run_tests.py --bin <path>             # Use specific binary
+    python tests/run_tests.py                          # lightweight tests
+    python tests/run_tests.py --stress                 # + short low-thread smoke runs and golden checksums
+    python tests/run_tests.py --sanitize               # + UBSan and ASan builds running --self-test
+    python tests/run_tests.py --stress --record-golden # re-record golden checksums (after intended kernel changes)
+    python tests/run_tests.py --bin <path>             # use a specific binary
 """
 
-import subprocess
-import sys
-import os
-import json
 import glob
 import hashlib
+import json
+import os
+import platform
 import re
+import subprocess
+import sys
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GOLDEN_FILE = os.path.join(os.path.dirname(__file__), "golden_values.json")
+IS_WINDOWS = sys.platform == "win32"
+EXE = "ShaderStress.com" if IS_WINDOWS else "shaderstress"
+
+# Smoke runs must stay light: few threads, tiny RAM/IO footprints, seconds.
+LIGHT = ["--threads", "2", "--ram-mb", "64", "--io-mb", "16", "--quiet"]
 
 
 # ---------------------------------------------------------------------------
@@ -29,182 +35,41 @@ GOLDEN_FILE = os.path.join(os.path.dirname(__file__), "golden_values.json")
 # ---------------------------------------------------------------------------
 
 def find_binary():
-    candidates = [
-        os.path.join(PROJECT_ROOT, "bin", "x64-llvm", "ShaderStress.com"),
-        os.path.join(PROJECT_ROOT, "bin", "x64-llvm-v3", "ShaderStress.com"),
-    ]
-    for c in candidates:
+    for rel in ("x64-llvm", "x64-llvm-v3", "linux-x64", "linux-arm64", "macos-arm64"):
+        c = os.path.join(PROJECT_ROOT, "bin", rel, EXE)
         if os.path.exists(c):
             return c
-    matches = glob.glob(os.path.join(PROJECT_ROOT, "bin", "**", "ShaderStress.com"), recursive=True)
-    if matches:
-        return matches[0]
-    for root, dirs, files in os.walk(os.path.join(PROJECT_ROOT, "bin")):
-        for f in files:
-            if f == "shaderstress":
-                return os.path.join(root, f)
-    return None
+    matches = glob.glob(os.path.join(PROJECT_ROOT, "bin", "**", EXE), recursive=True)
+    matches = [m for m in matches if not re.search(r"-(ubsan|asan|tsan)", m)]
+    return matches[0] if matches else None
 
 
-def run(binary, args, timeout=30):
-    cmd = [binary] + args
+def run(binary, args, timeout=60):
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=timeout, cwd=PROJECT_ROOT)
-        return result.returncode, result.stdout, result.stderr
+        r = subprocess.run([binary] + args, capture_output=True, timeout=timeout, cwd=PROJECT_ROOT)
+        return r.returncode, r.stdout.decode(errors="replace"), r.stderr.decode(errors="replace")
     except subprocess.TimeoutExpired:
-        return -1, b"", b"TIMEOUT"
+        return -1, "", "TIMEOUT"
     except FileNotFoundError:
-        return -2, b"", b"FILE NOT FOUND"
+        return -2, "", "FILE NOT FOUND"
 
 
 PASS = 0
 FAIL = 0
 
-def check(ok, msg):
+
+def check(ok, msg, detail=""):
     global PASS, FAIL
     if ok:
         print(f"  [OK] {msg}")
         PASS += 1
     else:
-        print(f"  [FAIL] {msg}")
+        print(f"  [FAIL] {msg}" + (f"\n         {detail.strip()[:600]}" if detail else ""))
         FAIL += 1
 
 
-# ---------------------------------------------------------------------------
-# Lightweight CLI tests (no CPU stress)
-# ---------------------------------------------------------------------------
-
-def test_help(binary):
-    ret, out, err = run(binary, ["--help"])
-    text = out.decode(errors="replace")
-    check(ret == 0 and "Usage:" in text and "--mode" in text, "--help")
-
-
-def test_version(binary):
-    ret, out, err = run(binary, ["--version"])
-    text = out.decode(errors="replace")
-    check(ret == 0 and "ShaderStress" in text, "--version")
-
-
-def test_verify_invalid(binary):
-    ret, out, err = run(binary, ["--verify", "SS3-0000000000000000"])
-    text = out.decode(errors="replace")
-    check(ret == 4 and "INVALID" in text, "--verify (invalid hash)")
-
-
-def test_verify_malformed(binary):
-    ret, out, err = run(binary, ["--verify", "not-a-hash"])
-    check(ret == 4, "--verify (malformed)")
-
-
-def test_verify_empty(binary):
-    ret, out, err = run(binary, ["--verify", ""])
-    check(ret == 4, "--verify (empty)")
-
-
-def test_verify_bad_prefix(binary):
-    ret, out, err = run(binary, ["--verify", "XX3-0000000000000000"])
-    check(ret == 4, "--verify (bad prefix)")
-
-
-def test_invalid_arg(binary):
-    ret, out, err = run(binary, ["--nonexistent"])
-    text = err.decode(errors="replace")
-    check(ret == 2 and "Error" in text, "invalid argument")
-
-
-def test_missing_mode_value(binary):
-    ret, out, err = run(binary, ["--mode"])
-    check(ret == 2, "--mode (missing value)")
-
-
-def test_invalid_mode_value(binary):
-    ret, out, err = run(binary, ["--mode", "invalid", "--duration", "1"])
-    check(ret == 2, "--mode (invalid value)")
-
-
-def test_missing_isa_value(binary):
-    ret, out, err = run(binary, ["--isa"])
-    check(ret == 2, "--isa (missing value)")
-
-
-def test_repro_with_benchmark_conflict(binary):
-    ret, out, err = run(binary, ["--repro", "1", "1", "--benchmark"])
-    check(ret == 2, "--repro + --benchmark conflict")
-
-
-def test_verify_with_mode_conflict(binary):
-    ret, out, err = run(binary, ["--verify", "SS3-0000000000000000", "--mode", "steady"])
-    check(ret == 2, "--verify + --mode conflict")
-
-
-def test_verify_with_wizard_conflict(binary):
-    ret, out, err = run(binary, ["--verify", "SS3-0000000000000000", "--wizard"])
-    check(ret == 2, "--verify + --wizard conflict")
-
-
-def test_verify_with_isa_conflict(binary):
-    ret, out, err = run(binary, ["--verify", "SS3-0000000000000000", "--isa", "avx2"])
-    check(ret == 2, "--verify + --isa conflict")
-
-
-def test_modifier_without_action(binary):
-    ret, out, err = run(binary, ["--no-avx512"])
-    check(ret == 2, "modifier without action")
-
-
-def test_duration_zero(binary):
-    ret, out, err = run(binary, ["--duration", "0"])
-    check(ret == 2, "--duration 0")
-
-
-def test_max_duration_alias_validation(binary):
-    """--max-duration with an invalid value returns exit code 2."""
-    ret, out, err = run(binary, ["--max-duration", "0"])
-    check(ret == 2, "--max-duration 0")
-
-
-def test_repro_missing_args(binary):
-    ret, out, err = run(binary, ["--repro"])
-    check(ret == 2, "--repro (missing args)")
-
-
-def test_repro_partial_args(binary):
-    ret, out, err = run(binary, ["--repro", "1"])
-    check(ret == 2, "--repro (partial args)")
-
-
-def test_repro_scalar_quick(binary):
-    ret, out, err = run(binary, ["--repro", "42", "100", "--isa", "scalar", "--quiet"])
-    check(ret == 0, "--repro scalar quick")
-
-
-def test_repro_scalar_sim_quick(binary):
-    ret, out, err = run(binary, ["--repro", "42", "100", "--isa", "scalar-sim", "--quiet"])
-    check(ret == 0, "--repro scalar-sim quick")
-
-
-def test_repro_high_complexity(binary):
-    """Boundary test: complexity near overflow threshold (7.6M) should not crash."""
-    ret, out, err = run(binary, ["--repro", "1", "8000000", "--isa", "scalar", "--quiet"], timeout=60)
-    check(ret == 0, "--repro high complexity (boundary)")
-
-
-def test_hash_roundtrip(binary):
-    ret, out, err = run(binary, ["--hash-roundtrip"])
-    text = out.decode(errors="replace")
-    check(ret == 0 and "roundtrip OK" in text, "--hash-roundtrip")
-
-
-# ---------------------------------------------------------------------------
-# Source-invariant regression tests (read-only, no CPU stress)
-# These verify the current workload-shape invariants are intact in the
-# source tree. They grep .cpp / .h files for constants and patterns, and
-# never run the actual stress workload (per AGENTS.md rule).
-# ---------------------------------------------------------------------------
-
-def _read(path):
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
+def _read(name):
+    with open(os.path.join(PROJECT_ROOT, name), "r", encoding="utf-8", errors="replace") as f:
         return f.read()
 
 
@@ -213,10 +78,9 @@ def _extract_function(src, name):
     brace = src.index("{", start)
     depth = 0
     for pos in range(brace, len(src)):
-        ch = src[pos]
-        if ch == "{":
+        if src[pos] == "{":
             depth += 1
-        elif ch == "}":
+        elif src[pos] == "}":
             depth -= 1
             if depth == 0:
                 return src[start:pos + 1]
@@ -228,365 +92,400 @@ def _stable_source_hash(text):
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def test_invariant_synth_upstream_power_profile(binary):
-    """Synthetic kernels use the upstream-style power-maximizing profile.
-
-    Larger 512 KiB/thread working sets, store-every-result, and 64-bit GPR IDIV
-    keep the memory subsystem and integer division units busy alongside FP."""
-    src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
-    # Fixed 65536 doubles/thread buffer (no L1/sparse-store knobs).
-    buf_ok = ("std::make_unique<char[]>(65536 * sizeof(double) + 64)" in src and
-              "#ifndef SYNTH_L1_ELEMS" not in src and
-              "SYNTH_STORE_COUNT" not in src)
-    # GPR integer division in scalar/SSE2/NEON hot loops.
-    idiv_ok = "g0 = g0 / ((g8 & 0xFFFFFFFF) | 1)" in src
-    # Store-every-result in all synthetic kernels.
-    store_ok = ("_mm_storeu_pd(&memPtr[(idx + off + 512) & MASK], r)" in src and
-                "_mm256_store_pd(&memPtr[(idx + off + 512) & MASK], r)" in src and
-                "_mm512_store_pd(&memPtr[(idx + off + 512) & MASK], r)" in src)
-    # No vector div/sqrt in synthetic hot loops.
-    no_vec_divsqrt = ("_mm_div_pd" not in src and "_mm_sqrt_pd" not in src and
-                      "_mm256_div_pd" not in src and "_mm256_sqrt_pd" not in src and
-                      "_mm512_div_pd" not in src and "_mm512_sqrt_pd" not in src)
-    check(buf_ok and idiv_ok and store_ok and no_vec_divsqrt,
-          "synthetic kernels use upstream power profile")
+def arch_key():
+    m = platform.machine().lower()
+    return "arm64" if ("arm" in m or "aarch64" in m) else "x64"
 
 
-def test_invariant_ram_stress_cap(binary):
-    """RAM stress uses the upstream 70 % of available RAM / 16 GiB cap."""
-    common = _read(os.path.join(PROJECT_ROOT, "Common.h"))
-    threading = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
-    no_old_cap = "RAM_STRESS_MAX_BYTES" not in common
-    win_formula = "std::min<uint64_t>(ms.ullAvailPhys, ms.ullTotalPhys) * 7 / 10" in threading
-    cap = "16ull * 1024 * 1024 * 1024" in threading
-    check(no_old_cap and win_formula and cap,
-          "RAM stress uses 70%/16 GiB upstream allocation")
+# ---------------------------------------------------------------------------
+# Lightweight CLI contract tests
+# ---------------------------------------------------------------------------
+
+def test_help(b):
+    ret, out, _ = run(b, ["--help"])
+    check(ret == 0 and "Usage:" in out and "--mode" in out and "corecycle" in out and
+          "--threads" in out and "--self-test" in out, "--help lists modes and new options")
 
 
-def test_invariant_decomp_passes(binary):
-    """DecompressLogic PASSES must be 256 after the 2026-06-04 inversion."""
-    src = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
-    check("const int PASSES = 256;" in src,
-          "DecompressLogic PASSES == 256")
+def test_version(b):
+    ret, out, _ = run(b, ["--version"])
+    version = _read("VERSION").strip()
+    check(ret == 0 and f"ShaderStress {version}" in out, "--version matches VERSION file", out)
 
 
-def test_invariant_avx512_fma_store_no_div_sqrt(binary):
-    """AVX-512 uses FMA+store-every-result and no hot-loop div/sqrt."""
-    src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
-    avx512 = _extract_function(src, "RunHyperStress_AVX512")
-    check("_mm512_fmadd_pd" in avx512 and
-          "_mm512_store_pd(&memPtr[(idx + off + 512) & MASK], r)" in avx512 and
-          "_mm512_div_pd" not in avx512 and "_mm512_sqrt_pd" not in avx512,
-          "AVX-512 FMA+store-every-result without div/sqrt")
+def test_self_test(b):
+    ret, out, err = run(b, ["--self-test"], timeout=120)
+    check(ret == 0 and "ALL PASSED" in out and "[FAIL]" not in out, "--self-test unit suite",
+          out[-1500:] + err)
 
 
-def test_invariant_avx2_fma_store_no_div_sqrt(binary):
-    """AVX2 uses FMA+store-every-result and no hot-loop div/sqrt."""
-    src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
-    avx2 = _extract_function(src, "RunHyperStress_AVX2")
-    check("_mm256_fmadd_pd" in avx2 and
-          "_mm256_store_pd(&memPtr[(idx + off + 512) & MASK], r)" in avx2 and
-          "_mm256_div_pd" not in avx2 and "_mm256_sqrt_pd" not in avx2,
-          "AVX2 FMA+store-every-result without div/sqrt")
+def test_hash_roundtrip(b):
+    ret, out, _ = run(b, ["--hash-roundtrip"])
+    check(ret == 0 and "roundtrip OK" in out, "--hash-roundtrip")
 
 
-def test_invariant_sse2_split_mul_add_gpr_idiv(binary):
-    """Synthetic scalar SSE2 uses split mul/add, store-every-result, and GPR IDIV."""
-    src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
-    sse2 = _extract_function(src, "RunHyperStress_Scalar")
-    check("_mm_mul_pd(r, mul)" in sse2 and
-          "_mm_add_pd(r, _mm_loadu_pd" in sse2 and
-          "_mm_storeu_pd(&memPtr[(idx + off + 512) & MASK], r)" in sse2 and
-          "g0 = g0 / ((g8 & 0xFFFFFFFF) | 1)" in sse2 and
-          "_mm_div_pd" not in sse2 and "_mm_sqrt_pd" not in sse2,
-          "SSE2 split mul/add + store-every-result + GPR IDIV")
+INVALID_ARGS = [
+    (["--verify", "SS3-0000000000000000"], 4, "INVALID", "--verify invalid hash"),
+    (["--verify", "not-a-hash"], 4, None, "--verify malformed"),
+    (["--verify", ""], 4, None, "--verify empty"),
+    (["--verify", "XX3-0000000000000000"], 4, None, "--verify bad prefix"),
+    (["--nonexistent"], 2, None, "unknown option"),
+    (["--mode"], 2, None, "--mode missing value"),
+    (["--mode", "invalid", "--duration", "1"], 2, None, "--mode invalid value"),
+    (["--isa"], 2, None, "--isa missing value"),
+    (["--repro", "1", "1", "--benchmark"], 2, None, "--repro + --benchmark"),
+    (["--verify", "SS3-0000000000000000", "--mode", "steady"], 2, None, "--verify + --mode"),
+    (["--verify", "SS3-0000000000000000", "--wizard"], 2, None, "--verify + --wizard"),
+    (["--verify", "SS3-0000000000000000", "--isa", "avx2"], 2, None, "--verify + --isa"),
+    (["--verify", "SS3-0000000000000000", "--no-ram"], 2, None, "--verify + --no-ram"),
+    (["--no-avx512"], 2, None, "modifier without action"),
+    (["--threads", "4"], 2, None, "--threads without action"),
+    (["--duration", "0"], 2, None, "--duration 0"),
+    (["--max-duration", "0"], 2, None, "--max-duration 0"),
+    (["--repro"], 2, None, "--repro missing args"),
+    (["--repro", "1"], 2, None, "--repro partial args"),
+    (["--repro", "1", "0"], 2, None, "--repro complexity 0"),
+    (["--repro", "1", "60000000"], 2, None, "--repro complexity above limit"),
+    (["--repro", "1", "10", "--threads", "2"], 2, None, "--repro + --threads"),
+    (["--repro", "1", "10", "--no-decompress"], 2, None, "--repro + --no-decompress"),
+    (["--no-decompress"], 2, None, "--no-decompress without action"),
+    (["--mode", "steady", "--threads", "0", "--duration", "1"], 2, None, "--threads 0"),
+    (["--mode", "steady", "--threads", "x", "--duration", "1"], 2, None, "--threads non-numeric"),
+    (["--mode", "steady", "--dwell", "5", "--duration", "1"], 2, None, "--dwell outside corecycle"),
+    (["--mode", "corecycle", "--dwell", "0", "--duration", "1"], 2, None, "--dwell 0"),
+    (["--mode", "steady", "--ram-mb", "8", "--duration", "1"], 2, None, "--ram-mb below minimum"),
+    (["--mode", "steady", "--io-mb", "1", "--duration", "1"], 2, None, "--io-mb below minimum"),
+    (["--mode", "benchmark", "--duration", "60"], 2, None, "benchmark with custom duration"),
+    (["--benchmark", "--mode", "steady"], 2, None, "--benchmark + other mode"),
+]
 
 
-def test_invariant_ram_upstream_pattern(binary):
-    """RAM stress uses upstream write-stride + pointer-chase pattern."""
-    src = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
-    count_var = re.search(r"p\[i\] = \(i \+ 16\) % (\w+)", src)
-    chase_var = re.search(r"idx = p\[idx(?: & \((\w+) - 1\))?\]", src)
-    check("size_t stride = 64" in src and
-          count_var is not None and
-          "volatile uint64_t idx = 0" in src and
-          chase_var is not None and
-          "RoundDownPowerOfTwo" not in src and
-          "RunRamStreamingPass" not in src,
-          "RAM stress upstream write-stride + chase pattern")
+def test_invalid_args(b):
+    for args, code, needle, name in INVALID_ARGS:
+        ret, out, err = run(b, args)
+        ok = ret == code and (needle is None or needle in out + err)
+        check(ok, f"{name} -> exit {code}", f"exit {ret}: {out}{err}")
 
 
-def test_invariant_io_single_thread_buffer_hash(binary):
-    """IOThread uses a single thread and CPU-side buffer hash."""
-    src = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
-    setwork = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
-    check("uint64_t h = (uint64_t)read * 0x9E3779B97F4A7C15ULL" in src and
-          "h = (h * 0x9E3779B97F4A7C15ULL) ^ (uint64_t)p[j]" in src and
-          "int cntIO = io ? 1 : 0" in setwork,
-          "I/O single thread with buffer hash")
+# ---------------------------------------------------------------------------
+# Source-invariant regression tests (read-only)
+# ---------------------------------------------------------------------------
 
-
-def test_invariant_perf_stats_initializes_cpu(binary):
-    """--perf-stats must initialize CPU features and FPU flush mode before timing."""
-    src = _read(os.path.join(PROJECT_ROOT, "ShaderStress.cpp"))
-    check("g_Cpu = GetCpuInfo();" in src and
-          "SetFpuFlushMode();" in src and
-          "RunPerfStats();" in src,
-          "--perf-stats initializes CPU features and FPU state")
-
-
-def test_invariant_realistic_unchanged(binary):
-    """RunRealisticCompilerSim_V3 must remain source-stable except for
-    power-oriented tweaks explicitly requested by the user (e.g. removing
-    defensive bounds checks from the hot string-table lookup)."""
-    src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
+def test_invariant_realistic_unchanged(b):
+    """RunRealisticCompilerSim_V3 is user-pinned. Only change: 3.6.0 masked the
+    rotate's right-shift count (`>> 64` was UB when src2 & 63 == 0; found by
+    UBSan). Output is bit-identical (golden checksum 0x58b1a15ca01f7216)."""
+    src = _read("WorkloadRealistic.cpp")
     actual = _stable_source_hash(_extract_function(src, "RunRealisticCompilerSim_V3"))
-    check(actual == "1483259d2c806829dfc5f2364b5af47a878751e495b739a88e9bbc4b21094d52",
-          "RealisticCompilerSim_V3 source hash unchanged")
+    check(actual == "02290c1a756fd7099c973a4ea1662617c8fb92200ac9f26fcf6c477c2ffb3270",
+          "RealisticCompilerSim_V3 source hash unchanged", actual)
 
 
-def test_invariant_decomp_idiv(binary):
-    """DecompressLogic must inject 64-bit IDIV every 64 bytes (high-latency port-0 traffic)."""
-    src = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
-    check("acc = acc / ((data[i] & 0xFFFFFFFFULL) | 1ULL)" in src,
-          "DecompressLogic has 64-bit IDIV injection")
+def test_invariant_kernels_unitary_bounded(b):
+    """Synthetic kernels: unitary butterflies (|w| == k), no inf-prone growth."""
+    hdr = _read("Workloads.h")
+    inc = _read("SynthKernel.inc")
+    m_re = re.search(r"SYNTH_TW_RE = ([0-9.e-]+);", hdr)
+    m_im = re.search(r"SYNTH_TW_IM = ([0-9.e-]+);", hdr)
+    m_k = re.search(r"SYNTH_SCALE = ([0-9.e-]+);", hdr)
+    ok = bool(m_re and m_im and m_k)
+    if ok:
+        wr, wi, k = float(m_re.group(1)), float(m_im.group(1)), float(m_k.group(1))
+        ok = abs((wr * wr + wi * wi) - 0.5) < 1e-15 and abs(k * k - 0.5) < 1e-15
+    old_growth = "1.000001" in _read("SynthKernels.cpp") + inc
+    check(ok and not old_growth and "SK_BFLY_CONJ" in inc and "SK_STORE(pa, ar)" in inc,
+          "synthetic kernels are unitary (bounded, error-preserving)")
 
 
-def test_invariant_lhm_subfolder(binary):
-    """PawnIO setup path must reference lhm/ subfolder."""
-    src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
-    check('L"lhm\\\\PawnIO_setup.exe"' in src,
-          "PawnIO_setup.exe path uses lhm/ subfolder")
+def test_invariant_kernels_preemptible_and_strict_fp(b):
+    inc = _read("SynthKernel.inc")
+    k = _read("SynthKernels.cpp") + _read("SynthKernelsX86.cpp")
+    build = _read("build.py")
+    check("StopRequested()" in inc and k.count("#pragma clang fp contract(off)") >= 3 and
+          '"-ffast-math"' not in build and "NOINLINE uint64_t RunComputeWorkload" in k,
+          "kernels preemptible, contract(off), no -ffast-math, single dispatch body")
 
 
-def test_invariant_lhm_build_copy(binary):
-    """build.py must copy LHM to lhm/ subfolder, not flat."""
-    build = _read(os.path.join(PROJECT_ROOT, "build.py"))
-    check('"lhm"' in build and ('/ rel' in build or '/ name' in build),
-          "build.py copies LHM to lhm/ subfolder")
+def test_invariant_paired_verification(b):
+    worker = _read("Worker.cpp")
+    check("GlobalPairTable().Submit" in worker and "ResolveMismatch" in worker and
+          "g_Golden.values[type]" in worker and "RunDecompressJob" in worker,
+          "every compute job paired + golden checks + verified decompression")
 
 
-def test_invariant_shutdown_power(binary):
-    """ShutdownPowerMeasurement must be declared and called on cleanup."""
-    hdr = _read(os.path.join(PROJECT_ROOT, "Common.h"))
-    src = _read(os.path.join(PROJECT_ROOT, "Workloads.cpp"))
-    main_src = _read(os.path.join(PROJECT_ROOT, "ShaderStress.cpp"))
-    check("ShutdownPowerMeasurement" in hdr,
-          "ShutdownPowerMeasurement declared in Common.h")
-    check("void ShutdownPowerMeasurement()" in src,
-          "ShutdownPowerMeasurement defined in Workloads.cpp")
-    check("ShutdownPowerMeasurement()" in main_src,
-          "ShutdownPowerMeasurement called in ShaderStress.cpp")
+def test_invariant_event_driven_scheduler(b):
+    sched = _read("Scheduler.cpp")
+    worker = _read("Worker.cpp")
+    check("s_workCv.wait" in sched and "sleep_for(1ms)" not in worker and
+          "s_auxCv.wait" in sched and "WorkerSlotForCoreRank" in _read("Topology.h"),
+          "workers/testers wake on events (no idle polling), topology-aware slots")
 
 
-def test_invariant_power_logged(binary):
-    """Power must be logged to ShaderStress.log during benchmarks."""
-    src = _read(os.path.join(PROJECT_ROOT, "Threading.cpp"))
-    check('L"Power: "' in src,
-          "Power logging in Watchdog")
+def test_invariant_ram_io_verified(b):
+    ram = _read("RamStress.cpp")
+    io = _read("IoStress.cpp")
+    check("VerifyPattern" in ram and "RandomVerify" in ram and "16ull << 30" in ram and
+          "VerifyIoChunk" in io and "FILE_FLAG_NO_BUFFERING" in io and "O_DIRECT" in io,
+          "RAM and I/O testers verify every word (70%/16 GiB default RAM size)")
+
+
+def test_invariant_build_sanitizer_and_symbols(b):
+    build = _read("build.py")
+    check("global PGO_MODE, SANITIZER_MODE" in build and "SANITIZER_SUFFIX" in build and
+          "--pdb=" in build and "--only-keep-debug" in build,
+          "build.py: sanitizer flag takes effect, separate dirs, debug symbols emitted")
+
+
+def host_has(feature_id):
+    """Windows IsProcessorFeaturePresent (40 = AVX2, 41 = AVX-512F); None if unknown."""
+    if not IS_WINDOWS:
+        return None
+    try:
+        import ctypes
+        return bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(feature_id))
+    except Exception:
+        return None
+
+
+def test_cpu_level_guard(b):
+    """v3/v4 builds must refuse unsupported CPUs with a message (exit 3), not crash
+    with an illegal instruction inside a static initializer."""
+    for rel, feature in (("x64-llvm-v4", 41), ("x64-llvm-v3", 40)):
+        exe = os.path.join(PROJECT_ROOT, "bin", rel, EXE)
+        has = host_has(feature)
+        if not os.path.exists(exe) or has is None:
+            print(f"  [SKIP] cpu guard {rel} (binary or host feature info unavailable)")
+            continue
+        ret, out, err = run(exe, ["--version"])
+        if has:
+            check(ret == 0 and "ShaderStress" in out, f"cpu guard {rel}: supported CPU starts", out + err)
+        else:
+            check(ret == 3 and "requires an x86-64-v" in err, f"cpu guard {rel}: clear refusal",
+                  f"exit {ret}: {out}{err}")
+    build = _read("build.py")
+    check("GUARD_ENTRY" in build and "constructor(101)" in _read("CpuGuard.cpp"),
+          "cpu guard wired into build (PE entry / ELF constructor)")
+
+
+def test_invariant_lhm(b):
+    power = _read("PowerMeasure.cpp")
+    hdr = _read("Common.h")
+    main_src = _read("CliRun.cpp")
+    check('L"lhm\\\\PawnIO_setup.exe"' in power and "ShutdownPowerMeasurement" in hdr and
+          "ShutdownPowerMeasurement()" in main_src and 'L"Power: "' in _read("Watchdog.cpp") and
+          '"lhm"' in _read("build.py"),
+          "LHM power readout wiring (lhm/ subfolder, shutdown, periodic log)")
+
+
+def test_invariant_file_sizes(b):
+    """AGENTS.md: keep source files roughly <= 800 lines."""
+    too_big = []
+    for f in glob.glob(os.path.join(PROJECT_ROOT, "*.cpp")) + glob.glob(os.path.join(PROJECT_ROOT, "*.h")):
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            n = sum(1 for _ in fh)
+        if n > 800:
+            too_big.append(f"{os.path.basename(f)}={n}")
+    check(not too_big, "source files <= 800 lines", ", ".join(too_big))
 
 
 LIGHTWEIGHT_TESTS = [
     test_help,
     test_version,
-    test_verify_invalid,
-    test_verify_malformed,
-    test_verify_empty,
-    test_verify_bad_prefix,
-    test_invalid_arg,
-    test_missing_mode_value,
-    test_invalid_mode_value,
-    test_missing_isa_value,
-    test_repro_with_benchmark_conflict,
-    test_verify_with_mode_conflict,
-    test_verify_with_wizard_conflict,
-    test_verify_with_isa_conflict,
-    test_modifier_without_action,
-    test_duration_zero,
-    test_max_duration_alias_validation,
-    test_repro_missing_args,
-    test_repro_partial_args,
+    test_self_test,
     test_hash_roundtrip,
-    test_invariant_synth_upstream_power_profile,
-    test_invariant_ram_stress_cap,
-    test_invariant_decomp_passes,
-    test_invariant_avx512_fma_store_no_div_sqrt,
-    test_invariant_avx2_fma_store_no_div_sqrt,
-    test_invariant_sse2_split_mul_add_gpr_idiv,
-    test_invariant_ram_upstream_pattern,
-    test_invariant_io_single_thread_buffer_hash,
-    test_invariant_perf_stats_initializes_cpu,
-    test_invariant_decomp_idiv,
+    test_invalid_args,
     test_invariant_realistic_unchanged,
-    test_invariant_lhm_subfolder,
-    test_invariant_lhm_build_copy,
-    test_invariant_shutdown_power,
-    test_invariant_power_logged,
+    test_invariant_kernels_unitary_bounded,
+    test_invariant_kernels_preemptible_and_strict_fp,
+    test_invariant_paired_verification,
+    test_invariant_event_driven_scheduler,
+    test_invariant_ram_io_verified,
+    test_invariant_build_sanitizer_and_symbols,
+    test_invariant_lhm,
+    test_invariant_file_sizes,
+    test_cpu_level_guard,
 ]
 
 
 # ---------------------------------------------------------------------------
-# CPU-stressing tests (only run with --stress)
+# Short, low-thread smoke runs (only with --stress)
 # ---------------------------------------------------------------------------
 
-def test_repro_scalar(binary):
-    ret, out, err = run(binary, ["--repro", "42", "100", "--isa", "scalar", "--quiet"])
-    check(ret == 0, "--repro scalar")
+def _repro(b, isa, complexity=100):
+    return run(b, ["--repro", "42", str(complexity), "--isa", isa])
 
 
-def test_repro_scalar_sim(binary):
-    ret, out, err = run(binary, ["--repro", "42", "100", "--isa", "scalar-sim", "--quiet"])
-    check(ret == 0, "--repro scalar-sim")
+def test_repro_all_isas(b):
+    for isa in ("scalar", "scalar-sim", "avx2", "avx512"):
+        ret, out, err = _repro(b, isa)
+        check(ret == 0 and "re-run matches" in out and "Result: 0x" in out,
+              f"--repro {isa} (run twice, compare)", out + err)
 
 
-def test_repro_avx2_if_available(binary):
-    ret, out, err = run(binary, ["--repro", "42", "100", "--isa", "avx2", "--quiet"])
-    check(ret == 0, "--repro avx2 quick")
+def _smoke(b, name, args, timeout=60):
+    ret, out, err = run(b, args + LIGHT, timeout=timeout)
+    ok = ret == 0 and re.search(r"Errors: 0 \(CPU 0, RAM 0, I/O 0\)", out) is not None
+    check(ok, name, out + err)
+    return out
 
 
-def test_mode_steady_short(binary):
-    ret, out, err = run(binary, ["--mode", "steady", "--isa", "scalar", "--duration", "3", "--quiet"])
-    check(ret == 0, "--mode steady --duration 3")
+def test_smoke_steady(b):
+    out = _smoke(b, "steady 3 s (2 threads, 64 MiB RAM, 16 MiB I/O)",
+                 ["--mode", "steady", "--duration", "3"])
+    check(re.search(r"Verified: [1-9]\d* job pairs", out) is not None and "I/O 0 B" not in out,
+          "steady run verifies job pairs and I/O data", out)
 
 
-def test_max_duration_alias_run(binary):
-    ret, out, err = run(binary, ["--max-duration", "3", "--mode", "steady", "--isa", "scalar", "--quiet"])
-    check(ret == 0, "--max-duration as --duration alias")
+def test_smoke_dynamic(b):
+    _smoke(b, "dynamic 3 s (2 threads)", ["--mode", "dynamic", "--duration", "3"])
 
 
-def record_golden_values(binary):
-    golden = {}
-    workloads = ["scalar", "scalar-sim"]
-    for wl in workloads:
-        ret, out, err = run(binary, ["--repro", "42", "1000", "--isa", wl, "--quiet"])
-        golden[wl] = "ok" if ret == 0 else f"fail:{ret}"
+def test_smoke_corecycle(b):
+    out = _smoke(b, "corecycle 3 s (1 s dwell)", ["--mode", "corecycle", "--dwell", "1",
+                                                  "--duration", "3"])
+    check(re.search(r"[1-9]\d* golden checks", out) is not None,
+          "corecycle runs frequent golden checks", out)
+
+
+def test_smoke_no_ram_no_io(b):
+    out = _smoke(b, "steady with --no-ram --no-io", ["--mode", "steady", "--duration", "2",
+                                                     "--no-ram", "--no-io"])
+    check("RAM 0 B, I/O 0 B" in out, "--no-ram/--no-io honoured", out)
+
+
+def test_smoke_compute_only(b):
+    out = _smoke(b, "steady compute-only (--no-decompress --no-ram --no-io)",
+                 ["--mode", "steady", "--duration", "2", "--no-ram", "--no-io", "--no-decompress"])
+    check(" 0 decompression passes" in out and re.search(r"Verified: [1-9]", out) is not None,
+          "--no-decompress turns decompressors into compute workers", out)
+
+
+def golden_checksums(b):
+    result = {}
+    for isa in ("scalar", "scalar-sim", "avx2"):
+        ret, out, _ = _repro(b, isa, 1000)
+        m = re.search(r"Result: (0x[0-9a-f]{16})", out)
+        result[isa] = m.group(1) if ret == 0 and m else f"fail:{ret}"
+    return result
+
+
+def record_golden_values(b):
+    data = {}
+    if os.path.exists(GOLDEN_FILE):
+        with open(GOLDEN_FILE) as f:
+            data = json.load(f)
+    data.setdefault("checksums", {})[arch_key()] = golden_checksums(b)
+    data["seed"], data["complexity"] = 42, 1000
+    data.pop("workloads", None)
     with open(GOLDEN_FILE, "w") as f:
-        json.dump({"seed": 42, "complexity": 1000, "workloads": golden}, f, indent=2)
-    print(f"  [INFO] Golden values saved to {GOLDEN_FILE}")
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    print(f"  [INFO] Golden checksums saved to {GOLDEN_FILE}: {data['checksums'][arch_key()]}")
 
 
-def verify_golden_values(binary):
+def verify_golden_values(b):
+    """Kernel results are bit-exact IEEE across builds of one architecture; a
+    change means the kernel (or codegen semantics) changed."""
     if not os.path.exists(GOLDEN_FILE):
-        print("  [SKIP] golden values (no baseline file)")
+        print("  [SKIP] golden checksums (no baseline file)")
         return
     with open(GOLDEN_FILE) as f:
-        expected = json.load(f)
-    for wl, status in expected.get("workloads", {}).items():
-        if status == "ok":
-            ret, out, err = run(binary, ["--repro", "42", "1000", "--isa", wl, "--quiet"])
-            check(ret == 0, f"golden value: {wl}")
-        else:
-            print(f"  [SKIP] golden {wl}: no baseline")
+        expected = json.load(f).get("checksums", {}).get(arch_key())
+    if not expected:
+        print(f"  [SKIP] golden checksums (no baseline for {arch_key()})")
+        return
+    actual = golden_checksums(b)
+    for isa, value in expected.items():
+        check(actual.get(isa) == value, f"golden checksum {isa}", f"expected {value} got {actual.get(isa)}")
 
 
 STRESS_TESTS = [
-    test_repro_scalar,
-    test_repro_scalar_sim,
-    test_repro_avx2_if_available,
-    test_mode_steady_short,
-    test_max_duration_alias_run,
+    test_repro_all_isas,
+    test_smoke_steady,
+    test_smoke_dynamic,
+    test_smoke_corecycle,
+    test_smoke_no_ram_no_io,
+    test_smoke_compute_only,
 ]
+
+
+# ---------------------------------------------------------------------------
+# Sanitizer builds (only with --sanitize)
+# ---------------------------------------------------------------------------
+
+def build_with_sanitizer(mode):
+    target = "win-baseline" if IS_WINDOWS else "native"
+    print(f"  [BUILD] python build.py --sanitize={mode} {target}")
+    r = subprocess.run([sys.executable, "build.py", f"--sanitize={mode}", target],
+                       capture_output=True, timeout=900, cwd=PROJECT_ROOT)
+    out = r.stdout.decode(errors="replace") + r.stderr.decode(errors="replace")
+    suffix = {"undefined": "-ubsan", "address": "-asan"}[mode]
+    pattern = os.path.join(PROJECT_ROOT, "bin", f"*{suffix}", EXE)
+    found = glob.glob(pattern)
+    check(r.returncode == 0 and bool(found), f"sanitizer build ({mode})", out[-1500:])
+    return found[0] if found else None
+
+
+def run_sanitized_suite(b, label):
+    ret, out, err = run(b, ["--self-test"], timeout=600)
+    check(ret == 0 and "ALL PASSED" in out, f"{label}: --self-test", out[-1500:] + err[-1500:])
+    ret, out, err = run(b, ["--hash-roundtrip"])
+    check(ret == 0 and "roundtrip OK" in out, f"{label}: --hash-roundtrip", err)
+    for isa in ("scalar", "scalar-sim", "avx2"):
+        ret, out, err = run(b, ["--repro", "7", "20", "--isa", isa, "--quiet"], timeout=300)
+        check(ret == 0, f"{label}: --repro {isa}", out + err)
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-def build_with_sanitizer(mode="undefined"):
-    """Build the native target with a sanitizer and return the binary path."""
-    import subprocess as sp
-    print(f"  [BUILD] Building with --sanitize={mode}")
-    result = sp.run([sys.executable, "build.py", "--sanitize=" + mode, "native"],
-                    capture_output=True, timeout=300, cwd=PROJECT_ROOT)
-    if result.returncode != 0:
-        print(f"  [FAIL] sanitizer build ({mode}): {result.stderr.decode(errors='replace')[-200:]}")
-        return None
-    return find_binary()
-
-
-def test_sanitizer_undefined(binary):
-    """Run CLI tests under UBSan build (fast, no CPU stress)."""
-    if not binary:
-        return
-    ret, out, err = run(binary, ["--help"])
-    text = out.decode(errors="replace")
-    check(ret == 0 and "Usage:" in text, "UBSan: --help")
-
-
-def test_sanitizer_hash_roundtrip(binary):
-    if not binary:
-        return
-    ret, out, err = run(binary, ["--hash-roundtrip"])
-    text = out.decode(errors="replace")
-    check(ret == 0 and "roundtrip OK" in text, "UBSan: --hash-roundtrip")
-
-
 def main():
     global PASS, FAIL
-    binary = find_binary()
-    if not binary:
-        print("ERROR: Could not find ShaderStress binary.")
-        print("Build the project first: python build.py native")
-        sys.exit(1)
-
-    # Parse flags
-    flags = set(sys.argv[1:])
-    flags.discard("--bin")
-    for i, a in enumerate(sys.argv):
-        if a == "--bin" and i + 1 < len(sys.argv):
-            binary = sys.argv[i + 1]
-            flags.discard("--bin")
-
-    run_stress = "--stress" in flags
-    record_golden = "--record-golden" in flags
-    run_sanitizer = "--sanitize" in flags
-
-    if not os.path.exists(binary):
-        print(f"ERROR: Binary not found: {binary}")
-        sys.exit(1)
-
+    args = sys.argv[1:]
+    binary = None
+    if "--bin" in args:
+        i = args.index("--bin")
+        if i + 1 < len(args):
+            binary = args[i + 1]
+    binary = binary or find_binary()
+    if not binary or not os.path.exists(binary):
+        print("ERROR: Could not find ShaderStress binary. Build first: python build.py native")
+        return 1
+    run_stress = "--stress" in args
     print(f"Binary: {binary}")
 
-    # Lightweight tests (always run)
-    print(f"\n--- CLI tests ({len(LIGHTWEIGHT_TESTS)} tests) ---")
+    print(f"\n--- Lightweight tests ---")
     for fn in LIGHTWEIGHT_TESTS:
         try:
             fn(binary)
         except Exception as e:
-            print(f"  [FAIL] {fn.__name__}: {e}")
-            FAIL += 1
+            check(False, fn.__name__, repr(e))
 
-    # CPU-stressing tests (only with --stress)
     if run_stress:
-        print(f"\n--- Workload tests ({len(STRESS_TESTS)} tests) ---")
+        print(f"\n--- Smoke runs (low thread count, seconds) ---")
         for fn in STRESS_TESTS:
             try:
                 fn(binary)
             except Exception as e:
-                print(f"  [FAIL] {fn.__name__}: {e}")
-                FAIL += 1
-        print(f"\n--- Golden value checks ---")
-        if record_golden:
+                check(False, fn.__name__, repr(e))
+        print(f"\n--- Golden checksums ---")
+        if "--record-golden" in args:
             record_golden_values(binary)
         else:
             verify_golden_values(binary)
     else:
-        print(f"\n  (use --stress to also run CPU workload tests)")
+        print(f"\n  (use --stress to also run short smoke runs)")
 
-    # Sanitizer builds (only with --sanitize)
-    if run_sanitizer:
+    if "--sanitize" in args:
         print(f"\n--- Sanitizer builds ---")
-        san_binary = build_with_sanitizer("undefined")
-        if san_binary:
-            test_sanitizer_undefined(san_binary)
-            test_sanitizer_hash_roundtrip(san_binary)
-        else:
-            print("  [SKIP] sanitizer tests (build failed)")
+        for mode, label in (("undefined", "UBSan"), ("address", "ASan")):
+            san = build_with_sanitizer(mode)
+            if san:
+                run_sanitized_suite(san, label)
 
     total = PASS + FAIL
-    print(f"\n{'='*50}")
-    print(f"Passed: {PASS} / {total}" + ("  (no stress tests)" if not run_stress else ""))
-    print(f"{'='*50}")
+    print(f"\n{'=' * 50}\nPassed: {PASS} / {total}\n{'=' * 50}")
     return 0 if FAIL == 0 else 1
 
 

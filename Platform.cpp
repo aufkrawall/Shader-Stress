@@ -1,10 +1,7 @@
-// Platform.cpp - Cross-platform helpers (Windows/Linux/macOS)
+// Platform.cpp - Cross-platform helpers: power requests, FPU mode, crash handlers
 #include "Common.h"
-
-#ifdef PLATFORM_MACOS
-#include <mach/mach.h>
-#include <mach/thread_policy.h>
-#endif
+#include "Workloads.h"
+#include <csignal>
 
 #ifdef PLATFORM_LINUX
 #ifndef _GNU_SOURCE
@@ -15,19 +12,24 @@
 #endif
 
 #ifdef PLATFORM_WINDOWS
+#include <dbghelp.h>
 #include <powerbase.h>
+#include <timeapi.h>
 // Power request handle — creation/teardown at startup/shutdown
 static HANDLE g_PowerRequest = INVALID_HANDLE_VALUE;
+static bool g_TimerPeriodSet = false;
 
 void RequestHighPerformance() {
   REASON_CONTEXT context = {};
   context.Version = POWER_REQUEST_CONTEXT_VERSION;
   context.Flags = POWER_REQUEST_CONTEXT_SIMPLE_STRING;
-  context.Reason.SimpleReasonString = L"ShaderStress - max power stress test";
+  context.Reason.SimpleReasonString = const_cast<LPWSTR>(L"ShaderStress - max power stress test");
   g_PowerRequest = PowerCreateRequest(&context);
   if (g_PowerRequest != INVALID_HANDLE_VALUE) {
     PowerSetRequest(g_PowerRequest, PowerRequestExecutionRequired);
   }
+  // 1 ms timer resolution while running: sharp load steps in dynamic mode.
+  g_TimerPeriodSet = timeBeginPeriod(1) == TIMERR_NOERROR;
 }
 
 void ReleaseHighPerformance() {
@@ -36,40 +38,36 @@ void ReleaseHighPerformance() {
     CloseHandle(g_PowerRequest);
     g_PowerRequest = INVALID_HANDLE_VALUE;
   }
+  if (g_TimerPeriodSet) {
+    timeEndPeriod(1);
+    g_TimerPeriodSet = false;
+  }
 }
 #endif
 
 void DisablePowerThrottling() {
 #ifdef PLATFORM_WINDOWS
+  // Opt this thread out of EcoQoS / execution-speed throttling.
   PROCESS_POWER_THROTTLING_STATE PowerThrottling{};
   PowerThrottling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
   PowerThrottling.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
   PowerThrottling.StateMask = 0;
-  SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling,
-                       &PowerThrottling, sizeof(PowerThrottling));
+  SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &PowerThrottling,
+                       sizeof(PowerThrottling));
 #elif defined(PLATFORM_LINUX)
-  // Try to set scaling governor to 'performance' for maximum frequency
-  // (may need root / CAP_SYS_ADMIN; silently ignored on failure).
+  // Best effort (needs root): performance governor / EPP for this CPU.
   int cpuIdx = sched_getcpu();
   if (cpuIdx >= 0) {
-    char path[128];
-    int len = snprintf(path, sizeof(path),
-      "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_governor", cpuIdx);
-    if (len > 0 && len < (int)sizeof(path)) {
+    const char *files[] = {"/sys/devices/system/cpu/cpu%d/cpufreq/scaling_governor",
+                           "/sys/devices/system/cpu/cpu%d/cpufreq/energy_performance_preference"};
+    for (const char *fmt : files) {
+      char path[128];
+      int len = snprintf(path, sizeof(path), fmt, cpuIdx);
+      if (len <= 0 || len >= (int)sizeof(path)) continue;
       int fd = open(path, O_WRONLY);
       if (fd >= 0) {
-        write(fd, "performance", 11);
-        close(fd);
-      }
-    }
-    // Also set energy_performance_preference to 'performance' — this is often
-    // writable without root on modern kernels and achieves similar effect.
-    len = snprintf(path, sizeof(path),
-      "/sys/devices/system/cpu/cpu%d/power/energy_performance_preference", cpuIdx);
-    if (len > 0 && len < (int)sizeof(path)) {
-      int fd = open(path, O_WRONLY);
-      if (fd >= 0) {
-        write(fd, "performance", 11);
+        ssize_t w = write(fd, "performance", 11);
+        (void)w;
         close(fd);
       }
     }
@@ -78,217 +76,192 @@ void DisablePowerThrottling() {
   // macOS: No equivalent needed (no power throttling API)
 }
 
-#ifdef PLATFORM_WINDOWS
-#include <vector>
-
-// Cache of P-core and E-core logical processor indices for hybrid pinning.
-// Built once on first access; empty vectors on non-hybrid systems.
-struct HybridCpuMap {
-  std::vector<int> pCoreLps;
-  std::vector<int> eCoreLps;
-};
-
-static HybridCpuMap BuildHybridCpuMap() {
-  HybridCpuMap map;
-  if (!g_Cpu.isHybrid) return map;
-
-  DWORD returnLength = 0;
-  GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &returnLength);
-  if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || returnLength == 0) return map;
-
-  std::vector<char> buf(static_cast<size_t>(returnLength));
-  auto *info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.data());
-
-  if (!GetLogicalProcessorInformationEx(RelationProcessorCore, info, &returnLength))
-    return map;
-
-  int lpIndex = 0;
-  char *ptr = buf.data();
-  while (ptr < buf.data() + returnLength) {
-    auto *current = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(ptr);
-    if (current->Relationship == RelationProcessorCore) {
-      BYTE effClass = current->Processor.EfficiencyClass;
-      // Intel/AMD document: higher efficiency class = more performant core (P-core).
-      // EfficiencyClass 0 = E-core (efficient), class 1+ = P-core (performance).
-      WORD groupCount = current->Processor.GroupCount;
-      for (WORD g = 0; g < groupCount; ++g) {
-        KAFFINITY mask = current->Processor.GroupMask[g].Mask;
-        for (int b = 0; b < (int)(sizeof(KAFFINITY) * 8); ++b) {
-          if (mask & ((KAFFINITY)1 << b)) {
-            if (effClass == 0)
-              map.eCoreLps.push_back(lpIndex);
-            else
-              map.pCoreLps.push_back(lpIndex);
-            lpIndex++;
-          }
-        }
-      }
-    }
-    ptr += current->Size;
-  }
-  return map;
-}
-
-static const HybridCpuMap& GetHybridCpuMap() {
-  static HybridCpuMap map = BuildHybridCpuMap();
-  return map;
-}
-#endif
-
-void PinThreadToCore(int coreIdx) {
-#ifdef PLATFORM_WINDOWS
-  // On hybrid CPUs, pin workers to P-cores first, falling back to E-cores.
-  const HybridCpuMap &hybridMap = GetHybridCpuMap();
-  if (!hybridMap.pCoreLps.empty() || !hybridMap.eCoreLps.empty()) {
-    int actualLp;
-    if (coreIdx < (int)hybridMap.pCoreLps.size()) {
-      actualLp = hybridMap.pCoreLps[coreIdx];
-    } else {
-      int eIdx = coreIdx - (int)hybridMap.pCoreLps.size();
-      actualLp = (eIdx < (int)hybridMap.eCoreLps.size())
-                     ? hybridMap.eCoreLps[eIdx]
-                     : coreIdx; // fallback to linear if out of range
-    }
-    // Convert LP index to group + mask
-    WORD groupCount = GetActiveProcessorGroupCount();
-    if (groupCount > 1) {
-      DWORD coresPerGroup = GetMaximumProcessorCount(0);
-      WORD group = (WORD)(actualLp / coresPerGroup);
-      BYTE procIndex = (BYTE)(actualLp % coresPerGroup);
-      if (group < groupCount) {
-        GROUP_AFFINITY affinity{};
-        affinity.Group = group;
-        affinity.Mask = (KAFFINITY)1 << procIndex;
-        SetThreadGroupAffinity(GetCurrentThread(), &affinity, nullptr);
-        return;
-      }
-    }
-    SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR)1 << actualLp);
-    return;
-  }
-
-  // Non-hybrid: original linear mapping
-  WORD groupCount = GetActiveProcessorGroupCount();
-  if (groupCount > 1) {
-    DWORD coresPerGroup = GetMaximumProcessorCount(0);
-    WORD group = (WORD)(coreIdx / coresPerGroup);
-    BYTE procIndex = (BYTE)(coreIdx % coresPerGroup);
-    if (group < groupCount) {
-      GROUP_AFFINITY affinity{};
-      affinity.Group = group;
-      affinity.Mask = (KAFFINITY)1 << procIndex;
-      SetThreadGroupAffinity(GetCurrentThread(), &affinity, nullptr);
-      return;
-    }
-  }
-  HANDLE hProc = GetCurrentProcess();
-  DWORD_PTR processMask = 0, systemMask = 0;
-  if (!GetProcessAffinityMask(hProc, &processMask, &systemMask) ||
-      processMask == 0)
-    return;
-
-  int bitIndex = -1, foundCores = 0;
-  for (int b = 0; b < (int)(sizeof(DWORD_PTR) * 8); ++b) {
-    if (processMask & ((DWORD_PTR)1 << b)) {
-      if (foundCores == coreIdx) {
-        bitIndex = b;
-        break;
-      }
-      ++foundCores;
-    }
-  }
-  if (bitIndex >= 0)
-    SetThreadAffinityMask(GetCurrentThread(), ((DWORD_PTR)1 << bitIndex));
-#elif defined(PLATFORM_LINUX)
-  cpu_set_t cpuset;
-  CPU_ZERO(&cpuset);
-  // On hybrid Linux, prefer P-cores (first half of enumerated CPUs roughly).
-  // Full hybrid enumeration via sysfs is complex; this simple heuristic works
-  // on most Intel hybrid systems where P-cores are enumerated first.
-  if (g_Cpu.isHybrid && g_Cpu.numPcores > 0) {
-    // Prefer first numPcores CPUs as P-cores (enumerated first on hybrid Linux),
-    // fall back to remaining CPUs for E-cores.
-    int actualCpu = (coreIdx < g_Cpu.numPcores) ? coreIdx : (g_Cpu.numPcores + (coreIdx - g_Cpu.numPcores));
-    CPU_SET(actualCpu, &cpuset);
-  } else {
-    CPU_SET(coreIdx, &cpuset);
-  }
-  pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-#elif defined(PLATFORM_MACOS)
-  (void)coreIdx;
-  // macOS: No hybrid topology on Apple Silicon; all cores are performance cores.
-  thread_affinity_policy_data_t policy = {static_cast<integer_t>(0)};
-  thread_policy_set(mach_thread_self(), THREAD_AFFINITY_POLICY,
-                    (thread_policy_t)&policy, THREAD_AFFINITY_POLICY_COUNT);
-#endif
-}
-
 void SetFpuFlushMode() {
 #if defined(__x86_64__) || defined(_M_X64)
   // Enable Flush-To-Zero (FTZ, bit 15) and Denormals-Are-Zero (DAZ, bit 6) in
-  // MXCSR. This prevents denormal numbers from causing variable-latency
-  // exceptions and ensures consistent FP behaviour across all threads.
+  // MXCSR so every thread has identical FP semantics (bit-exact results).
   _mm_setcsr(_mm_getcsr() | 0x8040);
 #endif
-  // ARM64: denormal handling is configured globally and NEON never traps;
-  // nothing to do.
+  // ARM64: denormal handling is configured globally and NEON never traps.
 }
 
-// Crash dump writing for debugging (Windows only)
+// ---------------------------------------------------------------------------
+// Crash handling. Everything below must stay allocation-free on the crash path.
+// ---------------------------------------------------------------------------
+namespace {
 #ifdef PLATFORM_WINDOWS
-#include <dbghelp.h>
-LONG WINAPI WriteCrashDump(PEXCEPTION_POINTERS pExceptionInfo, uint64_t seed,
-                           int complexity, int threadIdx) {
-  auto now = std::chrono::system_clock::now();
-  auto time = std::chrono::system_clock::to_time_t(now);
-  std::tm tm_buf;
-  localtime_s(&tm_buf, &time);
+wchar_t s_cleanupFileW[MAX_PATH * 2] = {};
+#else
+char s_cleanupFileA[4096] = {};
+#endif
+std::atomic<bool> s_crashing{false};
 
-  std::stringstream ss;
-  ss << std::put_time(&tm_buf, "%Y-%m-%d_%H-%M-%S");
-  std::string folderName =
-      "Crash_" + ss.str() + "_Thread" + std::to_string(threadIdx);
-  CreateDirectoryA(folderName.c_str(), nullptr);
+const char *WorkloadCliName(int workload) {
+  switch (workload) {
+  case WL_SCALAR: return "scalar";
+  case WL_AVX2: return "avx2";
+  case WL_AVX512: return "avx512";
+  case WL_SCALAR_SIM: return "scalar-sim";
+  case JOB_WORKLOAD_DECOMPRESS: return "decompress";
+  case JOB_WORKLOAD_RAM: return "ram-tester";
+  case JOB_WORKLOAD_IO: return "io-tester";
+  default: return "none";
+  }
+}
 
-  g_App.Log(L"CRASH DETECTED in Thread " + std::to_wstring(threadIdx) +
-            L" | Seed: " + std::to_wstring(seed));
+// Formats the crashing thread's job context into `buf`.
+int FormatJobContext(char *buf, size_t cap) {
+  const JobContext &ctx = CurrentJob();
+  const char *wl = WorkloadCliName(ctx.workload);
+  int n = snprintf(buf, cap,
+                   "Thread: worker %d, logical CPU %d\nWorkload: %s\nSeed: %llu\nComplexity: %d\n",
+                   ctx.worker, ctx.lp, wl, (unsigned long long)ctx.seed, ctx.complexity);
+  if (n > 0 && (size_t)n < cap && ctx.workload >= WL_SCALAR && ctx.workload <= WL_SCALAR_SIM) {
+    n += snprintf(buf + n, cap - (size_t)n, "Repro: --repro %llu %d --isa %s\n",
+                  (unsigned long long)ctx.seed, ctx.complexity, wl);
+  }
+  return n;
+}
+} // namespace
 
-  std::string dumpPath = folderName + "\\crash.dmp";
-  std::wstring dumpPathW(dumpPath.begin(), dumpPath.end());
+void SetCrashCleanupFile(const std::wstring &path) {
+#ifdef PLATFORM_WINDOWS
+  size_t n = std::min(path.size(), (size_t)(MAX_PATH * 2 - 1));
+  for (size_t i = 0; i < n; ++i) s_cleanupFileW[i] = path[i];
+  s_cleanupFileW[n] = 0;
+#else
+  size_t n = std::min(path.size(), sizeof(s_cleanupFileA) - 1);
+  for (size_t i = 0; i < n; ++i) s_cleanupFileA[i] = (char)path[i];
+  s_cleanupFileA[n] = 0;
+#endif
+}
 
-  HANDLE hFile = CreateFileW(dumpPathW.c_str(), GENERIC_WRITE, 0, nullptr,
-                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (hFile != INVALID_HANDLE_VALUE) {
+#ifdef PLATFORM_WINDOWS
+static LONG WINAPI CrashFilter(EXCEPTION_POINTERS *ep) {
+  if (s_crashing.exchange(true))
+    return EXCEPTION_EXECUTE_HANDLER; // another thread is already reporting
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+  const JobContext &ctx = CurrentJob();
+  char dir[96];
+  snprintf(dir, sizeof(dir), "Crash_%04u-%02u-%02u_%02u-%02u-%02u_W%d", st.wYear, st.wMonth,
+           st.wDay, st.wHour, st.wMinute, st.wSecond, ctx.worker);
+  CreateDirectoryA(dir, nullptr);
+
+  char info[2048];
+  const EXCEPTION_RECORD *er = ep ? ep->ExceptionRecord : nullptr;
+  uintptr_t addr = er ? (uintptr_t)er->ExceptionAddress : 0;
+  uintptr_t base = (uintptr_t)GetModuleHandleW(nullptr);
+  int n = snprintf(info, sizeof(info),
+                   "ShaderStress %d.%d.%d crash\nException: 0x%08lX at 0x%016llX "
+                   "(ShaderStress.exe+0x%llX)\n",
+                   APP_VERSION_MAJOR, APP_VERSION_MINOR, APP_VERSION_PATCH,
+                   er ? (unsigned long)er->ExceptionCode : 0ul, (unsigned long long)addr,
+                   (unsigned long long)(addr - base));
+  if (n > 0 && (size_t)n < sizeof(info))
+    n += FormatJobContext(info + n, sizeof(info) - (size_t)n);
+  if (n > 0 && (size_t)n < sizeof(info)) {
+    n += snprintf(info + n, sizeof(info) - (size_t)n, "CPU: ");
+    for (wchar_t c : g_Cpu.brand) {
+      if ((size_t)n + 2 >= sizeof(info)) break;
+      info[n++] = (c < 128) ? (char)c : '?';
+    }
+    if ((size_t)n + 2 < sizeof(info)) {
+      info[n++] = '\n';
+      info[n] = 0;
+    }
+  }
+  if (n < 0) n = 0;
+  if ((size_t)n >= sizeof(info)) n = (int)sizeof(info) - 1;
+
+  char path[160];
+  snprintf(path, sizeof(path), "%s\\crash_info.txt", dir);
+  HANDLE hInfo = CreateFileA(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                             FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (hInfo != INVALID_HANDLE_VALUE) {
+    DWORD w = 0;
+    WriteFile(hInfo, info, (DWORD)n, &w, nullptr);
+    CloseHandle(hInfo);
+  }
+  HANDLE hErr = GetStdHandle(STD_ERROR_HANDLE);
+  if (hErr && hErr != INVALID_HANDLE_VALUE) {
+    DWORD w = 0;
+    WriteFile(hErr, "\n[CRASH]\n", 9, &w, nullptr);
+    WriteFile(hErr, info, (DWORD)n, &w, nullptr);
+  }
+
+  // Compact dump (stacks, registers, referenced memory) — never full memory,
+  // which would include the multi-GiB RAM-test buffers.
+  snprintf(path, sizeof(path), "%s\\crash.dmp", dir);
+  HANDLE hDump = CreateFileA(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                             FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (hDump != INVALID_HANDLE_VALUE) {
     MINIDUMP_EXCEPTION_INFORMATION mdei;
     mdei.ThreadId = GetCurrentThreadId();
-    mdei.ExceptionPointers = pExceptionInfo;
+    mdei.ExceptionPointers = ep;
     mdei.ClientPointers = FALSE;
-    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile,
-                      (MINIDUMP_TYPE)(MiniDumpWithFullMemory |
-                                      MiniDumpWithHandleData |
-                                      MiniDumpWithUnloadedModules),
-                      &mdei, nullptr, nullptr);
-    CloseHandle(hFile);
+    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hDump,
+                      (MINIDUMP_TYPE)(MiniDumpWithDataSegs | MiniDumpWithThreadInfo |
+                                      MiniDumpWithIndirectlyReferencedMemory |
+                                      MiniDumpWithUnloadedModules | MiniDumpWithHandleData),
+                      ep ? &mdei : nullptr, nullptr, nullptr);
+    CloseHandle(hDump);
   }
+  if (s_cleanupFileW[0]) DeleteFileW(s_cleanupFileW);
 
-  StressConfig cfgCopy;
-  {
-    std::lock_guard<std::mutex> lk(g_ConfigMtx);
-    cfgCopy = g_ActiveConfig;
-  }
-  std::string infoPath = folderName + "\\crash_seed.txt";
-  std::wofstream info(infoPath);
-  info << L"Seed: " << seed << L"\nComplexity: " << complexity << L"\nThread: "
-       << threadIdx << L"\n";
-  info << L"CPU: " << g_Cpu.name << L" (" << g_Cpu.brand << L")\n";
-  info << L"Config: " << cfgCopy.name << L"\n";
-  info << L"App Version: " << APP_VERSION << L"\n";
-
-  // Signal all threads to stop and flush the log so crash data is persisted.
+  // Best effort: also record in ShaderStress.log (may fail if the crash
+  // happened while the log lock was held).
   g_App.quit = true;
   g_App.running = false;
-  g_App.log.flush();
-
+  if (g_App.logMtx.try_lock()) {
+    if (g_App.log.is_open()) {
+      g_App.log << "[CRASH] see " << dir << "\n" << info;
+      g_App.log.flush();
+    }
+    g_App.logMtx.unlock();
+  }
   return EXCEPTION_EXECUTE_HANDLER;
+}
+
+void InstallCrashHandlers() {
+  SetUnhandledExceptionFilter(CrashFilter);
+  SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+}
+#else
+static void CrashSignalHandler(int sig) {
+  if (s_crashing.exchange(true)) _exit(128 + sig);
+  const char *name = "UNKNOWN";
+  switch (sig) {
+  case SIGSEGV: name = "SIGSEGV"; break;
+  case SIGFPE: name = "SIGFPE"; break;
+  case SIGBUS: name = "SIGBUS"; break;
+  case SIGILL: name = "SIGILL"; break;
+  case SIGABRT: name = "SIGABRT"; break;
+  }
+  // snprintf is not formally async-signal-safe, but the process is already
+  // lost and the buffer is on the stack; the information is worth the risk.
+  char buf[1024];
+  int n = snprintf(buf, sizeof(buf), "\n[CRASH] Signal: %s\n", name);
+  if (n > 0 && (size_t)n < sizeof(buf))
+    n += FormatJobContext(buf + n, sizeof(buf) - (size_t)n);
+  if (n > 0) {
+    ssize_t w = write(STDERR_FILENO, buf, (size_t)std::min<int>(n, (int)sizeof(buf) - 1));
+    (void)w;
+  }
+  if (s_cleanupFileA[0]) unlink(s_cleanupFileA);
+  _exit(128 + sig);
+}
+
+void InstallCrashHandlers() {
+  struct sigaction sa;
+  std::memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = CrashSignalHandler;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = SA_RESETHAND;
+  sigaction(SIGSEGV, &sa, nullptr);
+  sigaction(SIGFPE, &sa, nullptr);
+  sigaction(SIGBUS, &sa, nullptr);
+  sigaction(SIGILL, &sa, nullptr);
+  sigaction(SIGABRT, &sa, nullptr);
 }
 #endif

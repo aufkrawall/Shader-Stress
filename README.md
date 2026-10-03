@@ -1,26 +1,32 @@
 # Shader Stress
 
-Shader Stress is a CPU stress tool tuned to look more like shader and compiler workloads than a synthetic power virus. It supports a native Windows GUI and a cross-platform CLI for scripted or interactive runs.
+Shader Stress is a CPU/RAM stress and stability tester. It combines a realistic shader-compiler simulation, a real LZ decompression workload and FMA-dense SIMD power kernels with constant result verification, so unstable hardware is not only stressed but actually detected. It supports a native Windows GUI and a cross-platform CLI for scripted or interactive runs.
+
+> **Check your cooling first.** Shader Stress is designed to drive CPUs to their power and thermal limits. Monitor temperatures, and only run it on systems whose cooling and power delivery are adequate. Errors or crashes during a run mean the system is unstable at its current settings.
 
 <img width="591" height="446" alt="shaderstress" src="https://github.com/user-attachments/assets/f8d34343-d9d1-4aee-8ff3-f0925ce1c9ce" />
 
 ## Highlights
 
-- Windows GUI for interactive monitoring and workload switching
-- Cross-platform CLI for Windows, Linux, and macOS
-- Dynamic, steady, benchmark, verification, and repro workflows
-- ISA selection with automatic fallback across AVX-512, AVX2, and scalar paths
-- Benchmark hash generation and validation
-- Crash dump support on Windows and crash logging on Unix platforms
-- Cross-compilation via LLVM MinGW (Windows) and Zig (Linux/macOS)
+- **Every result is verified.** Each compute job runs twice, normally on two different cores, and the results are compared. Mismatches are re-checked to name the faulty CPU (e.g. `CPU 6 (core 3)`) and logged with a `--repro` command. Golden values, decompression output, RAM contents and storage reads are checked too.
+- **FMA-dense power kernels** (AVX-512, AVX2/FMA, SSE2, NEON): unitary FFT-style butterfly networks over a 512 KiB/thread buffer with store-every-result and a parallel integer multiply/divide network. Values stay bounded with full-entropy mantissas, so the FP units switch at full rate and a single wrong bit propagates into the job checksum.
+- **Modes for different failure types**:
+  - *Dynamic*: 16 rotating patterns — full load, 50/100/500 ms square waves, bursts, a staircase ramp, RAM/IO mixes and a single-core boost sweep. Workers start and stop instantly, which makes the load steps sharp.
+  - *Steady*: constant full load (compute + decompression + RAM + storage testers).
+  - *Core Cycle*: one thread per physical core in turn at maximum single-core boost, for per-core instability (e.g. Curve Optimizer / undervolting).
+  - *Benchmark*: 180 s throughput run with a shareable hash.
+- **Topology-aware placement**: one thread per physical core before SMT siblings, fastest cores first on hybrid CPUs.
+- Windows GUI, cross-platform CLI (Windows, Linux, macOS; x64 and ARM64), crash reports with debug symbols, exit code 5 on detected errors.
 
 ## Supported Binaries
 
 - Windows x64
 - Windows x64 v3
+- Windows x64 v4 (AVX-512)
 - Windows ARM64
 - Linux x64
 - Linux x64 v3
+- Linux x64 v4 (AVX-512)
 - Linux ARM64
 - macOS x64
 - macOS ARM64
@@ -46,15 +52,25 @@ Run `ShaderStress.exe` from Explorer or a shortcut with no arguments.
 ## Common Examples
 
 ```text
-ShaderStress.com --mode steady --isa avx2 --duration 60
+ShaderStress.com --mode dynamic --duration 3600
+ShaderStress.com --mode steady --isa avx2 --duration 600
+ShaderStress.com --mode steady --no-ram --no-io --no-decompress     (pure FP load on all threads)
+ShaderStress.com --mode corecycle --isa scalar --dwell 120          (per-core stability)
 ShaderStress.com --benchmark
 ShaderStress.com --verify SS3-XXXXXXXXXXXXXXXX
-ShaderStress.com --repro 12345 1000 --isa scalar
+ShaderStress.com --repro 12345 1000 --isa avx2
 
-./shaderstress --mode dynamic --duration 30 --quiet
-./shaderstress --benchmark
-./shaderstress --verify SS3-XXXXXXXXXXXXXXXX
+./shaderstress --mode dynamic --duration 1800 --quiet
+./shaderstress --mode corecycle --threads 8 --dwell 60
 ```
+
+## Reading the results
+
+- `Errors: 0` after a long run means no computation, RAM or storage error was observed. Any non-zero count means the system is unstable at its current settings, even if it did not crash.
+- `Error CPUs:` lists the logical CPUs (and physical cores) blamed for CPU errors. When one core keeps appearing, loosen that core's undervolt/curve setting or clocks.
+- RAM errors point at memory/IMC settings (XMP/EXPO, timings, voltages); I/O errors point at the storage path.
+- `ShaderStress.log` contains every error with details, a health summary every minute, and the exact job seed so the failing case can be replayed with `--repro`.
+- The CLI exits with code 5 when any error was detected.
 
 ## CLI Documentation
 
@@ -70,7 +86,7 @@ Shader Stress uses:
 
 - Python 3
 - Windows: LLVM MinGW 20260519+ extracted under `llvm-mingw-*-ucrt-x86_64/`
-- Linux/macOS: Zig 0.15.2 extracted under `zig-x86_64-windows-0.15.2/`
+- Linux/macOS (and the Zig Windows variants): Zig 0.15.2 extracted under `zig-x86_64-windows-0.15.2/`
 
 ### Build Commands
 
@@ -79,6 +95,8 @@ python build.py
 python build.py windows
 python build.py linux macos
 python build.py native
+python build.py --sanitize=address win-baseline
+python tests/run_tests.py --stress --sanitize
 ```
 
 The build script:
@@ -87,10 +105,12 @@ The build script:
 - cross-compiles all configured targets
 - writes release archives into `dist/`
 - generates `dist/SHA256SUMS.txt`
+- writes debug symbols next to the binaries (`ShaderStress.pdb`, `shaderstress.debug`); they are not part of the archives
 
 ## Logs and Output
 
 - CLI and GUI sessions write `ShaderStress.log` in the working directory.
+- Crashes write `Crash_<date>_<time>_W<worker>/` with `crash_info.txt` (workload, seed, repro command) and a compact `crash.dmp` on Windows.
 - CLI benchmark runs print the final benchmark hash when available.
 - `--verify` returns a dedicated non-zero exit code when a hash is invalid.
 
@@ -98,4 +118,5 @@ The build script:
 
 - CLI benchmark mode is fixed to 180 seconds and defaults to the `scalar-sim` workload for comparable hashes. You can override the ISA explicitly if needed.
 - Windows ships one GUI-first executable plus a tiny `.com` launcher. This keeps the CLI path separate without duplicating the main binary.
-- Release validation is still a manual process; build artifacts include checksums but there is no CI pipeline in this repository.
+- Release validation is still a manual process; build artifacts include checksums but there is no CI pipeline in this repository. See [CHANGELOG.md](CHANGELOG.md).
+- Package power readout (Windows, elevated) uses LibreHardwareMonitor through the bundled `lhm/` helper and installs the PawnIO driver on first elevated start.

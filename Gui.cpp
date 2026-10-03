@@ -1,5 +1,8 @@
 // Gui.cpp - Windows GDI GUI, button handling, painting
-#include "Common.h"
+#include "AuxStress.h"
+#include "Scheduler.h"
+#include "Topology.h"
+#include "Verification.h"
 #include <CommCtrl.h>
 #include <sstream>
 
@@ -127,10 +130,10 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
     bool run = g_App.running;
     btn(1, run ? L"STOP" : L"START", S(10), S(10), run);
-    btn(2, L"Dynamic", S(160), S(10), g_App.mode == 2);
-    btn(3, L"Steady", S(310), S(10), g_App.mode == 1);
-    btn(4, L"Benchmark", S(460), S(10), g_App.mode == 0);
-    btn(5, L"Close", S(610), S(10), false);
+    btn(2, L"Dynamic", S(160), S(10), g_App.mode == MODE_DYNAMIC);
+    btn(3, L"Steady", S(310), S(10), g_App.mode == MODE_STEADY);
+    btn(4, L"Benchmark", S(460), S(10), g_App.mode == MODE_BENCHMARK);
+    btn(5, L"Core Cycle", S(610), S(10), g_App.mode == MODE_CORE_CYCLE);
 
     int y2 = S(50);
     int sel = g_App.selectedWorkload.load();
@@ -144,9 +147,13 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
     // Workload selection - MAX POWER variants + Realistic
     btn(10, L"Auto", S(10), y2, sel == WL_AUTO);
-    btn(11, L"Scalar (AVX-512)", S(160), y2, sel == WL_AVX512, has512);
-    btn(12, L"Scalar (AVX2)", S(310), y2, sel == WL_AVX2, hasAVX2);
-    btn(13, L"Scalar (Synthetic)", S(460), y2, sel == WL_SCALAR);
+    btn(11, L"AVX-512", S(160), y2, sel == WL_AVX512, has512);
+    btn(12, L"AVX2", S(310), y2, sel == WL_AVX2, hasAVX2);
+#if defined(_M_ARM64) || defined(__aarch64__)
+    btn(13, L"NEON (Synthetic)", S(460), y2, sel == WL_SCALAR);
+#else
+    btn(13, L"SSE2 (Synthetic)", S(460), y2, sel == WL_SCALAR);
+#endif
     btn(14, L"Scalar (Realistic)", S(610), y2, sel == WL_SCALAR_SIM);
 
     // Second row - Checkbox for auto-stop and Verify Hash button
@@ -176,34 +183,44 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     // Note about workloads - positioned at bottom right
     {
       SetTextColor(s_memDC, RGB(120, 120, 120)); // Dimmed text
-      RECT noteRect = {S(380), S(615), S(750), S(700)};
+      RECT noteRect = {S(420), S(615), S(750), S(725)};
       DrawTextW(s_memDC,
-                L"Note: AVX workloads have increased computational\n"
-                L"complexities, hence Jobs/s is not an indicator for\n"
-                L"actual AVX2/AVX-512 acceleration. Scalar (Synthetic)\n"
-                L"on ARM actually uses NEON.",
+                L"Every job runs twice on different cores and is\n"
+                L"compared; RAM/IO data and decompression output are\n"
+                L"verified too. Any error means the system is unstable.\n"
+                L"Jobs/s is not comparable across ISAs.",
                 -1, &noteRect, DT_LEFT | DT_WORDBREAK);
       SetTextColor(s_memDC, RGB(200, 200, 200)); // Restore color
     }
 
     btn(20, L"Verify Hash", S(610), y3, false);
 
-    std::wstring modeName =
-        (g_App.mode == 2 ? L"Dynamic"
-                         : (g_App.mode == 1 ? L"Steady" : L"Benchmark"));
+    std::wstring modeName = GetModeName(g_App.mode.load());
     std::wstring activeISA = GetResolvedISAName(sel);
 
     std::wstring part1 =
         L"Shader Stress " + APP_VERSION + L"\nOS: Windows (" + GetArchName() +
-        L")" + L"\nMode: " + modeName + L"\nActive ISA: " + activeISA +
-        L"\nJobs Done: " + FmtNum(g_App.shaders) +
-        L"\n\n--- Performance ---\nRate (Jobs/s): " +
-        FmtNum(g_App.currentRate) + L"\nTime: " + FmtTime(g_App.elapsed);
+        L")  |  " + TopologySummary() + L"\nMode: " + modeName + L"\nActive ISA: " +
+        activeISA + L"\nJobs Done: " + FmtNum(g_App.shaders) +
+        L"\n\n--- Performance ---\nRate (Jobs/s): " + FmtNum(g_App.currentRate) +
+        L"\nTime: " + FmtTime(g_App.elapsed);
+    double watts = SampleCpuPackagePower();
+    if (watts > 0)
+      part1 += L"\nCPU Package Power: " + std::to_wstring((int)watts) + L" W";
 
-    if (g_App.mode == 2) {
-      part1 += L"\nPhase: " + std::to_wstring(g_App.currentPhase) + L" / 16";
+    if (g_App.mode == MODE_DYNAMIC) {
+      int ph = g_App.currentPhase.load();
+      part1 += L"\nPhase: " + std::to_wstring(ph) + L" / " +
+               std::to_wstring(DYNAMIC_PHASES) + L"  (" + DynamicPhaseName(ph) + L")";
       part1 += L"\nLoop: " + std::to_wstring(g_App.loops);
-    } else if (g_App.mode == 0) {
+    } else if (g_App.mode == MODE_CORE_CYCLE) {
+      int core = g_App.cycleCore.load();
+      int64_t left = (int64_t)g_App.cycleNextTick.load() - (int64_t)GetTickCount64();
+      part1 += L"\nCore: " + (core >= 0 ? std::to_wstring(core + 1) : std::wstring(L"-")) +
+               L" / " + std::to_wstring(CoreCycleCoreCount()) + L"  (next in " +
+               std::to_wstring(std::max<int64_t>(0, left / 1000)) + L" s)";
+      part1 += L"\nLoop: " + std::to_wstring(g_App.loops);
+    } else if (g_App.mode == MODE_BENCHMARK) {
       part1 += L"\n\n--- Benchmark Rounds (60s each) ---";
       part1 += L"\n1st Minute: " +
                (g_App.benchRates[0] > 0
@@ -229,18 +246,32 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       }
     }
 
-    std::wstring partError = L"Errors: " + FmtNum(g_App.errors);
-    std::wstring part3 = L"\n\n--- Stress Status ---";
+    VerifyStats vs = GetVerifyStats();
+    std::wstring partError = L"Errors: " + FmtNum(g_App.errors) + L"  (CPU " +
+                             FmtNum(vs.cpuErrors) + L", RAM " + FmtNum(vs.ramErrors) +
+                             L", I/O " + FmtNum(vs.ioErrors) + L")";
+    std::wstring errCpus = FormatErrorCpus(3);
+    if (!errCpus.empty())
+      partError += L"\nError CPUs: " + errCpus;
+    AuxStatus aux = GetAuxStatus();
+    std::wstring part3 = L"\nVerified: " + FmtNum(vs.pairsMatched) + L" job pairs, " +
+                         FmtNum(vs.goldenChecks) + L" golden, " + FmtNum(vs.decompPasses) +
+                         L" decompress passes";
+    part3 += L"\n\n--- Stress Status ---";
     part3 += L"\nWorker Threads: " +
-             FmtNum(g_App.activeCompilers + g_App.activeDecomp);
+             FmtNum(g_App.activeCompilers + g_App.activeDecomp) + L" of " +
+             std::to_wstring(g_Workers.size());
     part3 += L"\n  > Sim Compilers: " + FmtNum(g_App.activeCompilers);
     part3 += L"\n  > Decompressors: " + FmtNum(g_App.activeDecomp);
-    part3 +=
-        L"\nRAM Thread: " + std::wstring(g_App.ramActive ? L"ACTIVE" : L"Idle");
-    part3 += L"\nI/O Threads: " +
-             std::wstring(g_App.ioActive ? L"ACTIVE (1x)" : L"Idle");
+    part3 += L"\nRAM Tester: " + std::wstring(g_App.ramActive ? L"ACTIVE" : L"Idle");
+    if (aux.ramBytes)
+      part3 += L" (" + FmtBytes(aux.ramBytes) + L", " + std::to_wstring(aux.ramPasses) +
+               L" passes, " + FmtBytes(vs.ramBytesVerified) + L" verified)";
+    part3 += L"\nI/O Tester: " + std::wstring(g_App.ioActive ? L"ACTIVE" : L"Idle");
+    if (vs.ioBytesVerified)
+      part3 += L" (" + FmtBytes(vs.ioBytesVerified) + L" verified)";
 
-    RECT tr{S(20), S(130), S(740), S(680)};
+    RECT tr{S(20), S(130), S(740), S(725)};
     DrawTextW(s_memDC, part1.c_str(), -1, &tr, DT_LEFT | DT_NOCLIP);
     RECT measure = tr;
     DrawTextW(s_memDC, part1.c_str(), -1, &measure, DT_LEFT | DT_CALCRECT);
@@ -290,46 +321,25 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       bool clickedStart = (x > S(10) && x < S(150));
       int newMode = -1;
       if (x > S(160) && x < S(300))
-        newMode = 2;
+        newMode = MODE_DYNAMIC;
       else if (x > S(310) && x < S(450))
-        newMode = 1;
+        newMode = MODE_STEADY;
       else if (x > S(460) && x < S(600))
-        newMode = 0;
+        newMode = MODE_BENCHMARK;
       else if (x > S(610) && x < S(750))
-        PostMessage(h, WM_CLOSE, 0, 0);
+        newMode = MODE_CORE_CYCLE;
 
       std::lock_guard<std::mutex> lock(g_StateMtx);
-
-      auto StartWorkload = []() {
-        // Apply the appropriate config for the selected workload
-        ApplyWorkloadConfig(g_App.selectedWorkload.load());
-        
-        if (g_DynThread && g_DynThread->t.joinable())
-          g_DynThread->t.join();
-        if (g_App.mode == 2) {
-          g_DynThread = std::make_unique<ThreadWrapper>();
-          g_DynThread->t = std::thread(DynamicLoop);
-        } else if (g_App.mode == 1) {
-          int cpu = (int)g_Workers.size();
-          int d = std::min(4, std::max(1, cpu / 2));
-          int c = std::max(0, cpu - d);
-          SetWork(c, d, true, true);
-        } else {
-          for (int i = 0; i < 3; ++i)
-            g_App.benchRates[i] = 0;
-          g_App.benchWinner = -1;
-          g_App.benchComplete = false;
-          SetWork((int)g_Workers.size(), 0, 0, 0);
-        }
-      };
 
       auto ResetState = []() {
         g_App.shaders = 0;
         g_App.elapsed = 0;
         g_App.loops = 0;
         g_App.currentPhase = 0;
+        g_App.errors = 0;
         for (auto &w : g_Workers)
           w->localShaders = 0;
+        ResetVerification();
       };
 
       if (clickedStart) {
@@ -338,18 +348,18 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           g_App.Log(L"State changed: STARTED");
           g_App.resetTimer = true; // Only reset on START
           ResetState();
-          StartWorkload();
+          StartModeWork();
         } else {
           g_App.Log(L"State changed: STOPPED");
-          SetWork(0, 0, 0, 0);
+          if (g_DynThread && g_DynThread->t.joinable())
+            g_DynThread->t.join();
+          SetWork(0, 0, false, false);
+          ReleaseAuxResources();
           // Do NOT reset timer or benchmark data on stop
         }
       } else if (newMode != -1 && newMode != g_App.mode) {
         g_App.mode = newMode;
-        std::wstring modeName =
-            (newMode == 2 ? L"Dynamic"
-                          : (newMode == 1 ? L"Steady" : L"Benchmark"));
-        g_App.Log(L"Mode changed to: " + modeName);
+        g_App.Log(L"Mode changed to: " + GetModeName(newMode));
 
         // When switching to Benchmark, default to Realistic if currently on Auto
         if (newMode == 0 && g_App.selectedWorkload == WL_AUTO) {
@@ -366,7 +376,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (g_App.running) {
           g_App.resetTimer = true; // Reset when changing mode while running
           ResetState();
-          StartWorkload();
+          StartModeWork();
         }
       }
       InvalidateRect(h, nullptr, FALSE);

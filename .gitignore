@@ -38,3 +38,23 @@ Crash_*/
 .DS_Store
 Thumbs.db
 NUL
+
+# Agent scratch/plans (may contain absolute local paths)
+.opencode/
+
+# Debug symbols, dumps, crash reports
+*.pdb
+*.debug
+*.dmp
+Crash_*/
+
+# Local tool discovery evidence (machine/user specific)
+tool-paths.env
+debug-tool-manifest.json
+debug-tool-warnings.txt
+debug-tool-availability.md
+
+# Power sweep / profiling output
+sweep_results.csv
+*.profraw
+default.profdata

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ShaderStress Build Script
-Windows: LLVM MinGW (clang++ / lld)
+Windows: LLVM MinGW (clang++ / lld) and Zig
 Linux/macOS: Zig cross-compilation
 """
 import os
@@ -10,12 +10,13 @@ import subprocess
 import shutil
 import multiprocessing
 import hashlib
+import platform
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import urllib.request
 
 # Configuration
-BASE_DIR = Path.cwd()
+BASE_DIR = Path(__file__).resolve().parent
 LHM_DEPS_URL = "https://raw.githubusercontent.com/aufkrawall/Shader-Stress/main/lhm-deps"
 LHM_DEPS_FILES = [
     "LibreHardwareMonitorLib.dll",
@@ -30,15 +31,19 @@ ZIG_DIR = BASE_DIR / "zig-x86_64-windows-0.15.2"
 ZIG_EXE = ZIG_DIR / "zig.exe"
 LLVM_MINGW_DIR = BASE_DIR / "llvm-mingw-20260519-ucrt-x86_64" / "llvm-mingw-20260519-ucrt-x86_64"
 LLVM_MINGW_BIN = LLVM_MINGW_DIR / "bin"
+LLVM_OBJCOPY = LLVM_MINGW_BIN / "llvm-objcopy.exe"
 VERSION_FILE = BASE_DIR / "VERSION"
 CLI_LAUNCHER_SOURCE = BASE_DIR / "cli_launcher.c"
 
 # Extra preprocessor defines forwarded to every compile, taken from the
 # SHADERSTRESS_EXTRA_DEFINES environment variable (space separated). Used by
-# sweep_power.ps1 to override the power-tuning knobs in Workloads.cpp
-# (e.g. SHADERSTRESS_EXTRA_DEFINES="-DSYNTH_L1_ELEMS=2048 -DSYNTH_STORE_COUNT=2")
-# without editing source.
+# sweep_power.ps1 to override the kernel tuning knobs in Workloads.h
+# (e.g. SHADERSTRESS_EXTRA_DEFINES="-DSYNTH_BUF_KIB=256 -DSYNTH_ROUNDS=3").
 EXTRA_DEFINES = os.environ.get("SHADERSTRESS_EXTRA_DEFINES", "").split()
+
+
+def log(msg):
+    print(f"[BUILD] {msg}", flush=True)
 
 
 def load_version():
@@ -46,48 +51,56 @@ def load_version():
     if not VERSION_FILE.exists():
         log(f"ERROR: VERSION file not found at {VERSION_FILE}")
         sys.exit(1)
-
     version_text = VERSION_FILE.read_text(encoding="utf-8").strip()
     parts = version_text.split(".")
     if len(parts) != 3 or not all(part.isdigit() for part in parts):
         log(f"ERROR: Invalid version string '{version_text}' in VERSION")
         sys.exit(1)
-
     major, minor, patch = (int(part) for part in parts)
     return version_text, major, minor, patch
 
 
 # Source files
-SRC_FILES_WINDOWS = [
-    "Common.cpp", "CpuFeatures.cpp", "Platform.cpp",
-    "Workloads.cpp", "Threading.cpp", "Gui.cpp", "ShaderStress.cpp"
-]
-SRC_FILES_UNIX = [
-    "Common.cpp", "CpuFeatures.cpp", "Platform.cpp",
-    "Workloads.cpp", "Threading.cpp", "TerminalUtils.cpp", "ShaderStress.cpp"
+SRC_COMMON = [
+    "Common.cpp", "CpuFeatures.cpp", "Topology.cpp", "Platform.cpp",
+    "SynthKernels.cpp", "SynthKernelsX86.cpp", "WorkloadRealistic.cpp",
+    "Decompress.cpp", "Verification.cpp", "Worker.cpp", "Scheduler.cpp",
+    "Watchdog.cpp", "RamStress.cpp", "IoStress.cpp", "PowerMeasure.cpp",
+    "CliArgs.cpp", "CliRun.cpp", "SelfTest.cpp", "CpuGuard.cpp", "ShaderStress.cpp",
 ]
 
+# Windows v3/v4 builds start in CpuGuard.cpp, which verifies the CPU supports the
+# build's ISA level before the CRT and static constructors run.
+GUARDED_CPUS = ("x86_64_v3", "x86_64_v4")
+GUARD_ENTRY = "ShaderStressGuardedEntry"
+SRC_FILES_WINDOWS = SRC_COMMON + ["Gui.cpp"]
+SRC_FILES_UNIX = SRC_COMMON + ["TerminalUtils.cpp"]
+
 # Build configurations
-# (target, out_dir, cpu, is_windows, archive_name)
+# (target, out_dir, cpu, is_windows, archive_name, experimental)
+# Experimental configs are only built when requested explicitly
+# (`experimental` or their alias) and are never archived.
 BUILD_CONFIGS = [
     # Windows (LLVM MinGW)
-    ("x86_64-windows-gnu", "bin/x64-llvm", "x86_64", True, "ShaderStress-Windows-x64.7z"),
-    ("x86_64-windows-gnu", "bin/x64-llvm-v3", "x86_64_v3", True, "ShaderStress-Windows-x64-v3.7z"),
-    ("x86_64-windows-gnu", "bin/x64-llvm-v3-nounroll", "x86_64_v3", True, "ShaderStress-Windows-x64-v3-nounroll.7z"),
-    ("x86_64-windows-gnu", "bin/x64-llvm-v4", "x86_64_v4", True, "ShaderStress-Windows-x64-v4.7z"),
-    ("aarch64-windows-gnu", "bin/arm64-llvm", "generic", True, "ShaderStress-Windows-ARM64.7z"),
-    # Windows (Zig) - matches the GitHub release toolchain
-    ("x86_64-windows-gnu", "bin/x64-zig", "x86_64", True, "ShaderStress-Windows-x64-Zig.7z"),
-    ("x86_64-windows-gnu", "bin/x64-zig-v3", "x86_64_v3", True, "ShaderStress-Windows-x64-v3-Zig.7z"),
-    ("x86_64-windows-gnu", "bin/x64-zig-v3-nounroll", "x86_64_v3", True, "ShaderStress-Windows-x64-v3-Zig-nounroll.7z"),
-    ("aarch64-windows-gnu", "bin/arm64-zig", "generic", True, "ShaderStress-Windows-ARM64-Zig.7z"),
+    ("x86_64-windows-gnu", "bin/x64-llvm", "x86_64", True, "ShaderStress-Windows-x64.7z", False),
+    ("x86_64-windows-gnu", "bin/x64-llvm-v3", "x86_64_v3", True, "ShaderStress-Windows-x64-v3.7z", False),
+    ("x86_64-windows-gnu", "bin/x64-llvm-v4", "x86_64_v4", True, "ShaderStress-Windows-x64-v4.7z", False),
+    ("aarch64-windows-gnu", "bin/arm64-llvm", "generic", True, "ShaderStress-Windows-ARM64.7z", False),
+    # Windows (Zig) - matches the historical GitHub release toolchain
+    ("x86_64-windows-gnu", "bin/x64-zig", "x86_64", True, "ShaderStress-Windows-x64-Zig.7z", False),
+    ("x86_64-windows-gnu", "bin/x64-zig-v3", "x86_64_v3", True, "ShaderStress-Windows-x64-v3-Zig.7z", False),
+    ("aarch64-windows-gnu", "bin/arm64-zig", "generic", True, "ShaderStress-Windows-ARM64-Zig.7z", False),
     # Linux (Zig)
-    ("x86_64-linux-gnu", "bin/linux-x64", "x86_64", False, "ShaderStress-Linux-x64.7z"),
-    ("x86_64-linux-gnu", "bin/linux-x64-v3", "x86_64_v3", False, "ShaderStress-Linux-x64-v3.7z"),
-    ("x86_64-linux-gnu", "bin/linux-x64-v4", "x86_64_v4", False, "ShaderStress-Linux-x64-v4.7z"),
-    ("aarch64-linux-gnu", "bin/linux-arm64", "generic", False, "ShaderStress-Linux-ARM64.7z"),
-    ("x86_64-macos", "bin/macos-x64", "x86_64", False, "ShaderStress-macOS-x64.7z"),
-    ("aarch64-macos", "bin/macos-arm64", "generic", False, "ShaderStress-macOS-ARM64.7z"),
+    ("x86_64-linux-gnu", "bin/linux-x64", "x86_64", False, "ShaderStress-Linux-x64.7z", False),
+    ("x86_64-linux-gnu", "bin/linux-x64-v3", "x86_64_v3", False, "ShaderStress-Linux-x64-v3.7z", False),
+    ("x86_64-linux-gnu", "bin/linux-x64-v4", "x86_64_v4", False, "ShaderStress-Linux-x64-v4.7z", False),
+    ("aarch64-linux-gnu", "bin/linux-arm64", "generic", False, "ShaderStress-Linux-ARM64.7z", False),
+    # macOS (Zig)
+    ("x86_64-macos", "bin/macos-x64", "x86_64", False, "ShaderStress-macOS-x64.7z", False),
+    ("aarch64-macos", "bin/macos-arm64", "generic", False, "ShaderStress-macOS-ARM64.7z", False),
+    # Experimental comparison builds (no -funroll-loops / -fno-strict-aliasing)
+    ("x86_64-windows-gnu", "bin/x64-llvm-v3-nounroll", "x86_64_v3", True, "", True),
+    ("x86_64-windows-gnu", "bin/x64-zig-v3-nounroll", "x86_64_v3", True, "", True),
 ]
 
 # Map Zig-style CPU levels to Clang -march flags (Windows/LLVM MinGW only)
@@ -104,16 +117,28 @@ MINGW_ARCH_MAP = {
     "aarch64-windows-gnu": "aarch64",
 }
 
-
-def log(msg):
-    print(f"[BUILD] {msg}", flush=True)
-
-
 APP_VERSION_TEXT, APP_VERSION_MAJOR, APP_VERSION_MINOR, APP_VERSION_PATCH = load_version()
+
+# PGO mode: None, "generate", or "use"
+PGO_MODE = None
+# Sanitizer mode: None, "undefined", "address", or "thread"
+SANITIZER_MODE = None
+SANITIZER_SUFFIX = {"undefined": "-ubsan", "address": "-asan", "thread": "-tsan"}
+
+
+def is_zig_config(config):
+    """Zig is used for all non-Windows targets and Windows out dirs containing 'zig'."""
+    return (not config[3]) or ("zig" in config[1])
+
+
+def effective_out_dir(out_dir):
+    """Sanitizer builds never overwrite release binaries."""
+    if SANITIZER_MODE:
+        return out_dir + SANITIZER_SUFFIX[SANITIZER_MODE]
+    return out_dir
 
 
 def check_zig():
-    """Verify Zig is available (needed for Linux/macOS builds)"""
     if not ZIG_EXE.exists():
         log(f"ERROR: Zig not found at {ZIG_EXE}")
         log("Please download Zig 0.15.2 and extract to zig-x86_64-windows-0.15.2/")
@@ -121,12 +146,71 @@ def check_zig():
 
 
 def check_llvm_mingw():
-    """Verify LLVM MinGW toolchain is available (needed for Windows builds)"""
     clang = LLVM_MINGW_BIN / "x86_64-w64-mingw32-clang++.exe"
     if not clang.exists():
         log(f"ERROR: LLVM MinGW not found at {LLVM_MINGW_DIR}")
         log("Please download llvm-mingw and extract to llvm-mingw-*/")
         sys.exit(1)
+
+
+def version_defines():
+    return [
+        f'-DAPP_VERSION_TEXT="{APP_VERSION_TEXT}"',
+        f"-DAPP_VERSION_MAJOR_NUM={APP_VERSION_MAJOR}",
+        f"-DAPP_VERSION_MINOR_NUM={APP_VERSION_MINOR}",
+        f"-DAPP_VERSION_PATCH_NUM={APP_VERSION_PATCH}",
+    ]
+
+
+def common_cxx_flags(out_dir):
+    """Flags shared by every C++ build of the main binary.
+
+    -O3 with strict IEEE FP semantics (no -ffast-math): every result must be
+    bit-reproducible across call sites and cores for the redundant job
+    verification. Unwind tables are kept so crash dumps have usable stacks.
+    """
+    flags = [
+        "-std=c++20", "-O3",
+        "-fno-math-errno",
+        "-fno-rtti",
+        "-fno-exceptions",
+        "-fno-stack-protector",
+        "-fomit-frame-pointer",
+        "-ffunction-sections", "-fdata-sections",
+        "-fno-ident",
+        "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-missing-field-initializers",
+    ]
+    if not out_dir.endswith("-nounroll"):
+        flags += ["-funroll-loops", "-fno-strict-aliasing"]
+    return flags
+
+
+def sanitizer_flags():
+    if SANITIZER_MODE == "undefined":
+        return ["-fsanitize=undefined", "-fno-sanitize-recover=undefined", "-g", "-O1",
+                "-fno-omit-frame-pointer"]
+    if SANITIZER_MODE == "address":
+        return ["-fsanitize=address", "-fsanitize-address-use-after-scope", "-g", "-O1",
+                "-fno-omit-frame-pointer"]
+    if SANITIZER_MODE == "thread":
+        return ["-fsanitize=thread", "-g", "-O1"]
+    return []
+
+
+def pgo_flags(target):
+    if PGO_MODE == "generate":
+        return ["-fprofile-generate"]
+    if PGO_MODE == "use":
+        profdata = BASE_DIR / "default.profdata"
+        if profdata.exists():
+            return [f"-fprofile-use={profdata}"]
+        log(f"WARNING: {profdata} not found, skipping PGO for {target}")
+    return []
+
+
+def collect_warnings(stderr_bytes):
+    text = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+    return [line for line in text.splitlines() if "warning:" in line]
 
 
 def build_windows_resource(out_path):
@@ -136,11 +220,10 @@ def build_windows_resource(out_path):
     if not rc_src.exists():
         log("Warning: resource.rc not found, skipping resource compilation")
         return None
-
     windres = LLVM_MINGW_BIN / "llvm-windres.exe"
     try:
         subprocess.run([str(windres), str(rc_src), "-o", str(res_file)],
-                       check=True, capture_output=True)
+                       check=True, capture_output=True, cwd=BASE_DIR)
         return str(res_file)
     except subprocess.CalledProcessError as e:
         log(f"Warning: Could not compile resource.rc: {e}")
@@ -153,29 +236,22 @@ def set_pe_checksum(exe_path):
         data = bytearray(exe_path.read_bytes())
         if len(data) < 256:
             return False
-        # Locate PE checksum field: offset in optional header differs for PE32/PE32+
-        dos = data[:64]
-        e_lfanew = int.from_bytes(dos[60:64], "little")
-        nt_offset = e_lfanew + 4  # skip PE\0\0 signature
-        fh = data[nt_offset:nt_offset + 20]
+        e_lfanew = int.from_bytes(data[60:64], "little")
         opt_magic = int.from_bytes(data[e_lfanew + 24:e_lfanew + 26], "little")
-        # PE32+: Checksum at optional header offset 64
-        # PE32: Checksum at optional header offset 68
         if opt_magic == 0x20b:
             checksum_off = e_lfanew + 24 + 64
         elif opt_magic == 0x10b:
             checksum_off = e_lfanew + 24 + 68
         else:
             return False
-        # Zero out the checksum field for calculation
         data[checksum_off:checksum_off + 4] = b'\x00\x00\x00\x00'
-        # Compute one's complement sum over all WORDs, then add file size
         total = 0
         for i in range(0, len(data), 2):
             word = int.from_bytes(data[i:i + 2], "little")
             total = (total + word) & 0xFFFFFFFF
+            total = (total & 0xFFFF) + (total >> 16)
+        total = (total & 0xFFFF) + (total >> 16)
         total = (total + len(data)) & 0xFFFFFFFF
-        # Write checksum
         data[checksum_off:checksum_off + 4] = total.to_bytes(4, "little")
         exe_path.write_bytes(data)
         return True
@@ -188,43 +264,56 @@ def build_windows_cli_launcher(target, cpu, out_path):
     launcher_path = out_path / "ShaderStress.com"
     arch = MINGW_ARCH_MAP.get(target, "x86_64")
     clang_exe = LLVM_MINGW_BIN / f"{arch}-w64-mingw32-clang.exe"
-
-    cmd = [
-        str(clang_exe),
-        "-Oz", "-s",
-        "-ffunction-sections", "-fdata-sections",
-        "-fno-asynchronous-unwind-tables",
-        "-fno-ident",
-        "-municode",
-    ]
-
-    # Map CPU level for the launcher
+    cmd = [str(clang_exe), "-Oz", "-s", "-ffunction-sections", "-fdata-sections",
+           "-fno-asynchronous-unwind-tables", "-fno-ident", "-municode"]
     march = CPU_ARCH_MAP.get(cpu)
     if march:
         cmd.append(f"-march={march}")
-
-    cmd.extend([
-        str(CLI_LAUNCHER_SOURCE),
-        "-o", str(launcher_path),
-        "-Wl,--subsystem,console",
-        "-Wl,--gc-sections",
-    ])
-    subprocess.run(cmd, check=True, capture_output=True)
+    cmd += [str(CLI_LAUNCHER_SOURCE), "-o", str(launcher_path),
+            "-Wl,--subsystem,console", "-Wl,--gc-sections"]
+    subprocess.run(cmd, check=True, capture_output=True, cwd=BASE_DIR)
 
 
-# PGO mode: None, "generate", or "use"
-PGO_MODE = None
-# Sanitizer mode: None, "undefined", "address", or "thread"
-SANITIZER_MODE = None
+def build_power_reader(out_path):
+    """Compile PowerReader.cs (C# LHM helper) and copy the LHM runtime files."""
+    lhm_src = BASE_DIR / "vendor" / "lhm"
+    power_reader_cs = lhm_src / "PowerReader.cs"
+    if not (power_reader_cs.exists() and lhm_src.exists()):
+        return
+    lhm_out = out_path / "lhm"
+    lhm_out.mkdir(parents=True, exist_ok=True)
+    csc = Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / \
+        "Microsoft.NET" / "Framework64" / "v4.0.30319" / "csc.exe"
+    if csc.exists():
+        lhm_dll = lhm_src / "LibreHardwareMonitorLib.dll"
+        pr_exe = lhm_out / "PowerReader.exe"
+        subprocess.run([
+            str(csc), "/target:exe", f"/out:{pr_exe}",
+            "/platform:x64", "/nologo",
+            f"/reference:{lhm_dll}",
+            str(power_reader_cs),
+        ], check=True, capture_output=True)
+        # .NET 4.8 app.config (needed for the Mutex ctor used by LHM)
+        pr_exe.with_suffix(".exe.config").write_text(
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            '<configuration>\n'
+            '  <startup>\n'
+            '    <supportedRuntime version="v4.0" sku=".NETFramework,Version=v4.8" />\n'
+            '  </startup>\n'
+            '</configuration>\n', encoding="utf-8")
+    needed = LHM_DEPS_FILES + ["install-pawnio.ps1", "uninstall-pawnio.ps1"]
+    for name in needed:
+        src = lhm_src / name
+        if src.exists() and not (lhm_out / name).exists():
+            shutil.copy2(src, lhm_out / name)
 
 
 def build_windows_target(config):
     """Build a Windows target using LLVM MinGW"""
-    target, out_dir, cpu, is_windows, archive_name = config
+    target, out_dir, cpu, is_windows, archive_name, _ = config
+    out_dir = effective_out_dir(out_dir)
     out_path = BASE_DIR / out_dir
     out_path.mkdir(parents=True, exist_ok=True)
-
-    # Clean stale outputs
     for stale_name in ["ShaderStress.com", "ShaderStressCli.exe", "ShaderStressGui.exe", "ShaderStressCli.cmd"]:
         stale_path = out_path / stale_name
         if stale_path.exists():
@@ -232,193 +321,85 @@ def build_windows_target(config):
 
     arch = MINGW_ARCH_MAP.get(target, "x86_64")
     clang_exe = LLVM_MINGW_BIN / f"{arch}-w64-mingw32-clang++.exe"
+    log(f"Starting {target} (cpu={cpu}) -> {out_dir} using {clang_exe.name}...")
 
-    log(f"Starting {target} (cpu={cpu}) using {clang_exe.name}...")
+    defines = ["-DUNICODE", "-D_UNICODE", "-D_WIN32_WINNT=0x0A00", "-DDISABLE_SEH"]
+    if "aarch64" in target:
+        defines += ["-D_M_ARM64", "-D_WIN64"]
+    defines += version_defines() + EXTRA_DEFINES
 
-    src_files = SRC_FILES_WINDOWS[:]
-    defines = ["-DUNICODE", "-D_UNICODE", "-D_WIN32_WINNT=0x0A00"]
-
-    if "arm64" in target:
-        defines.extend(["-D_M_ARM64", "-D_WIN64"])
-
-    defines.extend([
-        f'-DAPP_VERSION_TEXT="{APP_VERSION_TEXT}"',
-        f"-DAPP_VERSION_MAJOR_NUM={APP_VERSION_MAJOR}",
-        f"-DAPP_VERSION_MINOR_NUM={APP_VERSION_MINOR}",
-        f"-DAPP_VERSION_PATCH_NUM={APP_VERSION_PATCH}",
-    ])
-
-    defines.append("-DDISABLE_SEH")
-    defines.extend(EXTRA_DEFINES)
-
-    exe_name = "ShaderStress.exe"
-    exe_path = out_path / exe_name
-
+    exe_path = out_path / "ShaderStress.exe"
+    pdb_path = out_path / "ShaderStress.pdb"
     try:
-        # Compile resource file
+        src_files = list(SRC_FILES_WINDOWS)
         res_file = build_windows_resource(out_path)
         if res_file:
             src_files.append(res_file)
 
-        # Base compiler flags
-        base_cmd = [str(clang_exe)]
-
-        # CPU architecture selection
+        cmd = [str(clang_exe)]
         march = CPU_ARCH_MAP.get(cpu)
         if march:
-            base_cmd.append(f"-march={march}")
-
-        # Force 512-bit ZMM vector width on x86_64_v4 targets
+            cmd.append(f"-march={march}")
         if cpu == "x86_64_v4":
-            base_cmd.append("-mprefer-vector-width=512")
-
-        base_cmd.extend([
-            "-std=c++20", "-O3",
-            "-ffast-math",
-            "-fno-rtti",
-            "-fno-exceptions",
-            "-fno-stack-protector",
-            "-fomit-frame-pointer",
-            "-ffunction-sections", "-fdata-sections",
-            "-fno-asynchronous-unwind-tables",
-            "-fno-ident",
-        ])
-
-        # -funroll-loops / -fno-strict-aliasing: restored for synthetic workload
-        # power.  Nounroll variants (out_dir ending in "-nounroll") omit them so
-        # the user can compare the impact on their CPU.
-        if not out_dir.endswith("-nounroll"):
-            base_cmd.extend(["-funroll-loops", "-fno-strict-aliasing"])
-
-        # Sanitizer build mode (development only)
-        if SANITIZER_MODE == "undefined":
-            base_cmd.extend(["-fsanitize=undefined", "-fno-sanitize-recover=undefined"])
-        elif SANITIZER_MODE == "address":
-            base_cmd.extend(["-fsanitize=address", "-fno-omit-frame-pointer", "-fsanitize-address-use-after-scope"])
-        elif SANITIZER_MODE == "thread":
-            base_cmd.append("-fsanitize=thread")
-
-        # LTO is supported on Windows/LLVM MinGW
-        if SANITIZER_MODE is None:
-            base_cmd.append("-flto")
-
-        # PGO support
-        if PGO_MODE == "generate":
-            base_cmd.append("-fprofile-generate")
-        elif PGO_MODE == "use":
-            profdata = BASE_DIR / "default.profdata"
-            if profdata.exists():
-                base_cmd.append(f"-fprofile-use={profdata}")
-            else:
-                log(f"WARNING: {profdata} not found, skipping PGO for {target}")
-
-        base_cmd.extend([
-            "-s",
-            "-static-libstdc++",
-            "-static",
-            "-Wno-macro-redefined",
-            "-Wno-ignored-optimization-argument",
-            "-Wno-ignored-attributes",
-            "-Wno-writable-strings",
-            "-municode",
-        ])
-
-        # NOTE: -fcf-protection=full removed (extra branch checks reduce power draw)
-
-        base_cmd.extend(defines)
-        base_cmd.extend(src_files)
-
-        # Linker flags
-        cmd = base_cmd[:] + [
-            "-o", str(exe_path),
-            "-Wl,--subsystem,windows",
-            "-Wl,--gc-sections",
-        "-luser32", "-lgdi32", "-ldwmapi", "-lshcore",
-        "-lshell32", "-lole32", "-loleaut32", "-ldbghelp",
-        ]
-
-        cmd = [c for c in cmd if c]
-        subprocess.run(cmd, check=True, capture_output=True)
-
-        # Set PE checksum for image integrity validation
-        if set_pe_checksum(exe_path):
-            log(f"PE checksum set for {exe_path.name}")
+            cmd.append("-mprefer-vector-width=512")
+        cmd += common_cxx_flags(out_dir)
+        if SANITIZER_MODE:
+            cmd += sanitizer_flags()
         else:
+            # Release: LTO, CodeView debug info into a separate PDB, stripped exe.
+            cmd += ["-flto", "-g", "-gcodeview", "-s"]
+        cmd += pgo_flags(target)
+        cmd += ["-static-libstdc++", "-static",
+                "-Wno-macro-redefined", "-Wno-ignored-optimization-argument",
+                "-Wno-ignored-attributes", "-Wno-writable-strings", "-municode"]
+        cmd += defines + src_files
+        # Sanitizer builds use the console subsystem so the runtime's reports
+        # reach stderr (a GUI-subsystem process has no std handles at startup).
+        subsystem = "console" if SANITIZER_MODE else "windows"
+        cmd += ["-o", str(exe_path),
+                f"-Wl,--subsystem,{subsystem}", "-Wl,--gc-sections",
+                "-luser32", "-lgdi32", "-ldwmapi", "-lshcore", "-lshell32",
+                "-lole32", "-loleaut32", "-ldbghelp", "-lwinmm"]
+        if not SANITIZER_MODE:
+            cmd.append(f"-Wl,--pdb={pdb_path}")
+            if cpu in GUARDED_CPUS:
+                cmd.append(f"-Wl,--entry,{GUARD_ENTRY}")
+        proc = subprocess.run(cmd, check=True, capture_output=True, cwd=BASE_DIR)
+        warnings = collect_warnings(proc.stderr)
+
+        if SANITIZER_MODE == "address":
+            # The ASan runtime is a DLL that itself links libc++/libunwind.
+            triple_bin = LLVM_MINGW_DIR / f"{arch}-w64-mingw32" / "bin"
+            for dll in ["libclang_rt.asan_dynamic-x86_64.dll", "libc++.dll", "libunwind.dll"]:
+                for src in (LLVM_MINGW_BIN / dll, triple_bin / dll):
+                    if src.exists():
+                        shutil.copy2(src, out_path / dll)
+                        break
+        if not set_pe_checksum(exe_path):
             log(f"Warning: could not set PE checksum for {exe_path.name}")
-
-        # Build the CLI launcher
         build_windows_cli_launcher(target, cpu, out_path)
-
-        # Compile PowerReader.cs (C# helper for LHM power reading)
-        lhm_src = BASE_DIR / "vendor" / "lhm"
-        power_reader_cs = lhm_src / "PowerReader.cs"
-        if power_reader_cs.exists() and lhm_src.exists():
-            lhm_out = out_path / "lhm"
-            lhm_out.mkdir(parents=True, exist_ok=True)
-            csc = Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / \
-                "Microsoft.NET" / "Framework64" / "v4.0.30319" / "csc.exe"
-            if csc.exists():
-                lhm_dll = lhm_src / "LibreHardwareMonitorLib.dll"
-                pr_exe = lhm_out / "PowerReader.exe"
-                subprocess.run([
-                    str(csc), "/target:exe", f"/out:{pr_exe}",
-                    "/platform:x64", "/nologo",
-                    f"/reference:{lhm_dll}",
-                    str(power_reader_cs),
-                ], check=True, capture_output=True)
-                # Write app.config to target .NET 4.8 (needed for Mutex ctor)
-                config_path = pr_exe.with_suffix(".exe.config")
-                config_path.write_text(
-                    '<?xml version="1.0" encoding="utf-8"?>\n'
-                    '<configuration>\n'
-                    '  <startup>\n'
-                    '    <supportedRuntime version="v4.0" '
-                    'sku=".NETFramework,Version=v4.8" />\n'
-                    '  </startup>\n'
-                    '</configuration>\n', encoding="utf-8")
-                log(f"Compiled PowerReader.exe")
-
-        # Copy minimal LHM files into lhm/ subfolder
-        if lhm_src.exists():
-            lhm_out = out_path / "lhm"
-            lhm_out.mkdir(parents=True, exist_ok=True)
-
-            # Only files needed for PowerReader.exe + PawnIO
-            needed = [
-                "LibreHardwareMonitorLib.dll",  # core library + PawnIO firmware
-                "PawnIO_setup.exe",             # PawnIO driver installer
-                "System.Memory.dll",             # .NET dependency
-                "System.Buffers.dll",            # .NET dependency
-                "System.Runtime.CompilerServices.Unsafe.dll",
-                "install-pawnio.ps1",            # standalone script
-                "uninstall-pawnio.ps1",          # standalone script
-                "LICENSE-MPL-2.0.txt",           # license
-                "NOTICE.txt",                    # attribution
-            ]
-            for name in needed:
-                src = lhm_src / name
-                if src.exists() and not (lhm_out / name).exists():
-                    shutil.copy2(src, lhm_out / name)
-
-        return (True, target, out_dir, archive_name)
-
+        build_power_reader(out_path)
+        return (True, target, out_dir, archive_name, warnings)
     except subprocess.CalledProcessError as e:
-        error_msg = f"Exit {e.returncode}"
-        if e.stderr:
-            try:
-                error_msg += f": {e.stderr.decode('utf-8', errors='ignore')[:200]}"
-            except:
-                pass
-        return (False, target, out_dir, error_msg)
+        return (False, target, out_dir, failure_message(e), [])
+
+
+def failure_message(e):
+    msg = f"Exit {e.returncode}"
+    if e.stderr:
+        text = e.stderr.decode("utf-8", errors="ignore")
+        errors = [line for line in text.splitlines() if "error" in line.lower()]
+        msg += ": " + ("\n".join(errors[:15]) if errors else text[-1500:])
+    return msg
 
 
 def build_zig_target(config):
     """Build a target using Zig (Linux/macOS/Windows)."""
-    target, out_dir, cpu, is_windows, archive_name = config
+    target, out_dir, cpu, is_windows, archive_name, _ = config
+    out_dir = effective_out_dir(out_dir)
     out_path = BASE_DIR / out_dir
     out_path.mkdir(parents=True, exist_ok=True)
-
-    log(f"Starting {target} (cpu={cpu}) using Zig...")
+    log(f"Starting {target} (cpu={cpu}) -> {out_dir} using Zig...")
 
     if is_windows:
         for stale_name in ["ShaderStress.com", "ShaderStressCli.exe", "ShaderStressGui.exe", "ShaderStressCli.cmd"]:
@@ -426,188 +407,88 @@ def build_zig_target(config):
             if stale_path.exists():
                 stale_path.unlink()
 
-    src_files = SRC_FILES_WINDOWS[:] if is_windows else SRC_FILES_UNIX[:]
+    src_files = list(SRC_FILES_WINDOWS if is_windows else SRC_FILES_UNIX)
     if is_windows:
         defines = ["-DUNICODE", "-D_UNICODE", "-D_WIN32_WINNT=0x0A00"]
-        if "arm64" in target or "aarch64" in target:
-            defines.extend(["-D_M_ARM64", "-D_WIN64"])
+        if "aarch64" in target:
+            defines += ["-D_M_ARM64", "-D_WIN64"]
     else:
         defines = ["-DPLATFORM_LINUX" if "linux" in target else "-DPLATFORM_MACOS"]
+    defines += version_defines() + ["-DDISABLE_SEH"] + EXTRA_DEFINES
 
-    defines.extend([
-        f'-DAPP_VERSION_TEXT="{APP_VERSION_TEXT}"',
-        f"-DAPP_VERSION_MAJOR_NUM={APP_VERSION_MAJOR}",
-        f"-DAPP_VERSION_MINOR_NUM={APP_VERSION_MINOR}",
-        f"-DAPP_VERSION_PATCH_NUM={APP_VERSION_PATCH}",
-    ])
-
-    defines.append("-DDISABLE_SEH")
-    defines.extend(EXTRA_DEFINES)
-
-    exe_name = "ShaderStress.exe" if is_windows else "shaderstress"
-    exe_path = out_path / exe_name
-
+    exe_path = out_path / ("ShaderStress.exe" if is_windows else "shaderstress")
+    is_macos = "macos" in target
     try:
-        use_lto = "macos" not in target
-
-        base_cmd = [
-            str(ZIG_EXE), "c++",
-            "-target", target,
-        ]
-
+        cmd = [str(ZIG_EXE), "c++", "-target", target]
         if cpu != "generic":
-            base_cmd.extend(["-mcpu=" + cpu])
-
+            cmd.append("-mcpu=" + cpu)
         if cpu == "x86_64_v4":
-            base_cmd.append("-mprefer-vector-width=512")
-
-        # Mirror upstream release flags. These are kept on the Zig path because
-        # the GitHub binary is built with Zig and achieves higher power draw.
-        # Nounroll variants (out_dir ending in "-nounroll") omit -funroll-loops
-        # and -fno-strict-aliasing for comparison.
-        base_cmd.extend([
-            "-std=c++20", "-O3",
-            "-ffast-math",
-        ])
-        if not out_dir.endswith("-nounroll"):
-            base_cmd.extend(["-funroll-loops", "-fno-strict-aliasing"])
-        base_cmd.extend([
-            "-fno-rtti",
-            "-fno-exceptions",
-            "-fno-stack-protector",
-            "-fomit-frame-pointer",
-            "-ffunction-sections", "-fdata-sections",
-            "-fno-asynchronous-unwind-tables",
-            "-fno-ident",
-        ])
+            cmd.append("-mprefer-vector-width=512")
+        cmd += common_cxx_flags(out_dir)
         if "linux" in target:
-            base_cmd.append("-fno-semantic-interposition")
-
-        # Sanitizer build mode (development only)
-        if SANITIZER_MODE == "undefined":
-            base_cmd.extend(["-fsanitize=undefined", "-fno-sanitize-recover=undefined"])
-        elif SANITIZER_MODE == "address":
-            base_cmd.extend(["-fsanitize=address", "-fno-omit-frame-pointer"])
-        elif SANITIZER_MODE == "thread":
-            base_cmd.append("-fsanitize=thread")
-
-        if use_lto and SANITIZER_MODE is None:
-            base_cmd.append("-flto")
-
-        if PGO_MODE == "generate":
-            base_cmd.append("-fprofile-generate")
-        elif PGO_MODE == "use":
-            profdata = BASE_DIR / "default.profdata"
-            if profdata.exists():
-                base_cmd.append(f"-fprofile-use={profdata}")
-            else:
-                log(f"WARNING: {profdata} not found, skipping PGO for {target}")
-
-        base_cmd.extend([
-            "-s",
-            "-Wno-macro-redefined",
-            "-Wno-ignored-optimization-argument",
-        ])
-
+            cmd.append("-fno-semantic-interposition")
+        if SANITIZER_MODE:
+            cmd += sanitizer_flags()
+        else:
+            if not is_macos:
+                cmd.append("-flto")
+            # Windows: Zig emits a PDB next to the exe. Linux: DWARF is split
+            # into shaderstress.debug below. macOS: stripped (no dsymutil).
+            cmd += ["-g"] if not is_macos else ["-s"]
+        cmd += pgo_flags(target)
+        cmd += ["-Wno-macro-redefined", "-Wno-ignored-optimization-argument"]
         if is_windows:
-            base_cmd.append("-municode")
+            cmd.append("-municode")
+        cmd += defines
 
-        base_cmd.extend(defines)
-
-        # Windows: compile resource file for the icon
         if is_windows:
             res_file = out_path / "resource.res"
-            rc_cmd = [
-                str(ZIG_EXE), "rc",
-                str(BASE_DIR / "resource.rc"),
-                str(res_file)
-            ]
             try:
-                subprocess.run(rc_cmd, check=True, capture_output=True)
+                subprocess.run([str(ZIG_EXE), "rc", str(BASE_DIR / "resource.rc"), str(res_file)],
+                               check=True, capture_output=True, cwd=BASE_DIR)
                 src_files.append(str(res_file))
             except subprocess.CalledProcessError as e:
                 log(f"Warning: Could not compile resource.rc for {target}: {e}")
 
-        base_cmd.extend(src_files)
-
+        cmd += src_files
         if is_windows:
-            cmd = base_cmd[:] + [
-                "-o", str(exe_path),
-                "-Xlinker", "--subsystem", "-Xlinker", "windows",
-                "-Xlinker", "--gc-sections",
-                "-luser32", "-lgdi32", "-ldwmapi", "-lshcore",
-                "-lshell32", "-lole32", "-loleaut32", "-ldbghelp",
-            ]
+            cmd += ["-o", str(exe_path),
+                    "-Xlinker", "--subsystem", "-Xlinker", "windows",
+                    "-Xlinker", "--gc-sections",
+                    "-luser32", "-lgdi32", "-ldwmapi", "-lshcore",
+                    "-lshell32", "-lole32", "-loleaut32", "-ldbghelp", "-lwinmm"]
+            if cpu in GUARDED_CPUS and not SANITIZER_MODE:
+                cmd += ["-Xlinker", "--entry", "-Xlinker", GUARD_ENTRY]
         else:
-            cmd = base_cmd[:] + [
-                "-o", str(exe_path),
-                "-lpthread",
-                "-Wl,--sort-common,--sort-section=alignment",
-                "-Wl,--gc-sections",
-            ]
+            cmd += ["-o", str(exe_path), "-lpthread"]
+            if not is_macos:
+                cmd += ["-Wl,--sort-common,--sort-section=alignment", "-Wl,--gc-sections"]
+        proc = subprocess.run(cmd, check=True, capture_output=True, cwd=BASE_DIR)
+        warnings = collect_warnings(proc.stderr)
 
-        cmd = [c for c in cmd if c]
-        subprocess.run(cmd, check=True, capture_output=True)
+        if "linux" in target and not SANITIZER_MODE and LLVM_OBJCOPY.exists():
+            debug_path = out_path / "shaderstress.debug"
+            subprocess.run([str(LLVM_OBJCOPY), "--only-keep-debug", str(exe_path), str(debug_path)],
+                           check=True, capture_output=True)
+            subprocess.run([str(LLVM_OBJCOPY), "--strip-debug", "--strip-unneeded",
+                            f"--add-gnu-debuglink={debug_path}", str(exe_path)],
+                           check=True, capture_output=True)
 
         if is_windows:
-            # Build the tiny CLI launcher (.com)
             launcher_path = out_path / "ShaderStress.com"
-            zig_cc_cmd = [
-                str(ZIG_EXE), "cc",
-                "-target", target,
-            ]
+            zig_cc_cmd = [str(ZIG_EXE), "cc", "-target", target]
             if cpu != "generic":
-                zig_cc_cmd.extend(["-mcpu=" + cpu])
-            zig_cc_cmd.extend([
-                "-Oz", "-s",
-                "-ffunction-sections", "-fdata-sections",
-                "-fno-asynchronous-unwind-tables",
-                "-fno-ident",
-                "-municode",
-                str(CLI_LAUNCHER_SOURCE),
-                "-o", str(launcher_path),
-                "-Xlinker", "--subsystem", "-Xlinker", "console",
-                "-Xlinker", "--gc-sections",
-            ])
-            subprocess.run(zig_cc_cmd, check=True, capture_output=True)
-
-            # Compile PowerReader.cs for LHM power reading
-            lhm_src = BASE_DIR / "vendor" / "lhm"
-            power_reader_cs = lhm_src / "PowerReader.cs"
-            if power_reader_cs.exists() and lhm_src.exists():
-                lhm_out = out_path / "lhm"
-                lhm_out.mkdir(parents=True, exist_ok=True)
-                csc = Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / \
-                    "Microsoft.NET" / "Framework64" / "v4.0.30319" / "csc.exe"
-                if csc.exists():
-                    lhm_dll = lhm_src / "LibreHardwareMonitorLib.dll"
-                    pr_exe = lhm_out / "PowerReader.exe"
-                    subprocess.run([
-                        str(csc), "/target:exe", f"/out:{pr_exe}",
-                        "/platform:x64", "/nologo",
-                        f"/reference:{lhm_dll}",
-                        str(power_reader_cs),
-                    ], check=True, capture_output=True)
-                    app_config = lhm_out / "PowerReader.exe.config"
-                    app_config.write_text(
-                        '<?xml version="1.0" encoding="utf-8"?>'
-                        '<configuration><startup><supportedRuntime version="v4.0" sku=".NETFramework,Version=v4.8"/></startup></configuration>',
-                        encoding="utf-8")
-                    for name in LHM_DEPS_FILES:
-                        src = lhm_src / name
-                        if src.exists() and not (lhm_out / name).exists():
-                            shutil.copy2(src, lhm_out / name)
-
-        return (True, target, out_dir, archive_name)
-
+                zig_cc_cmd.append("-mcpu=" + cpu)
+            zig_cc_cmd += ["-Oz", "-s", "-ffunction-sections", "-fdata-sections",
+                           "-fno-asynchronous-unwind-tables", "-fno-ident", "-municode",
+                           str(CLI_LAUNCHER_SOURCE), "-o", str(launcher_path),
+                           "-Xlinker", "--subsystem", "-Xlinker", "console",
+                           "-Xlinker", "--gc-sections"]
+            subprocess.run(zig_cc_cmd, check=True, capture_output=True, cwd=BASE_DIR)
+            build_power_reader(out_path)
+        return (True, target, out_dir, archive_name, warnings)
     except subprocess.CalledProcessError as e:
-        error_msg = f"Exit {e.returncode}"
-        if e.stderr:
-            try:
-                error_msg += f": {e.stderr.decode('utf-8', errors='ignore')[:200]}"
-            except:
-                pass
-        return (False, target, out_dir, error_msg)
+        return (False, target, out_dir, failure_message(e), [])
 
 
 def fetch_lhm_deps():
@@ -615,14 +496,8 @@ def fetch_lhm_deps():
     Aborts the build if SHA256 hashes or digital signatures are invalid."""
     lhm_dir = BASE_DIR / "vendor" / "lhm"
     sha_file = lhm_dir / "SHA256SUMS.txt"
-
-    # Check if all files already present and hashes valid
     if sha_file.exists():
-        hashes = {}
-        for line in sha_file.read_text(encoding="utf-8").splitlines():
-            parts = line.strip().split("  ", 1)
-            if len(parts) == 2:
-                hashes[parts[1]] = parts[0]
+        hashes = parse_sha_list(sha_file.read_text(encoding="utf-8"))
         all_ok = all(
             (lhm_dir / f).exists() and file_sha256(lhm_dir / f) == h
             for f, h in hashes.items() if f in LHM_DEPS_FILES
@@ -633,22 +508,11 @@ def fetch_lhm_deps():
 
     log("Fetching LHM dependencies from GitHub...")
     lhm_dir.mkdir(parents=True, exist_ok=True)
-
-    # Download SHA256SUMS.txt first
-    sha_url = f"{LHM_DEPS_URL}/SHA256SUMS.txt"
-    sha_content = download_file(sha_url)
+    sha_content = download_file(f"{LHM_DEPS_URL}/SHA256SUMS.txt")
     if not sha_content:
         fail("Could not download SHA256SUMS.txt from GitHub")
     (lhm_dir / "SHA256SUMS.txt").write_bytes(sha_content)
-
-    # Parse hashes
-    hashes = {}
-    for line in sha_content.decode("utf-8").splitlines():
-        parts = line.strip().split("  ", 1)
-        if len(parts) == 2:
-            hashes[parts[1]] = parts[0]
-
-    # Download each file — abort on any failure
+    hashes = parse_sha_list(sha_content.decode("utf-8"))
     for name in LHM_DEPS_FILES:
         dest = lhm_dir / name
         expected = hashes.get(name)
@@ -665,8 +529,16 @@ def fetch_lhm_deps():
             fail(f"SHA256 mismatch for {name}: expected {expected}, got {actual}")
         dest.write_bytes(data)
         log(f"  Downloaded {name} (hash OK)")
-
     verify_signatures(lhm_dir)
+
+
+def parse_sha_list(text):
+    hashes = {}
+    for line in text.splitlines():
+        parts = line.strip().split("  ", 1)
+        if len(parts) == 2:
+            hashes[parts[1]] = parts[0]
+    return hashes
 
 
 def verify_signatures(lhm_dir):
@@ -677,7 +549,6 @@ def verify_signatures(lhm_dir):
                 if f.endswith((".dll", ".exe")) and (lhm_dir / f).exists()]
     if not signable:
         return
-    # Build PowerShell to check each file
     file_list = ",".join(f"'{lhm_dir / f}'" for f in signable)
     ps = (
         f"foreach($f in @({file_list})){{"
@@ -694,9 +565,7 @@ def verify_signatures(lhm_dir):
         for line in result.stdout.strip().splitlines():
             if ":" not in line:
                 continue
-            status, name = line.split(":", 1)
-            status = status.strip()
-            name = name.strip()
+            status, name = (part.strip() for part in line.split(":", 1))
             if status == "Valid":
                 log(f"  Signed: {name}")
             elif status == "NotSigned" and name.endswith(".dll"):
@@ -708,7 +577,6 @@ def verify_signatures(lhm_dir):
 
 
 def download_file(url):
-    """Download a URL and return bytes, or None on failure."""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "shaderstress-build"})
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -718,7 +586,6 @@ def download_file(url):
 
 
 def file_sha256(path):
-    """Return hex SHA256 of a file."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
@@ -727,28 +594,22 @@ def file_sha256(path):
 
 
 def fail(msg):
-    """Abort the build with an error message."""
     log(f"ERROR: {msg}")
     sys.exit(1)
 
 
 def build_target(config):
     """Build a single target – dispatch to the right toolchain"""
-    _, _, _, is_windows, _ = config
-    if is_windows:
-        return build_windows_target(config)
-    else:
+    if is_zig_config(config):
         return build_zig_target(config)
+    return build_windows_target(config)
 
 
 def create_archives(results):
-    """Create distribution archives in parallel"""
+    """Create distribution archives in parallel (release builds only)"""
     log("Creating distribution archives...")
-
     dist_dir = BASE_DIR / "dist"
     dist_dir.mkdir(exist_ok=True)
-
-    # Find 7z
     sevenzip = None
     for path in [r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe"]:
         if os.path.exists(path):
@@ -756,33 +617,27 @@ def create_archives(results):
             break
 
     def create_archive(result):
-        success, target, out_dir, archive_name = result
-        if not success:
+        success, target, out_dir, archive_name, _ = result
+        if not success or not archive_name:
             return False
-
         archive_path = dist_dir / archive_name
         src_dir = BASE_DIR / out_dir
-
         files = ["ShaderStress.exe", "ShaderStress.com"] if "windows" in target else ["shaderstress"]
         src_files = [src_dir / f for f in files]
-
         if not all(f.exists() for f in src_files):
             return False
-
         try:
             if archive_path.exists():
                 archive_path.unlink()
-
             if sevenzip:
-                cmd = [sevenzip, "a", "-mx=9", str(archive_path)] + [str(f) for f in src_files]
-                subprocess.run(cmd, check=True, capture_output=True)
+                subprocess.run([sevenzip, "a", "-mx=9", str(archive_path)] + [str(f) for f in src_files],
+                               check=True, capture_output=True)
             else:
                 import zipfile
-                zip_path = archive_path.with_suffix(".zip")
-                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+                with zipfile.ZipFile(archive_path.with_suffix(".zip"), 'w', zipfile.ZIP_DEFLATED,
+                                     compresslevel=9) as zf:
                     for f in src_files:
                         zf.write(f, f.name)
-
             return True
         except Exception as e:
             log(f"Failed to create {archive_name}: {e}")
@@ -790,210 +645,186 @@ def create_archives(results):
 
     with ThreadPoolExecutor(max_workers=4) as executor:
         archive_results = list(executor.map(create_archive, results))
-
-    successful = sum(archive_results)
-    log(f"Created {successful}/{len(archive_results)} archives")
+    log(f"Created {sum(archive_results)} archives")
     write_checksums(dist_dir)
 
 
 def write_checksums(dist_dir):
-    """Write SHA256 checksums for all release archives"""
-    checksum_entries = []
-
+    entries = []
     for archive in sorted(dist_dir.iterdir()):
         if not archive.is_file() or archive.name == "SHA256SUMS.txt":
             continue
-        hasher = hashlib.sha256()
-        with archive.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                hasher.update(chunk)
-        checksum_entries.append(f"{hasher.hexdigest()}  {archive.name}")
+        entries.append(f"{file_sha256(archive)}  {archive.name}")
+    (dist_dir / "SHA256SUMS.txt").write_text("\n".join(entries) + "\n", encoding="utf-8")
+    log("Wrote checksums to SHA256SUMS.txt")
 
-    checksums_path = dist_dir / "SHA256SUMS.txt"
-    checksums_path.write_text("\n".join(checksum_entries) + "\n", encoding="utf-8")
-    log(f"Wrote checksums to {checksums_path.name}")
+
+def host_x86_level():
+    """Best x86-64 level the build host can run: 'v4', 'v3' or 'baseline'."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            # PF_AVX512F_INSTRUCTIONS_AVAILABLE = 41, PF_AVX2_INSTRUCTIONS_AVAILABLE = 40
+            if k32.IsProcessorFeaturePresent(41):
+                return "v4"
+            if k32.IsProcessorFeaturePresent(40):
+                return "v3"
+        except Exception:
+            pass
+        return "baseline"
+    try:
+        flags = Path("/proc/cpuinfo").read_text()
+        if " avx512f" in flags:
+            return "v4"
+        if " avx2" in flags and " fma" in flags:
+            return "v3"
+    except Exception:
+        pass
+    return "baseline"
+
+
+def print_help():
+    print("Usage: python build.py [targets...] [options]")
+    print("Targets:")
+    print("  all           - All release targets (default)")
+    print("  windows       - Windows release targets (LLVM MinGW + Zig)")
+    print("  linux         - Linux x64 and ARM64")
+    print("  macos         - macOS x64 and ARM64")
+    print("  v4 / v3       - x86_64_v4 / x86_64_v3 release targets")
+    print("  win-baseline  - Windows baseline x86_64 only (LLVM MinGW)")
+    print("  win-v3        - Windows x86_64_v3 only")
+    print("  win-v4        - Windows x86_64_v4 only")
+    print("  zig           - Windows Zig-built x64 and ARM64")
+    print("  zig-v3        - Windows Zig-built x86_64_v3 only")
+    print("  native        - Best target this machine can run")
+    print("  experimental  - Comparison builds (win-v3-nounroll, zig-v3-nounroll)")
+    print("Options:")
+    print("  --pgo-gen / --pgo-use       Profile-guided optimization (needs default.profdata)")
+    print("  --sanitize                  UndefinedBehaviorSanitizer build (out dir suffix -ubsan)")
+    print("  --sanitize=address          AddressSanitizer build (suffix -asan)")
+    print("  --sanitize=thread           ThreadSanitizer build (suffix -tsan, Linux only)")
+    print("Release builds emit debug symbols separately: ShaderStress.pdb (Windows),")
+    print("shaderstress.debug (Linux). They are not part of the archives.")
+
+
+def select_configs(targets_requested):
+    release = [c for c in BUILD_CONFIGS if not c[5]]
+    if "all" in targets_requested:
+        return list(release)
+    by_dir = {c[1]: c for c in BUILD_CONFIGS}
+    aliases = {
+        "win-baseline": ["bin/x64-llvm"],
+        "win-v3": ["bin/x64-llvm-v3"],
+        "win-v4": ["bin/x64-llvm-v4"],
+        "zig-v3": ["bin/x64-zig-v3"],
+        "win-v3-nounroll": ["bin/x64-llvm-v3-nounroll"],
+        "zig-v3-nounroll": ["bin/x64-zig-v3-nounroll"],
+        "experimental": [c[1] for c in BUILD_CONFIGS if c[5]],
+    }
+    configs = []
+    for t in targets_requested:
+        if t == "windows":
+            configs += [c for c in release if "windows" in c[0]]
+        elif t == "linux":
+            configs += [c for c in release if "linux" in c[0]]
+        elif t == "macos":
+            configs += [c for c in release if "macos" in c[0]]
+        elif t in ("v4", "v3"):
+            configs += [c for c in release if c[1].endswith("-" + t)]
+        elif t == "zig":
+            configs += [c for c in release if "windows" in c[0] and "zig" in c[1]]
+        elif t in aliases:
+            configs += [by_dir[d] for d in aliases[t]]
+        elif t == "native":
+            system = platform.system().lower()
+            machine = platform.machine().lower()
+            level = host_x86_level()
+            if system == "windows":
+                if "arm" in machine or "aarch64" in machine:
+                    configs.append(by_dir["bin/arm64-llvm"])
+                else:
+                    configs.append(by_dir[{"v4": "bin/x64-llvm-v4", "v3": "bin/x64-llvm-v3"}
+                                          .get(level, "bin/x64-llvm")])
+            elif system == "linux":
+                if "arm" in machine or "aarch64" in machine:
+                    configs.append(by_dir["bin/linux-arm64"])
+                else:
+                    configs.append(by_dir[{"v4": "bin/linux-x64-v4", "v3": "bin/linux-x64-v3"}
+                                          .get(level, "bin/linux-x64")])
+            elif system == "darwin":
+                configs.append(by_dir["bin/macos-arm64" if "arm" in machine else "bin/macos-x64"])
+        else:
+            log(f"Unknown target '{t}' (use --help)")
+            sys.exit(2)
+    seen = set()
+    unique = []
+    for c in configs:
+        if c[1] not in seen:
+            seen.add(c[1])
+            unique.append(c)
+    return unique
 
 
 def main():
-    global PGO_MODE
+    global PGO_MODE, SANITIZER_MODE
     log(f"Version: {APP_VERSION_TEXT}")
-
-    # Parse arguments
     targets_requested = sys.argv[1:] if len(sys.argv) > 1 else ["all"]
+    for flag, mode in (("--pgo-gen", "generate"), ("--pgo-use", "use")):
+        if flag in targets_requested:
+            PGO_MODE = mode
+            targets_requested.remove(flag)
+    for flag, mode in (("--sanitize", "undefined"), ("--sanitize=undefined", "undefined"),
+                       ("--sanitize=address", "address"), ("--sanitize=thread", "thread")):
+        if flag in targets_requested:
+            SANITIZER_MODE = mode
+            targets_requested.remove(flag)
+    if not targets_requested:
+        targets_requested = ["all"]
+    if any(t in ("help", "-h", "--help") for t in targets_requested):
+        print_help()
+        return 0
 
-    # Extract PGO and sanitizer flags before other parsing
-    if "--pgo-gen" in targets_requested:
-        PGO_MODE = "generate"
-        targets_requested.remove("--pgo-gen")
-    if "--pgo-use" in targets_requested:
-        PGO_MODE = "use"
-        targets_requested.remove("--pgo-use")
-    if "--sanitize" in targets_requested:
-        SANITIZER_MODE = "undefined"
-        targets_requested.remove("--sanitize")
-    if "--sanitize=address" in targets_requested:
-        SANITIZER_MODE = "address"
-        targets_requested.remove("--sanitize=address")
-    if "--sanitize=thread" in targets_requested:
-        SANITIZER_MODE = "thread"
-        targets_requested.remove("--sanitize=thread")
-
-    if "help" in targets_requested or "-h" in targets_requested or "--help" in targets_requested:
-        print("Usage: python build.py [targets...] [options]")
-        print("Targets:")
-        print("  all       - All platforms (default)")
-        print("  windows   - Windows x64 and ARM64")
-        print("  linux     - Linux x64 and ARM64")
-        print("  macos     - macOS x64 and ARM64")
-        print("  v4        - x86_64_v4 targets (AVX-512) only")
-        print("  v3        - x86_64_v3 targets (AVX2+FMA) only")
-        print("  win-v3    - Windows x86_64_v3 only (fast single-config build)")
-        print("  win-v4    - Windows x86_64_v4 only (fast single-config build)")
-        print("  win-baseline - Windows baseline x86_64 only (SSE2)")
-        print("  zig       - Windows Zig-built x64 and ARM64")
-        print("  zig-v3    - Windows Zig-built x86_64_v3 only")
-        print("  native    - Current platform only")
-        print("Options:")
-        print("  --pgo-gen      Build with profile generation instrumentation")
-        print("  --pgo-use      Build with profile-guided optimization (needs default.profdata)")
-        print("  --sanitize     Build with UndefinedBehaviorSanitizer (development only)")
-        print("  --sanitize=address  Build with AddressSanitizer (development only)")
-        print("  --sanitize=thread   Build with ThreadSanitizer (development only)")
-        print("")
-        print("PGO workflow:")
-        print("  1. python build.py --pgo-gen native")
-        print("  2. ./bin/<target>/shaderstress --repro 42 10000 --quiet")
-        print("  3. llvm-profdata merge -output=default.profdata *.profraw")
-        print("  4. python build.py --pgo-use native")
-        print("")
-        print("Toolchains:")
-        print("  Windows: LLVM MinGW (clang++/lld) - llvm-mingw-*/")
-        print("  Windows (Zig): Zig cross-compilation - zig-x86_64-windows-0.15.2/zig.exe")
-        print("  Linux/macOS: Zig cross-compilation - zig-x86_64-windows-0.15.2/zig.exe")
-        print("")
-        print("Examples:")
-        print("  python build.py")
-        print("  python build.py windows linux")
-        return
-
-    # Filter configs based on requested targets
-    if "all" in targets_requested:
-        configs = BUILD_CONFIGS
-    else:
-        configs = []
-        for t in targets_requested:
-            if t == "windows":
-                configs.extend([c for c in BUILD_CONFIGS if "windows" in c[0]])
-            elif t == "linux":
-                configs.extend([c for c in BUILD_CONFIGS if "linux" in c[0]])
-            elif t == "macos":
-                configs.extend([c for c in BUILD_CONFIGS if "macos" in c[0]])
-            elif t == "v4":
-                configs.extend([c for c in BUILD_CONFIGS if "v4" in c[1]])
-            elif t == "v3":
-                configs.extend([c for c in BUILD_CONFIGS if "v3" in c[1]])
-            # Single Windows-config aliases (fast rebuilds for the power sweep).
-            elif t == "win-baseline":
-                configs.extend([c for c in BUILD_CONFIGS if c[1] == "bin/x64-llvm"])
-            elif t == "win-v3":
-                configs.extend([c for c in BUILD_CONFIGS if c[1] == "bin/x64-llvm-v3"])
-            elif t == "win-v4":
-                configs.extend([c for c in BUILD_CONFIGS if c[1] == "bin/x64-llvm-v4"])
-            # Nounroll variants (no -funroll-loops / -fno-strict-aliasing) for comparison.
-            elif t == "win-v3-nounroll":
-                configs.extend([c for c in BUILD_CONFIGS if c[1] == "bin/x64-llvm-v3-nounroll"])
-            elif t == "zig-v3-nounroll":
-                configs.extend([c for c in BUILD_CONFIGS if c[1] == "bin/x64-zig-v3-nounroll"])
-            # Zig Windows aliases (matches GitHub release toolchain).
-            elif t == "zig":
-                configs.extend([c for c in BUILD_CONFIGS if "windows" in c[0] and "zig" in c[1]])
-            elif t == "zig-v3":
-                configs.extend([c for c in BUILD_CONFIGS if c[1] == "bin/x64-zig-v3"])
-            elif t == "native":
-                import platform
-                machine = platform.machine().lower()
-                system = platform.system().lower()
-                if system == "windows":
-                    candidates = [c for c in BUILD_CONFIGS if "windows" in c[0] and "x86_64" in c[0]]
-                    for pref in ["v4", "v3", "llvm"]:
-                        match = [c for c in candidates if pref in c[1]]
-                        if match:
-                            configs.append(match[0])
-                            break
-                elif system == "linux":
-                    candidates = [c for c in BUILD_CONFIGS if "linux" in c[0] and "x86_64" in c[0]]
-                    for pref in ["v4", "v3", "x64"]:
-                        match = [c for c in candidates if pref in c[1]]
-                        if match:
-                            configs.append(match[0])
-                            break
-                elif system == "darwin":
-                    if "arm" in machine:
-                        configs.append([c for c in BUILD_CONFIGS if "macos" in c[0] and "aarch64" in c[0]][0])
-                    else:
-                        configs.append([c for c in BUILD_CONFIGS if "macos" in c[0] and "x86_64" in c[0]][0])
-
+    configs = select_configs(targets_requested)
     if not configs:
         log("No targets to build")
-        return
+        return 1
+    if SANITIZER_MODE:
+        log(f"Sanitizer build: {SANITIZER_MODE} (output dirs get suffix "
+            f"{SANITIZER_SUFFIX[SANITIZER_MODE]})")
 
-    # Remove duplicates while preserving order
-    seen = set()
-    unique_configs = []
-    for c in configs:
-        key = c[1]  # out_dir
-        if key not in seen:
-            seen.add(key)
-            unique_configs.append(c)
-    configs = unique_configs
-
-    # Check toolchain availability
-    has_windows = any(c[3] for c in configs)
-    has_unix = any(not c[3] for c in configs)
-
-    if has_windows:
+    if any(c[3] for c in configs):
         check_llvm_mingw()
         fetch_lhm_deps()
-    if has_unix:
+    if any(is_zig_config(c) for c in configs):
         check_zig()
 
-    log(f"Building {len(configs)} targets with {min(len(configs), multiprocessing.cpu_count())} parallel jobs...")
-
-    # Build all targets in parallel
-    results = []
     max_workers = min(len(configs), multiprocessing.cpu_count())
-
+    log(f"Building {len(configs)} targets with {max_workers} parallel jobs...")
+    results = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_config = {}
-        for config in configs:
-            # Zig-built Windows targets use the Zig toolchain; everything else
-            # uses the existing LLVM MinGW (Windows) or Zig (Unix) builders.
-            if config[3] and "zig" in config[1]:
-                future_to_config[executor.submit(build_zig_target, config)] = config
-            else:
-                future_to_config[executor.submit(build_target, config)] = config
-
+        future_to_config = {executor.submit(build_target, c): c for c in configs}
         for future in as_completed(future_to_config):
             config = future_to_config[future]
             try:
                 result = future.result()
-                results.append(result)
-                success, target, out_dir, msg = result
-                if success:
-                    log(f"OK {target} -> {out_dir}")
-                else:
-                    log(f"FAIL {target}: {msg}")
             except Exception as e:
-                log(f"ERROR {config[0]}: {e}")
-                results.append((False, config[0], config[1], str(e)))
+                result = (False, config[0], config[1], str(e), [])
+            results.append(result)
+            success, target, out_dir, msg, _ = result
+            log(f"OK {target} -> {out_dir}" if success else f"FAIL {target} -> {out_dir}: {msg}")
 
-    # Summary
+    warnings = sorted({w for r in results for w in r[4]})
+    if warnings:
+        log(f"{len(warnings)} unique compiler warning(s):")
+        for w in warnings[:40]:
+            print("  " + w)
     successful = sum(1 for r in results if r[0])
     log(f"Build complete: {successful}/{len(results)} targets succeeded")
-
-    # Create archives
-    create_archives(results)
+    if not SANITIZER_MODE and PGO_MODE is None:
+        create_archives(results)
+    return 0 if successful == len(results) else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

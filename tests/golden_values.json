@@ -1,8 +1,11 @@
 {
   "seed": 42,
   "complexity": 1000,
-  "workloads": {
-    "scalar": "ok",
-    "scalar-sim": "ok"
+  "checksums": {
+    "x64": {
+      "scalar": "0x7d2ec09626ec66d1",
+      "scalar-sim": "0x58b1a15ca01f7216",
+      "avx2": "0x809cbbbe4712cf23"
+    }
   }
 }

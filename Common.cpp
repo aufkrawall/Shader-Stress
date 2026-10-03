@@ -1,11 +1,12 @@
 // Common.cpp - Global variable definitions and utility function implementations
 #include "Common.h"
+#include <cstdarg>
 
 #define APP_VERSION_WIDEN_INNER(x) L##x
 #define APP_VERSION_WIDEN(x) APP_VERSION_WIDEN_INNER(x)
 
 #ifndef APP_VERSION_TEXT
-#define APP_VERSION_TEXT "3.5.4"
+#define APP_VERSION_TEXT "3.6.0"
 #endif
 
 const std::wstring APP_VERSION = APP_VERSION_WIDEN(APP_VERSION_TEXT);
@@ -15,7 +16,7 @@ CpuFeatures g_Cpu;
 bool g_ForceNoAVX512 = false;
 bool g_ForceNoAVX2 = false;
 
-ReproSettings g_Repro;
+RunOptions g_RunOpts;
 StressConfig g_ActiveConfig;
 std::mutex g_ConfigMtx;
 std::atomic<uint64_t> g_ConfigVersion{0};
@@ -28,8 +29,6 @@ HWND g_MainWindow = nullptr;
 float g_Scale = 1.0f;
 
 std::vector<std::unique_ptr<Worker>> g_Workers;
-std::vector<std::unique_ptr<Worker>> g_IOThreads;
-Worker g_RAM;
 std::vector<std::unique_ptr<ThreadWrapper>> g_Threads;
 std::unique_ptr<ThreadWrapper> g_DynThread, g_WdThread;
 
@@ -58,6 +57,40 @@ std::wstring FmtNum(uint64_t v) {
   std::wstring res(buf);
   std::replace(res.begin(), res.end(), L',', L'.');
   return res;
+}
+
+std::wstring Fmt(const char *fmt, ...) {
+  char buf[512];
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  if (n < 0) return std::wstring();
+  size_t len = std::min<size_t>((size_t)n, sizeof(buf) - 1);
+  return std::wstring(buf, buf + len);
+}
+
+std::wstring FmtBytes(uint64_t bytes) {
+  const double v = (double)bytes;
+  if (bytes >= (1ull << 40)) return Fmt("%.2f TiB", v / (double)(1ull << 40));
+  if (bytes >= (1ull << 30)) return Fmt("%.2f GiB", v / (double)(1ull << 30));
+  if (bytes >= (1ull << 20)) return Fmt("%.1f MiB", v / (double)(1ull << 20));
+  if (bytes >= (1ull << 10)) return Fmt("%.1f KiB", v / (double)(1ull << 10));
+  return std::to_wstring(bytes) + L" B";
+}
+
+std::wstring FmtHex64(uint64_t v) {
+  return Fmt("0x%016llx", (unsigned long long)v);
+}
+
+std::wstring GetModeName(int mode) {
+  switch (mode) {
+  case MODE_BENCHMARK: return L"Benchmark";
+  case MODE_STEADY: return L"Steady";
+  case MODE_CORE_CYCLE: return L"Core Cycle";
+  case MODE_DYNAMIC:
+  default: return L"Dynamic";
+  }
 }
 
 std::wstring FmtTime(uint64_t s) {
@@ -122,7 +155,11 @@ std::wstring GetResolvedISAName(int workloadSel) {
 
   switch (type) {
   case WL_SCALAR:
-    return L"Scalar (Synthetic)";
+#if defined(_M_ARM64) || defined(__aarch64__)
+    return L"NEON (Synthetic)";
+#else
+    return L"SSE2 (Synthetic)";
+#endif
   case WL_AVX2:
     return L"AVX2";
   case WL_AVX512:
@@ -204,8 +241,6 @@ void AppState::Log(const std::wstring &msg) {
   if (log.is_open()) {
     log << ToLogStr(fullMsg) << std::endl;
   }
-  if (g_Repro.active)
-    std::wcout << msg << std::endl;
 }
 
 void AppState::LogRaw(const std::wstring &msg) {
@@ -252,9 +287,7 @@ void DetectBestConfig() {
   g_ActiveConfig = heavyCfg;
 
   // Log the actual selected mode and ISA
-  std::wstring modeName = (g_App.mode == 2)   ? L"Dynamic"
-                          : (g_App.mode == 1) ? L"Steady"
-                                              : L"Benchmark";
+  std::wstring modeName = GetModeName(g_App.mode.load());
   std::wstring isaName = GetResolvedISAName(g_App.selectedWorkload.load());
   g_App.Log(L"Config auto-selected: " + modeName + L" (" + isaName + L")");
 }
@@ -269,17 +302,18 @@ StressConfig GetVerifyConfig() {
 }
 
 void InitGoldenValues() {
-  StressConfig defaultCfg = GetVerifyConfig();
-
-  // Compute golden values for each workload type
-  g_Golden.values[WL_SCALAR] = RunHyperStress_Scalar(42, VERIFY_COMPLEXITY, defaultCfg);
-  g_Golden.values[WL_SCALAR_SIM] =
-      RunRealisticCompilerSim_V3(42, VERIFY_COMPLEXITY, defaultCfg);
-
-  if (g_Cpu.hasAVX2 && g_Cpu.hasFMA && !g_ForceNoAVX2)
-    g_Golden.values[WL_AVX2] = RunHyperStress_AVX2(42, VERIFY_COMPLEXITY, defaultCfg);
-  if (g_Cpu.hasAVX512F && !g_ForceNoAVX512)
-    g_Golden.values[WL_AVX512] = RunHyperStress_AVX512(42, VERIFY_COMPLEXITY, defaultCfg);
+  // Compute golden values for each workload type through the same entry point
+  // the workers use (one compiled body -> bit-identical results).
+  g_Golden.values[WL_SCALAR] = RunComputeWorkload(WL_SCALAR, 42, VERIFY_COMPLEXITY);
+  g_Golden.values[WL_SCALAR_SIM] = RunComputeWorkload(WL_SCALAR_SIM, 42, VERIFY_COMPLEXITY);
+  if (HasUsableAVX2())
+    g_Golden.values[WL_AVX2] = RunComputeWorkload(WL_AVX2, 42, VERIFY_COMPLEXITY);
+  if (HasUsableAVX512())
+    g_Golden.values[WL_AVX512] = RunComputeWorkload(WL_AVX512, 42, VERIFY_COMPLEXITY);
+  g_App.Log(L"Golden values: scalar " + FmtHex64(g_Golden.values[WL_SCALAR]) + L", sim " +
+            FmtHex64(g_Golden.values[WL_SCALAR_SIM]) + L", avx2 " +
+            FmtHex64(g_Golden.values[WL_AVX2]) + L", avx512 " +
+            FmtHex64(g_Golden.values[WL_AVX512]));
 
   // Release fence: ensures all golden value writes are visible to any thread
   // that observes initialized == true (paired with acquire fence in RunCompilerLogic).

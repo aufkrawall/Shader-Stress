@@ -140,11 +140,11 @@ extern const std::wstring APP_VERSION;
 #endif
 
 #ifndef APP_VERSION_MINOR_NUM
-#define APP_VERSION_MINOR_NUM 5
+#define APP_VERSION_MINOR_NUM 6
 #endif
 
 #ifndef APP_VERSION_PATCH_NUM
-#define APP_VERSION_PATCH_NUM 4
+#define APP_VERSION_PATCH_NUM 0
 #endif
 
 // Numeric version for hash encoding
@@ -154,11 +154,23 @@ constexpr uint8_t APP_VERSION_PATCH = static_cast<uint8_t>(APP_VERSION_PATCH_NUM
 
 constexpr uint64_t GOLDEN_RATIO = 0x9E3779B97F4A7C15ull;
 constexpr size_t IO_CHUNK_SIZE = 256 * 1024;
-constexpr size_t IO_FILE_SIZE = 512 * 1024 * 1024;
+constexpr size_t IO_BLOCK_SIZE = 4096;
+constexpr uint64_t IO_FILE_SIZE_DEFAULT = 512ull * 1024 * 1024;
 constexpr int BENCHMARK_DURATION_SEC = 180;
 // Complexity used for the periodic golden-value verification check.
-// Higher = more execution-unit pressure = better error sensitivity.
 constexpr int VERIFY_COMPLEXITY = 1000;
+// Upper bound for any job complexity (keeps iteration math far from overflow).
+constexpr int MAX_JOB_COMPLEXITY = 50000000;
+// Default per-core dwell time for core-cycle mode.
+constexpr int CORE_CYCLE_DEFAULT_DWELL_SEC = 60;
+
+// Run modes (g_App.mode)
+enum RunMode : int {
+  MODE_BENCHMARK = 0,
+  MODE_STEADY = 1,
+  MODE_DYNAMIC = 2,
+  MODE_CORE_CYCLE = 3,
+};
 
 struct ScopedHandle {
 #ifdef PLATFORM_WINDOWS
@@ -186,7 +198,7 @@ struct ScopedMem {
   void *ptr;
   size_t sz;
   bool valid;
-  
+
   explicit ScopedMem(size_t size) : sz(size), valid(false) {
     if (size == 0) {
       ptr = nullptr;
@@ -206,8 +218,10 @@ struct ScopedMem {
     }
 #endif
   }
-  
-  ~ScopedMem() {
+
+  ~ScopedMem() { Release(); }
+
+  void Release() {
     if (ptr) {
 #ifdef PLATFORM_WINDOWS
       VirtualFree(ptr, 0, MEM_RELEASE);
@@ -215,12 +229,14 @@ struct ScopedMem {
       munmap(ptr, sz);
 #endif
     }
+    ptr = nullptr;
+    valid = false;
   }
-  
+
   // Disable copy
   ScopedMem(const ScopedMem&) = delete;
   ScopedMem& operator=(const ScopedMem&) = delete;
-  
+
   // Enable move
   ScopedMem(ScopedMem&& other) noexcept : ptr(other.ptr), sz(other.sz), valid(other.valid) {
     other.ptr = nullptr;
@@ -228,13 +244,7 @@ struct ScopedMem {
   }
   ScopedMem& operator=(ScopedMem&& other) noexcept {
     if (this != &other) {
-      if (ptr) {
-#ifdef PLATFORM_WINDOWS
-        VirtualFree(ptr, 0, MEM_RELEASE);
-#else
-        munmap(ptr, sz);
-#endif
-      }
+      Release();
       ptr = other.ptr;
       sz = other.sz;
       valid = other.valid;
@@ -246,14 +256,27 @@ struct ScopedMem {
 
   explicit operator bool() const { return valid; }
   bool operator!() const { return !valid; }
-  
-  template <typename T> T *As() { 
-    return valid ? static_cast<T *>(ptr) : nullptr; 
+
+  template <typename T> T *As() {
+    return valid ? static_cast<T *>(ptr) : nullptr;
   }
 };
 
+// Rotate left; the count is taken modulo 64 (callers pass counts >= 64, e.g.
+// the realistic sim's bit-vector init). Shifting a 64-bit value by >= 64 is UB.
 inline uint64_t Rotl64(uint64_t v, unsigned r) {
-  return (r == 0) ? v : ((v << r) | (v >> (64u - r)));
+  r &= 63u;
+  return (v << r) | (v >> ((64u - r) & 63u));
+}
+
+// SplitMix64 finalizer: high-quality 64-bit bijective mixer.
+inline uint64_t Mix64(uint64_t x) {
+  x ^= x >> 30;
+  x *= 0xBF58476D1CE4E5B9ull;
+  x ^= x >> 27;
+  x *= 0x94D049BB133111EBull;
+  x ^= x >> 31;
+  return x;
 }
 
 inline uint64_t GetTick() {
@@ -266,12 +289,18 @@ inline uint64_t GetTick() {
 #endif
 }
 
-// Minimum time slice for Ultra stress workloads (milliseconds)
-constexpr int MIN_SLICE_MS = 50;
-
 std::wstring FmtNum(uint64_t v);
 std::wstring FmtTime(uint64_t s);
+std::wstring FmtBytes(uint64_t bytes);
+std::wstring FmtHex64(uint64_t v);
+// printf-style formatting into a wide string (ASCII format/arguments only).
+std::wstring Fmt(const char *fmt, ...)
+#if defined(__clang__) || defined(__GNUC__)
+    __attribute__((format(printf, 1, 2)))
+#endif
+    ;
 std::wstring GetArchName();
+std::wstring GetModeName(int mode);
 
 struct CpuFeatures {
   bool hasAVX2 = false;
@@ -280,8 +309,6 @@ struct CpuFeatures {
   bool isHybrid = false;    // Intel hybrid (P-core + E-core) topology
   int family = 0;           // CPU family (for tuning)
   int model = 0;            // CPU model (for tuning)
-  int numPcores = 0;        // Number of performance cores (hybrid only)
-  int numEcores = 0;        // Number of efficient cores (hybrid only)
   std::wstring name;
   std::wstring brand;
 };
@@ -289,19 +316,21 @@ struct CpuFeatures {
 std::wstring GetCpuBrand();
 CpuFeatures GetCpuInfo();
 
-// Enumerate hybrid CPU topology (P-cores vs E-cores) into the CpuFeatures struct.
-void EnumerateHybridTopology(CpuFeatures &f);
-
 extern CpuFeatures g_Cpu;
 extern bool g_ForceNoAVX512;
 extern bool g_ForceNoAVX2;
 
-struct ReproSettings {
-  bool active = false;
-  uint64_t seed = 0;
-  int complexity = 0;
+// Options that shape a stress run (CLI flags; GUI uses defaults).
+struct RunOptions {
+  int threadLimit = 0;          // 0 = all logical CPUs allowed by the affinity mask
+  bool noRam = false;           // never activate the RAM tester
+  bool noIo = false;            // never activate the I/O tester
+  bool noDecomp = false;        // turn decompression workers into compute workers
+  uint64_t ramBytes = 0;        // 0 = automatic (70% of available RAM, max 16 GiB)
+  uint64_t ioBytes = IO_FILE_SIZE_DEFAULT;
+  int coreCycleDwellSec = CORE_CYCLE_DEFAULT_DWELL_SEC;
 };
-extern ReproSettings g_Repro;
+extern RunOptions g_RunOpts;
 
 struct StressConfig {
   int fma_intensity = 1;
@@ -323,9 +352,9 @@ extern std::mutex g_StateMtx;
 
 enum WorkloadType {
   WL_AUTO = 0,          // Auto-select best available
-  WL_SCALAR = 1,        // Maximum power scalar (register pressure + ALU)
-  WL_AVX2 = 2,          // Maximum power AVX2 with parallel FMA chains
-  WL_AVX512 = 3,        // Maximum power AVX-512 with parallel FMA chains
+  WL_SCALAR = 1,        // Synthetic 128-bit SIMD (SSE2 / NEON) power kernel
+  WL_AVX2 = 2,          // Synthetic AVX2/FMA power kernel
+  WL_AVX512 = 3,        // Synthetic AVX-512 power kernel
   WL_SCALAR_SIM = 4,    // Realistic compiler simulation (original)
 };
 
@@ -336,28 +365,59 @@ WorkloadType ResolveSelectedWorkload(int workloadSel);
 // Apply configuration based on selected workload (for MAX POWER modes)
 void ApplyWorkloadConfig(int workloadSel);
 
+// Packed work assignment so readers always observe a consistent snapshot.
+// Layout: [offset:16][comps:16][decomp:16][flags:16] (flags: bit0 io, bit1 ram)
+struct WorkAssignment {
+  int offset = 0;
+  int comps = 0;
+  int decomp = 0;
+  bool io = false;
+  bool ram = false;
+
+  uint64_t Pack() const {
+    return ((uint64_t)(uint16_t)offset << 48) | ((uint64_t)(uint16_t)comps << 32) |
+           ((uint64_t)(uint16_t)decomp << 16) | (io ? 1u : 0u) | (ram ? 2u : 0u);
+  }
+  static WorkAssignment Unpack(uint64_t v) {
+    WorkAssignment a;
+    a.offset = (int)(uint16_t)(v >> 48);
+    a.comps = (int)(uint16_t)(v >> 32);
+    a.decomp = (int)(uint16_t)(v >> 16);
+    a.io = (v & 1u) != 0;
+    a.ram = (v & 2u) != 0;
+    return a;
+  }
+  bool operator==(const WorkAssignment &o) const {
+    return Pack() == o.Pack();
+  }
+  bool operator!=(const WorkAssignment &o) const { return !(*this == o); }
+};
+
+enum class WorkerRole : int { Idle = 0, Compute = 1, Decompress = 2 };
+WorkerRole RoleOf(int workerIdx, const WorkAssignment &a);
+
 struct AppState {
   // Cache-line 1: Worker-Read-Hot — read by ALL worker threads every
   // iteration.  Isolated on its own cache line to avoid MESI invalidation
   // from Watchdog/DynamicLoop writing to other groups.
   alignas(64) std::atomic<bool> running{false};
   std::atomic<bool> quit{false};
-  std::atomic<int> mode{2};
-  std::atomic<int> activeCompilers{0};
-  std::atomic<int> activeDecomp{0};
+  std::atomic<int> mode{MODE_DYNAMIC};
   std::atomic<int> selectedWorkload{WL_AUTO};
+  std::atomic<uint32_t> workGen{0};           // bumped on every assignment change
+  std::atomic<uint64_t> assignment{0};        // WorkAssignment::Pack()
 
   // Cache-line 2: Watchdog-Written — also read by workers (shaders, errors)
-  // but only rarely.  Separate line prevents Watchdog writes from invalidating
-  // the worker-read-hot cache line.
+  // but only rarely.
   alignas(64) std::atomic<uint64_t> shaders{0};
   std::atomic<uint64_t> errors{0};
   std::atomic<uint64_t> elapsed{0};
   std::atomic<uint64_t> currentRate{0};
 
-  // Cache-line 3: DynamicLoop/Bench — written infrequently by DynamicLoop
-  // (~10s), separate from the high-frequency paths.
+  // Cache-line 3: DynamicLoop/Bench — written infrequently.
   alignas(64) std::atomic<int> loops{0};
+  std::atomic<int> activeCompilers{0};        // display copy of the assignment
+  std::atomic<int> activeDecomp{0};
   std::atomic<bool> ioActive{false};
   std::atomic<bool> ramActive{false};
   std::atomic<bool> resetTimer{false};
@@ -368,9 +428,10 @@ struct AppState {
   std::atomic<bool> autoStopBenchmark{
       true}; // Stop and idle after 3min benchmark
   std::atomic<uint64_t> maxDuration{0};
+  std::atomic<int> cycleCore{-1};             // core-cycle: current physical core
+  std::atomic<uint64_t> cycleNextTick{0};     // core-cycle: tick of next rotation
 
   // Cache-line 4: Cold data — logging, hash, platform handles.
-  // Accessed rarely and by single threads, no false-sharing concern.
   alignas(64) std::wstring benchHash;
   static constexpr size_t MAX_LOG_HISTORY = 1000;
   std::deque<std::wstring> logHistory;
@@ -399,10 +460,14 @@ extern float g_Scale;
 inline int S(int v) { return (int)(v * g_Scale); }
 
 void DisablePowerThrottling();
-void PinThreadToCore(int coreIdx);
 // Sets MXCSR FTZ+DAZ bits on x86-64 for consistent FP behaviour (no-op on ARM64).
 // Call once per thread, and in the main thread before InitGoldenValues().
 void SetFpuFlushMode();
+// Installs process-wide crash handlers (unhandled exceptions / fatal signals)
+// that log the faulting thread's job context and write a crash report.
+void InstallCrashHandlers();
+// Path of the I/O stress temp file (for crash-time cleanup); empty if none.
+void SetCrashCleanupFile(const std::wstring &path);
 
 // Windows Power Request API — process-scoped high-performance request.
 // Prevents frequency reduction, core parking, deep C-states and throttling.
@@ -426,13 +491,12 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
                                const StressConfig &config);
 uint64_t RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
                                     const StressConfig &config);
-uint64_t UnsafeRunWorkload(uint64_t seed, int complexity,
-                           const StressConfig &config);
-uint64_t SafeRunWorkload(uint64_t seed, int complexity,
-                          const StressConfig &config, int threadIdx);
+// Runs the compute workload of the given (resolved) type. Never inlined so all
+// callers share one compiled body (bit-identical results for verification).
+uint64_t RunComputeWorkload(WorkloadType type, uint64_t seed, int complexity);
 void RunPerfStats();
 double SampleCpuPackagePower();
-void InitPowerMeasurement();
+void StartPowerMeasurement();
 void ShutdownPowerMeasurement();
 
 struct GoldenValues {
@@ -441,17 +505,14 @@ struct GoldenValues {
 };
 extern GoldenValues g_Golden;
 // Returns the canonical StressConfig used for golden value computation and verification.
-// Must be identical in InitGoldenValues() and all runtime verification checks.
 StressConfig GetVerifyConfig();
 void InitGoldenValues();
 
 struct ThreadWrapper {
   std::thread t;
-  
+
   ~ThreadWrapper() {
     if (t.joinable()) {
-      // Threads should exit quickly when terminate flag is set
-      // Just join directly - don't poll with timeout
       t.join();
     }
   }
@@ -468,23 +529,27 @@ struct alignas(64) Worker {
   std::atomic<uint64_t> localShaders{0};
   std::atomic<uint64_t> lastTick{0};
   std::atomic<WorkerState> state{WorkerState::Idle};
+  std::atomic<int> lp{-1};   // logical CPU this worker is pinned to (-1 = unpinned)
   // alignas(64) pads the struct to exactly 64 bytes (one cache line).
-  // No explicit padding needed.
 };
 static_assert(sizeof(Worker) == 64, "Worker must be exactly one cache line");
 
 extern std::vector<std::unique_ptr<Worker>> g_Workers;
-extern std::vector<std::unique_ptr<Worker>> g_IOThreads;
-extern Worker g_RAM;
 extern std::vector<std::unique_ptr<ThreadWrapper>> g_Threads;
 extern std::unique_ptr<ThreadWrapper> g_DynThread, g_WdThread;
 
 void WorkerThread(int idx);
-void IOThread(int ioIdx);
-void RAMThread();
 void DynamicLoop();
+void CoreCycleLoop();
 void Watchdog();
-void SetWork(int comps, int decomp, bool io, bool ram);
+// Assigns work. offset = first worker index of the active window.
+void SetWork(int comps, int decomp, bool io, bool ram, int offset = 0);
+// Stops IO/RAM testers and releases their memory/temp files.
+void ReleaseAuxResources();
+// Starts the worker pool / control threads for the current g_App.mode.
+void StartModeWork();
+// Creates g_Workers according to the topology and g_RunOpts.threadLimit.
+int CreateWorkerPool();
 
 #ifdef PLATFORM_WINDOWS
 void InitGDI();
@@ -492,10 +557,6 @@ void CleanupGDI();
 LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l);
 #endif
 void DetectBestConfig();
-
-#if !defined(PLATFORM_WINDOWS)
-void InstallCrashHandlers();
-#endif
 
 // Benchmark hash validation
 struct HashResult {
