@@ -1,5 +1,29 @@
 # Recent Changes Log
 
+## 2026-10-03 — P001 toolchain A/B: MSVC draws most on synthetics; evidence-dir ACL fix
+
+- First full-load A/B session ran (short mode, 3 toolchains x 3 ISAs x 5 repeats, ~15 min):
+  MSVC +6.4 W scalar / +3.3 W avx2 vs LLVM (both significant, paired t-CI), -1.5 W
+  scalar-sim; Zig within noise of LLVM everywhere. MSVC is the new power baseline for
+  kernel/knob work (P002 SLP comparison next); absolute targets still need benchmark mode.
+  Ledger entry P001 records the per-repeat numbers (taken from the relayed elevated log).
+- Tooling bugs found by the session: (1) evidence dirs created by the elevated child were
+  Administrators-owned via `tempfile.mkdtemp` 0o700 → results.csv unreadable afterwards
+  (fix: plain `mkdir()` dirs inheriting audit/'s DACL; regression test
+  `test_evidence_dirs`; validated by the readable P002-aclcheck session); (2) the summary
+  always compared against the first `--exe` arm (fix: `--baseline` names any `--exe`
+  candidate, unknown names fail fast; P001's printed table used MSVC as base, deltas
+  re-expressed vs LLVM in the ledger). Both fixes covered by `tests/power_tool_tests.py`.
+
+## 2026-10-03 — P002 SLP spill codegen: no package-power effect, fix kept for throughput
+
+- P002 (`x64-llvm-v3` vs `-slp`, scalar+avx2, 5 repeats) is inconclusive on power
+  (+0.2 W avx2, -0.0 W scalar, both far below the 1 W threshold; clocks within CI),
+  so the disassembly-predicted spill cost does not reach the package rail — likely
+  L1-contained traffic (new backlog item P010). The `-fno-slp-vectorize` default is
+  kept regardless: identical watts at 15-18% fewer cycles per block is strictly more
+  benchmark score per watt, and checksums are identical. Full numbers in the ledger.
+
 ## 2026-10-03 — Short power runs: 1 s streaming sensor readout, 8 s warmup + 15 s window
 
 - Trigger: user asked whether ~8 s warmup + 15 s measurement is enough (was 30 s + 150 s

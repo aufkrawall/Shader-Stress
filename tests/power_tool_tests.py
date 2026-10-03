@@ -15,7 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts import power_host  # noqa: E402
 from scripts.power_measure import (binary_sha256, format_summary, load_rows,  # noqa: E402
-                                   parse_args, run_seconds, snapshot, summarize_runs,
+                                   make_evidence_dir, parse_args, run_seconds, snapshot, summarize_runs,
                                    summarize_samples, verdict, workload_args, write_rows)
 
 # Must equal the line asserted by TestPowerReaderFormat in src/app/SelfTest.cpp.
@@ -169,6 +169,35 @@ def test_snapshot(check, tmp):
           "snapshot refuses to overwrite or escape its directory")
     check(binary_sha256(src / "ShaderStress.com") == hashlib.sha256(b"workload").hexdigest(),
           "recorded SHA-256 identifies ShaderStress.exe, not the CLI launcher")
+    with contextlib.redirect_stderr(io.StringIO()):
+        try:
+            parse_args(["--baseline", "P1-base"])
+            explicit_ok = True
+        except SystemExit:
+            explicit_ok = False
+    check(explicit_ok, "session baseline can name any --exe candidate up front")
+
+
+def test_evidence_dirs(check, tmp):
+    # Regression: tempfile.mkdtemp() applies 0o700, which Windows maps to an
+    # owner-only DACL. A session created by the elevated child then locked
+    # out the unelevated shell (results.csv unreadable, summary unrecoverable).
+    parent = Path(tmp) / "evidence"
+    parent.mkdir()
+    first = make_evidence_dir(parent, "P1-")
+    check(first.is_dir() and first.parent == parent,
+          "evidence dir is created inside the given parent", str(first))
+    second = make_evidence_dir(parent, "P1-")
+    check(second != first and second.is_dir(),
+          "a second evidence dir gets a fresh non-colliding name", str(second))
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+        advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+        owner = wintypes.HANDLE()
+        check(advapi.GetNamedSecurityInfoW(str(first), 1, 1, None, None, None, None,
+                                           ctypes.byref(owner)) != 0 or owner.value is not None,
+              "evidence dir carries an owner SID (no broken security descriptor)")
 
 
 def test_host(check, tmp):
@@ -210,4 +239,5 @@ def run_power_tool_tests(check):
         test_arguments(check)
         test_summary(check, tmp)
         test_snapshot(check, tmp)
+        test_evidence_dirs(check, tmp)
         test_host(check, tmp)

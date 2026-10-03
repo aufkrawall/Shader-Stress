@@ -1,8 +1,9 @@
 # Power Optimization Runbook ("continue power draw optimization")
 
-Last verified: 2026-10-03. Stale-risk: medium — tooling verified by unit tests and light
-elevated checks (UAC auto-approved, LHM sensors present, 1 s streaming); no full-load
-session has been run with it yet.
+Last verified: 2026-10-03. Stale-risk: medium — tooling verified by unit tests plus
+two full-load short sessions (P001: 3 toolchains x 3 ISAs x 5 repeats; P002: LLVM
+vs SLP codegen x 2 ISAs x 5 repeats) and one readable-evidence check; no
+benchmark-mode (180 s) session has been run with it yet.
 
 When the user says **"continue power draw optimization"** (or similar), follow this page.
 Results go into [power-ledger.md](power-ledger.md); kernel/flag design background is in
@@ -156,8 +157,10 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
 ## Tooling reference
 
 - `scripts/power_measure.py` (wrappers `scripts/measure.ps1`, `scripts/sweep_power.ps1`):
-  `--exe a,b,...` (repo-relative; first = baseline; labels = parent dir names, must differ),
-  `--label`, `--mode short|benchmark`, `--warmup`, `--measure`, `--repeats`, `--preheat`,
+  `--exe a,b,...` (repo-relative; labels = parent dir names, must differ),
+  `--baseline NAME` (candidate the +/- deltas refer to; default: first `--exe`;
+  unknown names fail fast), `--label`, `--mode short|benchmark`, `--warmup`,
+  `--measure`, `--repeats`, `--preheat`,
   `--isas`, `--threads` (0 = all), `--sweep --targets --buffers --rounds`, `--snapshot LABEL [--snapshot-source DIR]`, `--summarize CSV [--baseline NAME]`,
   `--max-background-load` (10%), `--temp-limit` (90), `--no-elevate`.
 - **UAC**: when not elevated, the script relaunches itself with `ShellExecuteExW("runas")`
@@ -165,7 +168,10 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
   `audit/power-measurements/elevated-*.log` and returns its exit code. This machine has
   `ConsentPromptBehaviorAdmin=0` (silent auto-approval); elsewhere one consent prompt. First
   Ctrl+C asks the child to stop after the current run (stop file), second Ctrl+C detaches.
-- Session directory: `session.json` (args, git state, CPU), `results.csv` (one row per run:
+- Session directory: `<label>-<stamp>-<pid>-<nn>/` under `audit/power-measurements/`
+  (plain `mkdir`, so the DACL is inherited and the evidence stays readable from both
+  the elevated child and the unelevated shell — `tempfile.mkdtemp` 0o700 locked out
+  the parent shell): `session.json` (args, git state, CPU), `results.csv` (one row per run:
   W mean/SD/min/max, samples, jobs/s, EffMHz, TempMeanC/TempMaxC, VcoreV, background load,
   SHA-256, evidence), `results.json`, `summary.md`, `run-*/ShaderStress.log` + `console.log`.
   `audit/` is git-ignored: evidence is local; the ledger is the durable record.
@@ -196,10 +202,12 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
 
 ## Open questions / stale-risk
 
-- First full-load session with this tooling not yet run; effective-clock/Vcore readings under
-  load and the noise floor (CI width at 5 short repeats) are unverified. Ledger item P000
-  validates the short protocol against the benchmark (per-second power trace: is 8 s
-  warmup past the boost/temperature transient? do short and benchmark A/B deltas agree?).
+- First full-load sessions with this tooling have run (P001: 3 toolchains x 3 ISAs;
+  P002: LLVM vs SLP codegen). Observed short-mode noise floor at 5 repeats: paired
+  power CI95 ~1.3-2.5 W (runbook thresholds: 1 W power, 15 MHz clock). Ledger item P000
+  still validates the short protocol against the benchmark (per-second power trace:
+  is 8 s warmup past the boost/temperature transient? do short and benchmark A/B
+  deltas agree?).
 - PowerReader competes with the workers for CPU time; reading jitter is absorbed by the
   contiguous windows, and its own small load is part of every run, equally for all arms.
 - Sensor names on Intel/other AMD generations are fallbacks (`CPU Package`, `CPU Core`,

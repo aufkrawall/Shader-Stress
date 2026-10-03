@@ -31,24 +31,109 @@ understand and reproduce the change.
 
 Status: `open`, `running`, `accepted`, `rejected`, `inconclusive`, `retry` (worth
 re-testing after a baseline change). Take the next free ID for new ideas.
+Baselines: kernel/knob work now runs on the MSVC v3 toolchain (P001 winner);
+LLVM v3 stays the release baseline. P009's mechanism note (2026-10-03, from
+`kernel_codegen.py` + `--perf-stats` on the unchanged ebc7357 builds, no load):
+all three toolchains emit 48 explicit FMAs with no wide spills in
+`SynthKernelAVX2`; the scalar kernels differ — LLVM 651 insns at 9285
+cycles/block vs MSVC 587 insns at 10739 cycles/block (slower, more power —
+heavier per-cycle current, matching the boost/backoff model).
 
 | ID | Type | Hypothesis (one change) | ISAs | Status |
 |---|---|---|---|---|
 | P000 | method | Validate the short protocol once: one `--mode benchmark` session of the current build, then inspect the per-second `Power sample` trace (transient after start: is 8 s warmup enough?) and compare the 9-23 s mean with the benchmark window; later check that short and benchmark A/B deltas agree for the first accepted change | all | open |
-| P001 | compiler | Establish the first measured baseline and the best toolchain: `x64-llvm-v3` (baseline) vs `x64-zig-v3` vs `x64-msvc-v3`, same commit | all | open |
-| P002 | flag | Quantify the SLP fix: `x64-llvm-v3-slp` (old kernel codegen, ymm spills) vs `x64-llvm-v3` | scalar, avx2 | open |
+| P001 | compiler | Establish the first measured baseline and the best toolchain: `x64-llvm-v3` (baseline) vs `x64-zig-v3` vs `x64-msvc-v3`, same commit | all | accepted (MSVC power baseline; short-mode only, needs benchmark confirm) |
+| P002 | flag | Quantify the SLP fix: `x64-llvm-v3-slp` (old kernel codegen, ymm spills) vs `x64-llvm-v3` | scalar, avx2 | inconclusive on power (+-0.2 W); fix kept for throughput (+15-18% score per watt) |
 | P003 | knob | Smaller buffer / more rounds: two SMT threads x 512 KiB overflow the 512 KiB L2; start with 128 KiB x 4 rounds (`--sweep`) | scalar, avx2 | open |
 | P004 | kernel | Zen 3 FADD pipes idle in the AVX2 kernel: butterflies issue only MUL/FMA (FP0/FP1), so FP2/FP3 sit idle; add independent norm-preserving add/sub work on live data (verify pipe mapping first) | avx2 (scalar shares the body) | open |
 | P005 | kernel | Integer network: the g0..g7 chains are serial across blocks (multiply+rotate latency, one 64-bit DIV); restructure for more independent GPR work, keep DIV + verification | scalar, avx2 | open |
 | P006 | flag | `-mtune=znver3` (`win-v3-znver3`) — mostly codegen of the realistic sim | all | open |
 | P007 | flag | `-funroll-loops` / LTO / strict aliasing one at a time (`win-v3-nounroll`, `-nolto`, `-strictalias`) for the realistic sim | scalar-sim | open |
 | P008 | flag | PGO (`build.py --pgo-gen/--pgo-use`) for the realistic sim; needs a bounded profiling run design (no long full-load profiling) | scalar-sim | open |
+| P009 | kernel | Scalar integer network on MSVC: LLVM's scalar loop is 15% faster per block at 6 W less power — likely tighter GPR scheduling; try 2 independent DIV chains or unserializing g4..g7 on the LLVM baseline first (MSVC codegen may already do this) | scalar | open |
+| P010 | method | P002 follow-up: SLP spills cost no package power but +15-22% cycles — is the spill traffic L1-contained (no package-power effect expected)? Retry the SLP pair in benchmark mode if a future kernel change moves spill traffic off-chip | scalar, avx2 | open |
 
 ## Entries
 
 Newest first. Copy the template.
 
 ```
+### P002 — SLP spills vs clean kernels (inconclusive on power, fix kept for throughput)
+- Date: 2026-10-03. Type: flag.
+- Change (exactly one): kernel objects with LLVM SLP vectorizer re-enabled
+  (`bin/x64-llvm-v3-slp`, `slp="-slp" in out_dir` in `build.py`) vs clean
+  `x64-llvm-v3` (P002-llvm). Same commit, no source change.
+- Baseline: P002-llvm (GitHead ebc7357 + uncommitted tooling fix — `power_measure.py`
+  evidence dirs/`--baseline`, `power_tool_tests.py` regression test only; workload
+  binaries identical to ebc7357) — measured on top of P001.
+- Candidate(s): P002-slp (`--baseline P002-llvm` named explicitly).
+- Conditions: short mode (8 s warmup + 15 s window, 5 interleaved repeats, 30 s preheat
+  on P002-llvm avx2), scalar+avx2 only, all 16 threads, background load 1.6-4.7% per
+  run, avx2 Tmax 90.4-91.0 C (thermal-limit flag set, all arms alike). Light browser
+  load by the user during the session.
+- Command: python scripts/power_measure.py --label P002-slp --exe audit/power-baselines/P002-llvm/ShaderStress.com,audit/power-baselines/P002-slp/ShaderStress.com --isas scalar,avx2 --baseline P002-llvm
+- Result:
+  | Candidate | ISA | Runs | W (SD) | dW vs base (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Vcore | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | P002-slp | scalar | 5 | 116.6 (0.4) | -0.0 +-0.3 | 4401 | -7 +-9 | 88.6 | 1.193 | 275 | inconclusive (within noise) |
+  | P002-slp | avx2 | 5 | 127.5 (0.4) | +0.2 +-0.1 | 4289 | -1 +-11 | 91.0 (thermal limit) | 1.152 | 259 | inconclusive (within noise) |
+  | P002-llvm | scalar | 5 | 116.6 (0.2) | - | 4408 | - | 87.1 | 1.195 | 273 | baseline |
+  | P002-llvm | avx2 | 5 | 127.3 (0.3) | - | 4291 | - | 90.6 (thermal limit) | 1.147 | 260 | baseline |
+- Verdict: inconclusive — power deltas (+0.2 W avx2, -0.0 W scalar) are far below the
+  1 W action threshold; effective-clock deltas are within their CIs. The SLP fix is
+  kept anyway: it removes 3/6 wide spills per block and cuts `--perf-stats` cost by
+  15-18% (scalar 10900→9285, avx2 12047→9887 cycles/block) at identical power — i.e.
+  strictly more benchmark score per watt — and was already the committed default.
+- Side effects: jobs/s unchanged within noise (scalar 275 vs 273, avx2 259 vs 260);
+  golden checksums identical; codegen audit as predicted (spills only on SLP arm).
+- Evidence: audit/power-measurements/P002-slp-20261003-172354-2448-00/ (local,
+  readable: results.csv + summary.md + per-run logs verified from unelevated shell).
+- Follow-ups: P003 buffer/rounds sweep next (sweep covers win-v3/zig-v3/msvc).
+```
+
+### P001 — toolchain baseline: MSVC fastest, LLVM/Zig tied on synthetics (accepted as baseline choice)
+- Date: 2026-10-03. Type: compiler.
+- Change (exactly one): none — three same-commit (ebc7357) toolchain builds compared:
+  `x64-llvm-v3` (P001-base), `x64-zig-v3` (P001-zig), `x64-msvc-v3` (P001-msvc).
+  All self-test 68/68; golden checksums unchanged by construction (no code change).
+- Baseline: P001-base (GitHead ebc7357, clean) — first measurement, no prior accepted ID.
+- Candidate(s): P001-zig, P001-msvc (deltas re-expressed vs P001-base; the tool printed them
+  vs P001-msvc because `--exe` order put MSVC first — fixed afterwards so `--baseline`
+  names any `--exe` candidate and sessions fail on an unknown name).
+- Conditions: short mode (8 s warmup + 15 s window, 5 interleaved repeats, 30 s preheat on
+  P001-base avx2), all 16 threads, background load 2.0-8.9% per run (guard 10%),
+  Tmax touched 90-90.8 C on avx2 (thermal-limit flag set, all arms alike). User ran a
+  browser etc. during the session (light extra load).
+- Command: python scripts/power_measure.py --label P001-toolchain --exe audit/power-baselines/P001-base/ShaderStress.com,audit/power-baselines/P001-zig/ShaderStress.com,audit/power-baselines/P001-msvc/ShaderStress.com
+- Result: per-run watts from the relayed elevated log (paired per repeat, t95 df=4 = 2.776):
+  - scalar-sim means: base 107.5, msvc 106.0, zig 106.7. Paired msvc-base -1.52 +-1.27
+    → worse; zig-base -0.76 +-1.99 → inconclusive.
+  - scalar means: base 115.0, msvc 121.3, zig 115.4. Paired msvc-base +6.37 +-1.38
+    → better; zig-base +0.37 +-1.35 → inconclusive.
+  - avx2 means: base 126.1, msvc 129.4, zig 127.4. Paired msvc-base +3.30 +-1.71
+    → better; zig-base +1.31 +-1.37 → inconclusive (only just: +1.31 vs CI 1.37).
+  - Effective clock (paired): msvc vs base sim -4.4 +-2.3 (no tie-break, < 15 MHz),
+    scalar -18.6 +-2.1, avx2 +9 +-3.0 MHz. Zig deltas within noise or < 15 MHz.
+  - MSVC jobs/s was lowest on the synthetics (scalar 250 vs 262/281, avx2 244 vs 252/255)
+    while drawing the most power — i.e. more energy per unit of benchmark score.
+- Verdict: accepted (as baseline choice) — MSVC draws significantly more power on both
+  synthetic kernels (+6.4 W scalar, +3.3 W avx2) with a lower effective clock on scalar,
+  and is not worse anywhere except scalar-sim (-1.5 W, where the sim's integer codegen
+  differs). Zig is indistinguishable from LLVM on this short protocol. MSVC v3 becomes
+  the power baseline for kernel/knob work (P002+); LLVM v3 stays the release baseline.
+  Absolute target numbers still need `--mode benchmark` confirmation.
+- Side effects: benchmark scores shift with jobs/s (MSVC slower per job on synthetics
+  despite higher watts); golden checksums unchanged; codegen audit unchanged (no code edit).
+- Evidence: audit/power-measurements/session-20261003-161355-P001-toolchain-kxjmzw7a/
+  (local; results.csv + per-run logs — Administrators-owned, superseded by the
+  `mkdir()` evidence-dir fix validated in P002-aclcheck).
+  Relayed copy: audit/power-measurements/elevated-20261003-161355-32344.log.
+  Tooling note: evidence dirs are `mkdir()`-created since (readable check session
+  `P002-aclcheck-20261003-170713-28972-00`, results.csv + summary.md verified).
+- Follow-ups: P002 SLP comparison ran on the LLVM pair (isolates the codegen effect);
+  benchmark-mode confirmation of the MSVC toolchain lead before any CHANGELOG power claim.
+```
+
 ### P0NN — <slug> (<status>)
 - Date: YYYY-MM-DD. Type: kernel | knob | compiler | flag | scheduling.
 - Change (exactly one): <what, where; key lines or patch path>.
@@ -64,5 +149,5 @@ Newest first. Copy the template.
 - Follow-ups: <new hypotheses, retry conditions>.
 ```
 
-(No measured entries yet. Tooling for effective clock/temperature/Vcore capture, UAC
-self-elevation, snapshots and paired A/B summaries landed 2026-10-03.)
+(Measured entries: P001, P002 below. Tooling for effective clock/temperature/Vcore
+capture, UAC self-elevation, snapshots and paired A/B summaries landed 2026-10-03.)

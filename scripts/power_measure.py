@@ -153,6 +153,26 @@ def binary_sha256(exe):
     return hashlib.sha256(target.read_bytes()).hexdigest()
 
 
+def make_evidence_dir(parent, prefix):
+    """Creates an evidence directory inheriting the parent's DACL.
+
+    tempfile.mkdtemp() applies a 0o700 mode that Windows maps to an
+    owner-only DACL; when the elevated child creates it, the unelevated
+    parent shell loses access. A plain mkdir() inherits audit/'s DACL
+    (Administrators full access + the user's own entries), readable from
+    both tokens. Retries on collision: the stamp makes it unique.
+    """
+    parent = Path(parent)
+    for attempt in range(100):
+        candidate = parent / f"{prefix}{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{attempt:02d}"
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            continue
+        return candidate
+    raise FileExistsError(f"no usable evidence directory name under {parent}")
+
+
 def git(*args):
     try:
         r = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, timeout=60)
@@ -175,7 +195,18 @@ def run_workload(exe, mode, seconds, isa, threads, run_dir):
 
 
 def measure(exe, options, isa, session, label, repeat):
-    run_dir = Path(tempfile.mkdtemp(prefix=f"run-{label}-{isa}-r{repeat}-", dir=session))
+    parent = Path(session)
+    run_dir = None
+    for attempt in range(100):
+        candidate = parent / f"run-{label}-{isa}-r{repeat}-{attempt:02d}"
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            continue
+        run_dir = candidate
+        break
+    if run_dir is None:
+        raise FileExistsError(f"no usable run directory name under {parent}")
     seconds = run_seconds(options.mode, options.warmup, options.measure)
     code, log = run_workload(exe, options.mode, seconds, isa, options.threads, run_dir)
     try:
@@ -361,7 +392,8 @@ def parse_args(argv=None):
                         help="copy --snapshot-source to audit/power-baselines/LABEL and exit")
     parser.add_argument("--snapshot-source", default="bin/x64-llvm-v3")
     parser.add_argument("--summarize", metavar="CSV", help="print the summary of a results CSV")
-    parser.add_argument("--baseline", help="candidate name deltas refer to (default: first)")
+    parser.add_argument("--baseline",
+                        help="candidate the +/- deltas refer to (default: first --exe)")
     parser.add_argument(power_host.ELEVATED_FLAG, action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--relay-log", help=argparse.SUPPRESS)
     parser.add_argument("--stop-file", help=argparse.SUPPRESS)
@@ -412,11 +444,14 @@ def write_rows(path, rows):
 
 def run_session(options, argv):
     EVIDENCE.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    session = Path(tempfile.mkdtemp(prefix=f"session-{stamp}-{options.label}-", dir=EVIDENCE))
+    if options.baseline and options.baseline not in [Path(e).parent.name for e in options.exe]:
+        raise RuntimeError(f"--baseline {options.baseline!r} is not one of the --exe candidates: " +
+                           ", ".join(Path(e).parent.name for e in options.exe))
+    session = make_evidence_dir(EVIDENCE, f"{options.label}-")
     csv_path = options.csv or session / "results.csv"
     if csv_path.exists():
         raise RuntimeError(f"refusing to replace existing results: {csv_path}; choose --csv")
+    stamp = time.strftime("%Y%m%d-%H%M%S")
     meta = {"Label": options.label, "Arguments": argv, "Started": stamp,
             "Mode": options.mode, "Warmup": options.warmup, "Measure": options.measure,
             "Repeats": options.repeats, "Preheat": options.preheat,
@@ -485,7 +520,8 @@ def run_session(options, argv):
             break
     (session / "results.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
     if rows:
-        summary = format_summary(summarize_runs(rows, temp_limit=options.temp_limit))
+        baseline = options.baseline or candidate_name(rows[0])
+        summary = format_summary(summarize_runs(rows, baseline, temp_limit=options.temp_limit))
         (session / "summary.md").write_text(summary + "\n", encoding="utf-8")
         print("\n" + summary)
     print(f"Results: {csv_path}\nEvidence: {session}")
