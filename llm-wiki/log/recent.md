@@ -1,5 +1,21 @@
 # Recent Changes Log
 
+## 2026-10-03 — Repository published to GitHub (origin/main)
+
+- `origin` = https://github.com/aufkrawall/Shader-Stress.git; local branch renamed
+  `master` -> `main`, tracking `origin/main`.
+- Local history had no common ancestor with GitHub main (local started from a v3.5.4
+  snapshot). Joined with `git merge -s ours --allow-unrelated-histories` (tree = local),
+  so the push was a fast-forward and GitHub tags 1.0-3.5.x / releases stay valid.
+- Before publishing, `git filter-repo --invert-paths --path .opencode/ --path audit/`
+  rewrote the (unpublished) local history: both folders are git-ignored and three commits
+  contained an absolute local user path. Outgoing range checked with gitleaks + trufflehog
+  (0 findings) and a personal-marker grep (0).
+- `lhm-deps/` (served to `build.py` from GitHub main) synced from GitHub: adds
+  `PawnIO_setup.exe`; `SHA256SUMS.txt` there has CRLF line endings (parser strips them).
+- From now on every push must pass the post-commit checks in
+  `llm-wiki/secret-leak-prevention.md` (gitleaks over `origin/main..HEAD`).
+
 ## 2026-10-03 — v3.6.0: verified, bounded kernels; paired job verification; scheduler/testers rewrite
 
 Root causes found (all confirmed, see `llm-wiki/opt-audit.md` and `verification.md`):

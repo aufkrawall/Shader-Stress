@@ -78,6 +78,7 @@ Repository root, after `git add -A`:
 ```text
 gitleaks git --pre-commit --staged --redact --no-banner .      # pre-commit: staged changes
 gitleaks git --log-opts="-1" --redact --no-banner .             # post-commit: HEAD only
+gitleaks git --log-opts="origin/main..HEAD" --redact --no-banner .  # before push: outgoing range
 git show --format=fuller --stat --patch HEAD                    # post-commit: manual review
 ```
 
