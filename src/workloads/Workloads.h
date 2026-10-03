@@ -21,6 +21,7 @@
 #endif
 
 constexpr size_t SYNTH_BUF_DOUBLES = (size_t)SYNTH_BUF_KIB * 1024 / sizeof(double);
+static_assert(SYNTH_BUF_KIB >= 32, "SYNTH_BUF_KIB must be at least 32");
 static_assert(SYNTH_BUF_DOUBLES % 4096 == 0, "SYNTH_BUF_KIB must be a multiple of 32");
 static_assert(SYNTH_ROUNDS >= 1 && SYNTH_ROUNDS <= 16, "SYNTH_ROUNDS out of range");
 

@@ -20,6 +20,10 @@ import platform
 import re
 import subprocess
 import sys
+from pathlib import Path
+from unittest import mock
+import contextlib
+import io
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GOLDEN_FILE = os.path.join(os.path.dirname(__file__), "golden_values.json")
@@ -278,7 +282,7 @@ def test_invariant_lhm(b):
     hdr = _read("src/core/Common.h")
     main_src = _read("src/app/CliRun.cpp")
     check('L"lhm\\\\PawnIO_setup.exe"' in power and "ShutdownPowerMeasurement" in hdr and
-          "ShutdownPowerMeasurement()" in main_src and 'L"Power: "' in _read("src/engine/Watchdog.cpp") and
+          "ShutdownPowerMeasurement()" in main_src and 'L"Power sample: elapsed_ms="' in _read("src/engine/Watchdog.cpp") and
           '"lhm"' in _read("build.py"),
           "LHM power readout wiring (lhm/ subfolder, shutdown, periodic log)")
 
@@ -308,7 +312,121 @@ def test_invariant_repo_layout(b):
           f"stray={stray} missing={missing}")
 
 
+def test_build_comparisons(b):
+    sys.path.insert(0, PROJECT_ROOT) if PROJECT_ROOT not in sys.path else None
+    import build
+    from scripts import build_kernels, build_msvc
+    from scripts.build_options import select_configs
+    base = set(build.common_cxx_flags("bin/x64-llvm-v3"))
+    nounroll = set(build.common_cxx_flags("bin/x64-llvm-v3-nounroll"))
+    alias = set(build.common_cxx_flags("bin/x64-llvm-v3-strictalias"))
+    zen = set(build.common_cxx_flags("bin/x64-llvm-v3-znver3"))
+    check(base - nounroll == {"-funroll-loops"} and not nounroll - base and
+          base - alias == {"-fno-strict-aliasing"} and not alias - base and
+          zen - base == {"-mtune=znver3"}, "comparison flags vary one setting at a time")
+    check(any(c[0].endswith("-msvc") for c in select_configs(["all"])) and
+          select_configs(["msvc"]) == select_configs(["x64-msvc-v3"]) and
+          len(select_configs(["win-v3", "win-v3"])) == 1, "MSVC default/explicit targets and deduplication")
+    with mock.patch.object(build, "BUILD_OUTPUT_SUFFIX", "-tuning"):
+        check(build.effective_out_dir("bin/x64-llvm-v3") == "bin/x64-llvm-v3-tuning" and
+              set(build.common_cxx_flags("bin/x64-llvm-v3-nounroll-tuning")) == nounroll,
+              "tuning outputs isolated; compiler comparisons preserved")
+    completed = subprocess.CompletedProcess([], 0, stdout=b"", stderr=b"")
+    with mock.patch("scripts.build_kernels.subprocess.run", return_value=completed) as run_compile:
+        sources, warnings = build_kernels.compile_kernels(
+            ["clang", "-O3", "-flto", "-g", "-fsanitize=undefined"],
+            list(build.SRC_COMMON), Path(WORK_DIR), Path(PROJECT_ROOT))
+        commands = [c.args[0] for c in run_compile.call_args_list]
+        check(len(commands) == 2 and all("-fno-slp-vectorize" in c and "-flto" not in c and
+              "-ffp-contract=off" in c and "-fsanitize=undefined" in c for c in commands) and
+              "src/workloads/WorkloadRealistic.cpp" in sources and not warnings,
+              "only synthetic objects isolated; sanitizers/strict FP preserved")
+    config = ("x86_64-windows-msvc", "bin/test-work/msvc-plan", "x86_64_v3", True, "", False)
+    with mock.patch.object(build_msvc, "discover", return_value=({}, {k: k for k in ("cl", "link", "rc")})), \
+         mock.patch("scripts.build_msvc.subprocess.run", return_value=completed) as compile_msvc, \
+         mock.patch.object(build, "set_pe_checksum"), mock.patch.object(build, "build_power_reader"):
+        result = build_msvc.build(config, build)
+        commands = [c.args[0] for c in compile_msvc.call_args_list]
+        guard = next(c for c in commands if "src/core/CpuGuard.cpp" in c)
+        wide = next(c for c in commands if "src/workloads/SynthKernelsX86.cpp" in c)
+        check(result[0] and "/GL-" in guard and not any(c.startswith("/arch:") for c in guard) and
+              "/arch:AVX2" in wide and "/GL-" in wide and "/fp:strict" in wide and
+              not any("/arch:AVX512" in c for c in commands) and
+              any("/entry:ShaderStressGuardedEntry" in c for c in commands),
+              "MSVC: baseline guard, one /arch:AVX2 for all objects (no AVX-512 COMDAT leak), strict FP")
+        check(not result[3], "MSVC comparison build is never packaged")
+
+
+def test_kernel_codegen(b):
+    """Static disassembly only. SLP used to pack the integer chains into vector
+    registers, spilling ymm/zmm in the hot loop (and adding ymm integer work to
+    the 128-bit kernel); each synthetic kernel must keep 48 explicit FMAs (wide
+    kernels), its one 64-bit divide and no 256/512-bit stack traffic."""
+    if not (IS_WINDOWS and arch_key() == "x64"):
+        return
+    sys.path.insert(0, PROJECT_ROOT) if PROJECT_ROOT not in sys.path else None
+    from scripts import kernel_codegen
+    tools = kernel_codegen.llvm_tools()
+    if tools is None:
+        print("  (skip kernel codegen audit: llvm-pdbutil/llvm-objdump not installed)")
+        return
+    checked = 0
+    for build in kernel_codegen.DEFAULT_BUILDS:
+        exe = os.path.join(PROJECT_ROOT, "bin", build, "ShaderStress.exe")
+        if not (os.path.exists(exe) and os.path.exists(exe[:-4] + ".pdb")):
+            continue
+        report = kernel_codegen.analyze(Path(exe), tools)
+        widest = {"SynthKernel128": "xmm", "SynthKernelAVX2": "ymm", "SynthKernelAVX512": "zmm"}
+        for name, expect in widest.items():
+            r = report.get(name)
+            ok = (r is not None and not r["spills"] and r["div"] == 1 and r["widest"] == expect and
+                  (name == "SynthKernel128" or r["fma"] == 48))
+            check(ok, f"{build} {name}: explicit SIMD only, no wide spills",
+                  str({k: v for k, v in (r or {}).items() if k != "spills"}) +
+                  (" " + "; ".join(r["spills"][:3]) if r else ""))
+        checked += 1
+    check(checked > 0, "kernel codegen audit covered at least one built x64 binary")
+
+
+def test_power_measurement(b):
+    sys.path.insert(0, PROJECT_ROOT) if PROJECT_ROOT not in sys.path else None
+    from scripts.power_measure import summarize_samples, workload_args, parse_args
+    def sample(tick, watts, jobs):
+        return f"[23:59:59.000] Power sample: elapsed_ms={tick} watts={watts} jobs={jobs}"
+    lines = [sample(0, 20, 0), sample(10000, 30, 5)] + [
+        sample(t * 1000, w, t) for t, w in ((30000 // 1000, 120.2), (36, 122.4), (42, 124.6), (48, 122.4), (54, 120.2))]
+    log = "\n".join(lines + ["[00:00:01.000] Final CPU Package Power: 900 W", "CPU Power: 900 W"])
+    result = summarize_samples(log, 30, 60)
+    check(result["Samples"] == 5 and result["Watts"] == 121.96 and
+          result["JobsPerSecond"] == 1, "power warmup uses acquisition time; summaries excluded; decimals retained")
+    for label, text, code in (("failed workload", log, 5), ("missing samples", "", 0),
+                              ("duplicate reading", log + "\n" + lines[-1], 0),
+                              ("sensor outage", "\n".join(lines[:4] + [sample(58000, 120, 60)]), 0),
+                              ("no completed work", "\n".join(sample(t, 120, 1) for t in (30000, 36000, 42000, 48000, 54000)), 0)):
+        try:
+            summarize_samples(text, 30, 60, code)
+            rejected = False
+        except ValueError:
+            rejected = True
+        check(rejected, "power measurement rejects " + label)
+    args = workload_args("benchmark", 180, "avx2", 16)
+    check(all(x in args for x in ("--no-ram", "--no-io", "--no-decompress")) and
+          parse_args([]).duration == 180, "measurement defaults match 16-thread compute-only benchmark")
+    with contextlib.redirect_stderr(io.StringIO()):
+        for invalid in (["--duration", "60"], ["--buffers", "31"], ["--rounds", "0"],
+                        ["--threads", "0"], ["--warmup", "170"]):
+            try:
+                parse_args(invalid)
+                rejected = False
+            except SystemExit as error:
+                rejected = error.code == 2
+            check(rejected, "measurement rejects invalid arguments " + " ".join(invalid))
+
+
 LIGHTWEIGHT_TESTS = [
+    test_build_comparisons,
+    test_kernel_codegen,
+    test_power_measurement,
     test_help,
     test_version,
     test_self_test,
@@ -470,6 +588,8 @@ def main():
         if i + 1 < len(args):
             binary = args[i + 1]
     binary = binary or find_binary()
+    if binary:
+        binary = os.path.abspath(binary)
     if not binary or not os.path.exists(binary):
         print("ERROR: Could not find ShaderStress binary. Build first: python build.py native")
         return 1
@@ -495,6 +615,13 @@ def main():
             record_golden_values(binary)
         else:
             verify_golden_values(binary)
+            if IS_WINDOWS and arch_key() == "x64" and host_has(40):
+                for variant in ("x64-llvm-v3", "x64-zig-v3", "x64-msvc-v3"):
+                    candidate = os.path.join(PROJECT_ROOT, "bin", variant, EXE)
+                    if os.path.exists(candidate) and os.path.abspath(candidate) != os.path.abspath(binary):
+                        print(f"\n--- Compiler comparison: {variant} ---")
+                        test_self_test(candidate)
+                        verify_golden_values(candidate)
     else:
         print(f"\n  (use --stress to also run short smoke runs)")
 

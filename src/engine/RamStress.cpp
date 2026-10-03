@@ -12,10 +12,6 @@ namespace {
 std::mutex s_statusMtx;
 AuxStatus s_status;
 
-inline uint64_t MulHi64(uint64_t a, uint64_t b) {
-  return (uint64_t)(((unsigned __int128)a * b) >> 64);
-}
-
 uint64_t AvailablePhysicalBytes() {
 #ifdef PLATFORM_WINDOWS
   MEMORYSTATUSEX ms{};

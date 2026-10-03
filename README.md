@@ -108,6 +108,7 @@ Shader Stress uses:
 - Windows: LLVM MinGW 20260519 (ucrt-x86_64) extracted to `toolchains/llvm-mingw-20260519-ucrt-x86_64/`
 - Linux/macOS (and the Zig Windows variants): Zig 0.15.2 extracted to `toolchains/zig-x86_64-windows-0.15.2/`
 - (`toolchains/` is git-ignored; the repo root is still accepted as a fallback location.)
+- Optional, Windows: Visual Studio / Build Tools with the x64 C++ workload. When found, `python build.py` also builds a native MSVC comparison binary in `bin/x64-msvc-v3` (not part of the archives).
 
 ### Build Commands
 
@@ -117,8 +118,12 @@ python build.py windows
 python build.py linux macos
 python build.py native
 python build.py --sanitize=address win-baseline
+python build.py msvc win-v3-znver3 win-v3-slp   # compiler comparison builds
 python tests/run_tests.py --stress --sanitize
+python scripts/kernel_codegen.py                 # static kernel disassembly audit
 ```
+
+Power measurements are manual and create full CPU load (elevated terminal, CPU package power via LibreHardwareMonitor): `scripts/measure.ps1` measures one binary, `scripts/sweep_power.ps1` compares LLVM/Zig/MSVC builds across kernel buffer sizes and rounds. Both keep each run's log under `audit/power-measurements/`.
 
 The build script:
 

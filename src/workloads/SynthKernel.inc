@@ -81,6 +81,10 @@
     const size_t s = (size_t)1 << (2u * strideSel); // 1, 4, 16, 64 vectors
     strideSel = (strideSel + 1u) & 3u;
     for (size_t base = 0; base < kVecs; base += 4 * s) {
+#if defined(_MSC_VER) && !defined(__clang__)
+      // SIMD is explicit; retain the integer network on the integer side.
+#pragma loop(no_vector)
+#endif
       for (size_t j = base; j < base + s; ++j) {
         double *pa = buf + (j) * 2 * SK_W;
         double *pb = buf + (j + s) * 2 * SK_W;

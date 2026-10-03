@@ -1,6 +1,7 @@
 # Build outputs
 bin/
 dist/
+__pycache__/
 
 # Audit reports
 audit/

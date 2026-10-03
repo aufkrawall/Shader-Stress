@@ -171,6 +171,78 @@ std::wstring GetResolvedISAName(int workloadSel) {
   }
 }
 
+// UTF-8 <-> wide (UTF-16 on Windows, UTF-32 elsewhere); the console runs in
+// UTF-8. Malformed input becomes U+FFFD instead of being truncated per byte.
+namespace {
+void AppendWide(std::wstring &out, uint32_t cp) {
+  if constexpr (sizeof(wchar_t) == 2) {
+    if (cp < 0x10000) {
+      out += (wchar_t)cp;
+      return;
+    }
+    cp -= 0x10000;
+    out += (wchar_t)(0xD800 + (cp >> 10));
+    out += (wchar_t)(0xDC00 + (cp & 0x3FF));
+  } else {
+    out += (wchar_t)cp;
+  }
+}
+} // namespace
+
+std::wstring ToWide(const std::string &value) {
+  std::wstring out;
+  out.reserve(value.size());
+  for (size_t i = 0; i < value.size();) {
+    const uint32_t lead = (unsigned char)value[i];
+    const size_t len = lead < 0x80 ? 1 : lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 0;
+    uint32_t cp = len == 1 ? lead : len == 2 ? lead & 0x1F : len == 3 ? lead & 0x0F : lead & 0x07;
+    bool ok = len != 0 && i + len <= value.size();
+    for (size_t k = 1; ok && k < len; ++k) {
+      const uint32_t c = (unsigned char)value[i + k];
+      ok = (c & 0xC0) == 0x80;
+      cp = (cp << 6) | (c & 0x3F);
+    }
+    static constexpr uint32_t kMinForLen[5] = {0, 0, 0x80, 0x800, 0x10000};
+    ok = ok && cp >= kMinForLen[len] && cp <= 0x10FFFF && (cp < 0xD800 || cp > 0xDFFF);
+    AppendWide(out, ok ? cp : 0xFFFD);
+    i += ok ? len : 1;
+  }
+  return out;
+}
+
+std::string ToNarrow(const std::wstring &value) {
+  std::string out;
+  out.reserve(value.size());
+  for (size_t i = 0; i < value.size(); ++i) {
+    uint32_t cp = (uint32_t)value[i];
+    if constexpr (sizeof(wchar_t) == 2) {
+      cp &= 0xFFFF;
+      const uint32_t lo = i + 1 < value.size() ? (uint32_t)value[i + 1] & 0xFFFF : 0;
+      if (cp >= 0xD800 && cp <= 0xDBFF && lo >= 0xDC00 && lo <= 0xDFFF) {
+        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+        ++i;
+      }
+    }
+    if ((cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF) cp = 0xFFFD;
+    if (cp < 0x80) {
+      out += (char)cp;
+    } else if (cp < 0x800) {
+      out += (char)(0xC0 | (cp >> 6));
+      out += (char)(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+      out += (char)(0xE0 | (cp >> 12));
+      out += (char)(0x80 | ((cp >> 6) & 0x3F));
+      out += (char)(0x80 | (cp & 0x3F));
+    } else {
+      out += (char)(0xF0 | (cp >> 18));
+      out += (char)(0x80 | ((cp >> 12) & 0x3F));
+      out += (char)(0x80 | ((cp >> 6) & 0x3F));
+      out += (char)(0x80 | (cp & 0x3F));
+    }
+  }
+  return out;
+}
+
 // Helper for logging
 static std::string ToLogStr(const std::wstring &w) {
   if (w.empty())

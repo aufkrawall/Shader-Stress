@@ -10,14 +10,6 @@ std::wstring ToLowerCopy(std::wstring value) {
   return value;
 }
 
-std::wstring ToWide(const std::string &value) {
-  return std::wstring(value.begin(), value.end());
-}
-
-std::string ToNarrow(const std::wstring &value) {
-  return std::string(value.begin(), value.end());
-}
-
 std::wstring GetRuntimeOsName() {
 #ifdef PLATFORM_WINDOWS
   return L"Windows";
@@ -32,7 +24,7 @@ namespace {
 std::optional<uint64_t> ParseUint64(const std::wstring &text) {
   if (text.empty())
     return std::nullopt;
-  std::string narrow(text.begin(), text.end());
+  const std::string narrow = ToNarrow(text);
   uint64_t result = 0;
   auto [ptr, ec] = std::from_chars(narrow.data(), narrow.data() + narrow.size(), result, 10);
   if (ec != std::errc() || ptr != narrow.data() + narrow.size())
@@ -43,7 +35,7 @@ std::optional<uint64_t> ParseUint64(const std::wstring &text) {
 std::optional<int> ParsePositiveInt(const std::wstring &text) {
   if (text.empty())
     return std::nullopt;
-  std::string narrow(text.begin(), text.end());
+  const std::string narrow = ToNarrow(text);
   long long parsed = 0;
   auto [ptr, ec] = std::from_chars(narrow.data(), narrow.data() + narrow.size(), parsed, 10);
   if (ec != std::errc() || ptr != narrow.data() + narrow.size() || parsed <= 0 ||

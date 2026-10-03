@@ -262,6 +262,15 @@ struct ScopedMem {
   }
 };
 
+// High 64 bits of a 64x64-bit product (MSVC has no unsigned __int128).
+inline uint64_t MulHi64(uint64_t a, uint64_t b) {
+#if defined(_MSC_VER) && !defined(__clang__)
+  return __umulh(a, b);
+#else
+  return (uint64_t)(((unsigned __int128)a * b) >> 64);
+#endif
+}
+
 // Rotate left; the count is taken modulo 64 (callers pass counts >= 64, e.g.
 // the realistic sim's bit-vector init). Shifting a 64-bit value by >= 64 is UB.
 inline uint64_t Rotl64(uint64_t v, unsigned r) {
@@ -293,6 +302,9 @@ std::wstring FmtNum(uint64_t v);
 std::wstring FmtTime(uint64_t s);
 std::wstring FmtBytes(uint64_t bytes);
 std::wstring FmtHex64(uint64_t v);
+// Lossless UTF-8 <-> wide conversion; malformed input becomes U+FFFD.
+std::string ToNarrow(const std::wstring &value);
+std::wstring ToWide(const std::string &value);
 // printf-style formatting into a wide string (ASCII format/arguments only).
 std::wstring Fmt(const char *fmt, ...)
 #if defined(__clang__) || defined(__GNUC__)
@@ -496,6 +508,11 @@ uint64_t RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
 uint64_t RunComputeWorkload(WorkloadType type, uint64_t seed, int complexity);
 void RunPerfStats();
 double SampleCpuPackagePower();
+struct CpuPowerSample {
+  double watts = -1.0;
+  uint64_t tick = 0; // monotonic acquisition time, same clock as GetTick()
+};
+CpuPowerSample SampleCpuPower();
 void StartPowerMeasurement();
 void ShutdownPowerMeasurement();
 

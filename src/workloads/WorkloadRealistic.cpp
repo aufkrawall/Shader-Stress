@@ -2,6 +2,10 @@
 // RunRealisticCompilerSim_V3 is intentionally kept source-stable (pinned by a
 // source-hash regression test); only move it verbatim.
 #include "core/Common.h"
+#if defined(_MSC_VER) && !defined(__clang__)
+// FP contraction is disabled by /fp:strict; the pinned body contains a Clang pragma.
+#pragma warning(disable: 4068)
+#endif
 
 #define CASE_BLOCK_32(start, code)                                             \
   case start:                                                                  \

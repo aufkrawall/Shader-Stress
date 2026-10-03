@@ -1,34 +1,20 @@
-# measure.ps1 — run ShaderStress elevated for automatic CPU power logging
-# Run from an elevated PowerShell (right-click → Run as Administrator)
-# Usage: .\scripts\measure.ps1 [-Duration 30] [-ISA scalar|avx2|scalar-sim]
-
+# Manual full CPU load: compare one executable using fresh post-warmup samples.
+# Requires an elevated terminal. Benchmark always runs for 180 seconds.
 param(
-  [int]$Duration = 30,
-  [string]$ISA = ""
+  [string]$Exe = "bin/x64-llvm-v3/ShaderStress.com",
+  [ValidateSet("benchmark", "steady")][string]$Mode = "benchmark",
+  [int]$Duration = 180,
+  [int]$WarmupSec = 30,
+  [int]$Threads = 16,
+  [int]$Repeats = 3,
+  [string]$ISA = "avx2",
+  [string]$Csv = "sweep_results.csv"
 )
-
-# Repo root (this script lives in scripts/).
-$root = if ($PSScriptRoot) { Split-Path -Parent $PSScriptRoot } else { Get-Location }
-$com = Join-Path $root "bin/x64-llvm-v3/ShaderStress.com"
-if (-not (Test-Path $com)) { $com = Join-Path $root "bin/x64-llvm/ShaderStress.com" }
-if (-not (Test-Path $com)) { Write-Host "Binary not found at bin/x64-llvm*/ShaderStress.com"; exit 1 }
-
-$argsList = "--mode steady --duration $Duration --quiet"
-if ($ISA) { $argsList += " --isa $ISA" }
-
-if (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-  Write-Host "ERROR: This script must be run from an elevated PowerShell."
-  Write-Host "Right-click PowerShell → 'Run as Administrator', then run this script again."
-  Write-Host ""
-  Write-Host "Or just run this command elevated directly:"
-  Write-Host "  $com $argsList"
-  exit 1
-}
-
-Write-Host "ShaderStress Power Measurement"
-Write-Host "Exe: $com"
-Write-Host "Duration: ${Duration}s  ISA: $(if ($ISA) { $ISA } else { 'auto' })"
-Write-Host ""
-& $com $argsList.Split(" ")
-Write-Host ""
-Write-Host "=== Done ==="
+$ErrorActionPreference = "Stop"
+$root = Split-Path -Parent $PSScriptRoot
+if (-not [IO.Path]::IsPathRooted($Exe)) { $Exe = Join-Path $root $Exe }
+if (-not [IO.Path]::IsPathRooted($Csv)) { $Csv = Join-Path $root $Csv }
+& python (Join-Path $PSScriptRoot "power_measure.py") --exe $Exe --mode $Mode `
+  --duration $Duration --warmup $WarmupSec --threads $Threads --repeats $Repeats `
+  --isas $ISA --csv $Csv
+exit $LASTEXITCODE

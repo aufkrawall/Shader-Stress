@@ -6,7 +6,12 @@
 
 #if defined(_WIN32)
 namespace {
-std::atomic<double> g_cachedPower{-1.0};
+std::mutex g_powerMutex;
+CpuPowerSample g_cachedPower;
+void PublishPower(double watts) {
+  std::lock_guard<std::mutex> lock(g_powerMutex);
+  g_cachedPower = watts > 0 ? CpuPowerSample{watts, GetTick()} : CpuPowerSample{};
+}
 HANDLE g_stopEvent = NULL; // manual-reset; signaled on shutdown
 std::thread g_powerThread;
 
@@ -133,25 +138,37 @@ void PowerThreadMain() {
     g_App.Log(L"Power: sensor read failed (not admin or PawnIO not working)");
     return;
   }
-  g_cachedPower = test;
+  PublishPower(test);
   g_App.Log(L"Power: sensor OK (" + std::to_wstring((int)test) + L" W)");
   // Sample every 5 s until shutdown signals the stop event.
+  bool failed = false;
   while (WaitForSingleObject(g_stopEvent, 5000) == WAIT_TIMEOUT) {
     double watts = RunPowerReader();
-    if (watts > 0) g_cachedPower = watts;
+    PublishPower(watts);
+    if ((watts <= 0) != failed) {
+      failed = watts <= 0;
+      g_App.Log(failed ? L"Power: sensor read failed; cached sample invalidated"
+                       : L"Power: sensor readings resumed");
+    }
   }
 }
 } // namespace
 
 void StartPowerMeasurement() {
   if (g_powerThread.joinable()) return;
+  PublishPower(-1.0);
   if (!g_stopEvent) g_stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (!g_stopEvent) return;
   ResetEvent(g_stopEvent);
   g_powerThread = std::thread(PowerThreadMain);
 }
 
-double SampleCpuPackagePower() { return g_cachedPower.load(); }
+CpuPowerSample SampleCpuPower() {
+  std::lock_guard<std::mutex> lock(g_powerMutex);
+  if (g_cachedPower.tick == 0 || GetTick() - g_cachedPower.tick > 15000) return {};
+  return g_cachedPower;
+}
+double SampleCpuPackagePower() { return SampleCpuPower().watts; }
 
 void ShutdownPowerMeasurement() {
   if (g_stopEvent) SetEvent(g_stopEvent);
@@ -159,6 +176,7 @@ void ShutdownPowerMeasurement() {
 }
 #else
 void StartPowerMeasurement() {}
+CpuPowerSample SampleCpuPower() { return {}; }
 double SampleCpuPackagePower() { return -1.0; }
 void ShutdownPowerMeasurement() {}
 #endif

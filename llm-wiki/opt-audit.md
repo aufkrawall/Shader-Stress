@@ -1,6 +1,6 @@
 # Power / Heat Design ("opt-audit")
 
-Last verified: 2026-10-03. Stale-risk: medium (defaults reasoned + single-thread measured; package power not yet measured).
+Last verified: 2026-10-03. Stale-risk: medium (defaults reasoned + single-thread measured; package power not yet measured; codegen verified by disassembly).
 History before 3.6.0: [log/archive/opt-audit-2026-05-to-06.md](log/archive/opt-audit-2026-05-to-06.md) — its power comparisons are confounded (kernels ran on `inf`).
 
 ## Summary
@@ -54,13 +54,50 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
 - Removed: `-ffast-math` (bit-reproducibility; no effect on intrinsic kernels or integer
   workloads), `-fno-asynchronous-unwind-tables` (crash stacks; metadata only).
 - `-mprefer-vector-width=512` on v4 targets.
+- **Synthetic kernel objects** (`SynthKernels.cpp`, `SynthKernelsX86.cpp`) are compiled
+  separately by `scripts/build_kernels.py`: same flags, but `-fno-lto -ffp-contract=off
+  -fno-slp-vectorize`. Reason (2026-10-03, disassembly of the shipped LLVM v3 binary):
+  LLVM's SLP vectorizer packed the integer mul/rotate/xor chains into ymm/zmm registers,
+  so the AVX2 loop spilled/reloaded three ymm registers per block and the 128-bit
+  "SSE2" kernel ran ymm integer code on v3 builds. LTO re-runs SLP at link time, hence
+  native objects. Now: 0 ymm/zmm stack ops, 48 explicit FMAs per wide kernel, one DIV
+  per block in every x64 build (`tests/run_tests.py` `test_kernel_codegen`); the
+  `win-v3-slp` variant reproduces the spills. Zig v3 (Clang 20) showed no ymm spills
+  before the change. Package-power effect: **unmeasured**.
+- **Native MSVC comparison build** (`bin/x64-msvc-v3`): `/O2 /Ob3 /fp:strict /arch:AVX2
+  /GL` (+`/LTCG`), kernels `/GL-` with `#pragma loop(no_vector)` on the block loop.
+  Every object uses the same `/arch`: header inline functions are COMDATs and the linker
+  may keep any object's copy, so a file-wide `/arch:AVX512` (tried first) put AVX-512
+  `Rotl64`/`Mix64`/`std::clamp` candidates into an AVX2 binary. MSVC emits the explicit
+  `_mm512` intrinsics without `/arch:AVX512`. Golden checksums match the Clang builds (AVX2/SSE2/sim checked on the 5700X; AVX-512
+  compile-tested only).
+- **One-setting comparison builds** (never packaged): `win-v3-nounroll` (no
+  `-funroll-loops`; until 2026-10-03 it also dropped `-fno-strict-aliasing`),
+  `win-v3-strictalias`, `win-v3-znver3` (`-mtune=znver3`), `win-v3-nolto`, `win-v3-slp`
+  (kernels with SLP, i.e. the old codegen), `zig-v3-nounroll`.
 
-## Tuning
+## Tuning / measuring
 
-`scripts/sweep_power.ps1` (elevated, creates full load) rebuilds with `SYNTH_BUF_KIB` x
-`SYNTH_ROUNDS` grids and measures package watts in compute-only steady runs
-(`--no-ram --no-io --no-decompress`). After changing defaults, re-record golden
-checksums (`python tests/run_tests.py --stress --record-golden`).
+Manual only (full CPU load, elevated terminal); never part of tests.
+
+- `scripts/measure.ps1` (one executable) and `scripts/sweep_power.ps1` (builds x
+  `SYNTH_BUF_KIB` x `SYNTH_ROUNDS` grid; default `win-v3,zig-v3,msvc` x 64/128/256/512 KiB
+  x 2/4/8 rounds) wrap `scripts/power_measure.py`.
+- Defaults match the user's target scenario: `--mode benchmark` (fixed 180 s), 16 threads,
+  compute only (`--no-ram --no-io --no-decompress`), 30 s warmup, 3 repeats in a freshly
+  shuffled order per repeat (seeded), ISA list via `-ISA`/`-ISAs`.
+- Samples come from `Power sample: elapsed_ms=<acquisition tick - run start> watts=<x.y>
+  jobs=<n>` log lines (one per new 5 s sensor reading; readings older than 15 s are
+  dropped). Warmup is filtered by acquisition time, final-summary lines are ignored, and
+  a run is rejected on non-zero exit, < 3 samples, duplicate ticks, > 15 s sampling gaps
+  or no completed jobs. Each run keeps its own `ShaderStress.log` under
+  `audit/power-measurements/session-*/run-*`; the CSV records exe SHA-256 and evidence dir.
+- Golden values are computed at startup, so tuning builds verify themselves. After
+  changing defaults, re-record golden checksums
+  (`python tests/run_tests.py --stress --record-golden`).
+- Always record temperature, effective clock and PPT/TDC/EDC externally (same sensor
+  for all comparisons): the 5700X's specified max temperature is 90 C, so "stays below
+  90 C" can already mean thermal limiting.
 
 ## Rejected / superseded
 
@@ -75,4 +112,10 @@ checksums (`python tests/run_tests.py --stress --record-golden`).
 ## Open questions
 
 - Measure package power of the defaults on Zen 3 (5700X), a Raptor Lake system and a Zen 4/5 AVX-512 system; adjust `SYNTH_BUF_KIB`/`SYNTH_ROUNDS` per measurement.
+  User target on the 5700X (16 threads, benchmark): AVX2 140-150 W, SSE2 ("scalar
+  synthetic") 130-140 W, realistic sim ~115 W; reported before the SLP fix: AVX2 ~122 W.
+  Hypothesis to test first: smaller buffers (2 SMT threads x 512 KiB = 1 MiB per 512 KiB
+  L2), e.g. 128 KiB x 4 rounds.
+- If buffer/compiler tuning is insufficient: restructure the integer network's
+  cross-iteration dependencies (keep the per-block DIV and verification).
 - Consider per-CPU-family defaults if the optimum differs strongly.

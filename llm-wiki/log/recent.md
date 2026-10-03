@@ -1,5 +1,34 @@
 # Recent Changes Log
 
+## 2026-10-03 — Kernel codegen fix (no SLP), native MSVC build, power measurement tooling
+
+- Trigger: user reports 16-thread benchmark AVX2 ~122 W on a Ryzen 7 5700X (target
+  140-150 W; SSE2 130-140 W; realistic ~115 W), PBO limits open, <= 90 C.
+- Finding (disassembly of the shipped `bin/x64-llvm-v3`): SLP packed the kernels' integer
+  chains into ymm/zmm, spilling three ymm registers per block; the 128-bit kernel ran
+  ymm integer code on v3. Fix: `scripts/build_kernels.py` compiles the two kernel sources
+  as native objects with `-fno-lto -ffp-contract=off -fno-slp-vectorize`. Verified 0
+  ymm/zmm stack ops in all x64 builds; `win-v3-slp` reproduces the old spills.
+  Power effect unmeasured (user to run `scripts/sweep_power.ps1` elevated).
+- Native MSVC v3 comparison build (`scripts/build_msvc.py`; VS 18 / MSVC 14.51 here).
+  First attempt compiled the AVX-512 kernel in its own `/arch:AVX512` file: dumpbin showed
+  it exporting `Rotl64`/`Mix64`/`std::clamp` COMDATs (linker may pick any copy ->
+  potential AVX-512 code on AVX2 CPUs). Rejected; all objects use `/arch:AVX2` and the
+  kernels stay in `SynthKernelsX86.cpp`. Portability: `MulHi64` (`__umulh`), CPUID
+  wrappers, `__rdtsc`, `wWinMainCRTStartup`, clang-only pragmas guarded. Not archived.
+- MSVC C4244 exposed per-byte `ToNarrow`/`ToWide` truncation (UTF-8 console; `--threads ı`
+  parsed as 1; Linux temp paths). Now real UTF-8 conversions in `core/Common.cpp`.
+- Power: `SampleCpuPower()` returns watts + acquisition tick, drops readings > 15 s old;
+  watchdog logs `Power sample: elapsed_ms=.. watts=x.y jobs=..`; PowerReader prints with
+  invariant culture (German locale printed `121,3`, `atof` read 121).
+- `scripts/power_measure.py` replaces the old sweep/measure logic (warmup by sample time,
+  failed/gappy runs rejected, shuffled repeats, per-run evidence, `-tuning` outputs).
+- Comparison builds now vary one flag each (`-nounroll` no longer also drops
+  `-fno-strict-aliasing`); new `znver3`, `nolto`, `strictalias`, `slp` variants.
+- Tests: `test_build_comparisons`, `test_kernel_codegen`, `test_power_measurement`;
+  self-tests for `MulHi64`, UTF-8 conversion, look-alike digit rejection; `--stress` also
+  verifies golden checksums of the Zig and MSVC v3 builds.
+
 ## 2026-10-03 — Repository layout: src/<area>/, resources/, docs/, scripts/, toolchains/
 
 - Sources moved with `git mv` into `src/{core,workloads,engine,app,launcher}`; headers
@@ -58,99 +87,5 @@ all green (UBSan + ASan run the self-test). Single-thread `--perf-stats` (5700X)
 
 Open: package power not measured (needs elevated `sweep_power.ps1`); AVX-512 kernel
 untested on hardware; Linux/macOS binaries not executed.
-
-## 2026-06-17 — CPU power draw improvements: IO/RAM/decomp compute, AVX2/AVX-512 16 GPRs, permutes, mask ops
-
-Goal: increase CPU package power for synthetic workloads (scalar, AVX2, AVX-512, NEON, RAM, IO, decompression) by adding execution-unit pressure beyond the upstream-style 2026-06-13 profile.
-
-Changes:
-- **Threading.cpp — IO thread**: Replaced minimal `volatile uint8_t sink = p[0] ^ p[read - 1]` with a full-buffer FNV-1a-like multiply-XOR hash over the 256 KiB read buffer. Keeps the IO core's integer execution units active alongside storage operations. Applied to both Windows and Linux paths.
-- **Threading.cpp — RAM thread**: Replaced `p[i] = (p[i] + 1)` write-stride pass with a 4-accumulator integer multiply chain (read 4→hash→write 4), using four independent `a0..a3` registers and the golden-ratio constant. Keeps the RAM core's integer cluster hot during memory stress. Applied to both Windows and Linux paths.
-- **Threading.cpp — Decompression**: Added 2 more 64-bit IDIV operations at offsets 16 and 32 within each 64-byte window (was 1 IDIV at offset 0, now 3 total). Triples high-latency port-0 backpressure.
-- **Workloads.cpp — AVX2**: GPR chains expanded from 8 to 16 (g0–g15). 4 `_mm256_permute4x64_pd` operations added per iteration for port-5 shuffle pressure.
-- **Workloads.cpp — AVX-512**: GPR chains expanded from 8 to 16 (g0–g15). 4 `_mm512_permutex_pd` operations added per iteration for port-5 shuffle pressure. `_mm512_cmp_pd_mask` + `_mm512_mask_blend_pd` added for mask register file pressure.
-- **build.py**: Restored `-funroll-loops` and `-fno-strict-aliasing` to the LLVM MinGW path. Added `-nounroll` build variants (`win-v3-nounroll`, `zig-v3-nounroll`) that omit these flags for comparison. Zig path also gates these flags behind the nounroll suffix.
-- **tests/run_tests.py**: Updated IO invariant test to check for the new buffer hash pattern. Renamed test function accordingly. All 44 non-stress + 5 stress + 2 golden + 2 UBSan tests pass.
-
-Verification:
-- `python build.py win-v3 win-v3-nounroll zig-v3 zig-v3-nounroll`: 4/4 targets succeeded.
-- `python tests/run_tests.py --stress --bin bin/x64-llvm-v3/ShaderStress.com`: 44/44 passed.
-- `python tests/run_tests.py --sanitize`: 39/39 passed (no stress).
-
-## 2026-06-13 — Power gap follow-up: compiler flags, Zig Windows, security hardening removal
-
-Problem: after the upstream-style redesign, synthetic scalar/AVX2 power increased,
-but all variants still lagged the GitHub release binary, and scalar-sim (realistic)
-power dropped from ~116 W to ~111 W.
-
-Root causes found:
-- `-funroll-loops` and `-fno-strict-aliasing` (copied from the upstream Zig build)
-  reduced realistic-workload power when used with the LLVM MinGW toolchain.
-- The GitHub release binary is built with Zig, not LLVM MinGW; local builds lacked
-  a Zig Windows target for an apples-to-apples comparison.
-- Local hardening added to `RunRealisticCompilerSim_V3` (string-table bounds check)
-  and `IOThread` (symlink/TOCTOU defenses, random filenames, canonical-path checks)
-  sacrificed power for security the user does not need in a stress tester.
-- `WorkerThread` re-pinned itself every 10 s; upstream does not.
-- `TARGET_AVX2` / `TARGET_AVX512` macros lost the `hot` attribute in the redesign.
-
-Changes:
-- `build.py`: removed `-funroll-loops` and `-fno-strict-aliasing` from the LLVM MinGW
-  path; kept them on the Zig path to match the upstream release. Restored `hot`
-  attribute to synthetic-kernel target macros. Added Zig Windows build configs
-  (`bin/x64-zig`, `bin/x64-zig-v3`, `bin/arm64-zig`) and `zig` / `zig-v3` aliases.
-- `Workloads.cpp`: removed the defensive string-table bounds check from the hot loop
-  in `RunRealisticCompilerSim_V3`.
-- `Threading.cpp`: simplified `IOThread` to match upstream (predictable temp filename,
-  `CREATE_ALWAYS`, no `O_NOFOLLOW`/canonical-path checks, deterministic fill).
-  Removed the 10 s re-pinning loop from `WorkerThread`.
-- `tests/run_tests.py`: updated `RunRealisticCompilerSim_V3` source-hash baseline.
-
-Verification:
-- `python build.py`: 13/13 targets succeeded (LLVM MinGW + Zig Windows, Linux, macOS).
-- `python tests/run_tests.py --stress --sanitize --bin bin/x64-llvm-v3/ShaderStress.com`: 46/46 passed.
-- `python tests/run_tests.py --stress --bin bin/x64-zig-v3/ShaderStress.com`: 44/44 passed.
-
-## 2026-06-13 — Upstream-style power redesign
-
-Goal: match/beat the upstream GitHub release's sustained CPU package power on a
-PBO-unlocked Ryzen 7 5700X.
-
-Root cause of the local power gap:
-- Local synthetic kernels used a tiny L1-resident buffer and sparse stores to
-  maximize FMA throughput; upstream uses a 512 KiB/thread buffer, store-every-result,
-  and GPR integer division, which keeps the memory subsystem and integer division
-  units busy alongside FP.
-- Local RAM stress was capped at 1.5 GiB; upstream allocates 70 % of available RAM
-  (max 16 GiB), drawing more IMC/DRAM power.
-- Local IO stress used up to 8 threads with AVX2 hashing, stealing cores from the
-  heavy synthetic kernels; upstream uses a single minimal IO thread.
-
-Changes:
-- `build.py`: added `-funroll-loops` and `-fno-strict-aliasing` to release builds.
-- `Workloads.cpp`: reverted synthetic scalar/SSE2/NEON, AVX2, and AVX-512 kernels
-  to the upstream profile (65536 doubles/thread, store-every-result, GPR IDIV in
-  scalar/SSE2/NEON, 8 GPR chains for AVX2/AVX-512).
-- `Common.h`: removed `RAM_STRESS_MAX_BYTES`.
-- `Threading.cpp`: RAM stress now allocates 70 % of available RAM / 16 GiB cap with
-  write-stride + pointer-chase bursts. IO stress reverted to single thread with
-  minimal `p[0] ^ p[read-1]` sink. Removed `HashIoBufferForCpuPower`,
-  `RunRamStreamingPass`, `InitializeRamChase`, and `RoundDownPowerOfTwo`.
-- `tests/run_tests.py`: updated source-invariant tests to assert the upstream-style
-  profile.
-- `llm-wiki/opt-audit.md` and `llm-wiki/index.md`: documented the redesign.
-
-Verification:
-- `python build.py`: 10/10 targets succeeded (Windows/Linux/macOS x64 + ARM64).
-- `python tests/run_tests.py --stress --sanitize`: 46/46 passed.
-- Decompression (`RunDecompressLogic`) kept its local IDIV-heavy 256-pass design.
-
-Fixes during integration:
-- macOS build: renamed RAM-stress loop variable to avoid shadowing the Mach
-  `host_statistics64` `count` parameter.
-- macOS build: made `-fno-semantic-interposition` Linux-only (it is unused on
-  macOS and produced warnings).
-- `tests/run_tests.py`: relaxed `test_invariant_ram_upstream_pattern` regexes
-  to accept the Linux/macOS `ramCount` variable name.
 
 Older entries: [archive/2026-05-to-06.md](archive/2026-05-to-06.md).

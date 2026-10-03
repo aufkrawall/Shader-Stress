@@ -226,13 +226,13 @@ void TestPatterns() {
     Check(VerifyPattern(buf.data(), buf.size(), base, seed ^ 1, inv, nullptr, 0, &n) > 60000,
           "ram: wrong pass seed detected");
   }
-  std::vector<uint64_t> small(16);
-  FillPattern(small.data(), small.size(), 0, 9, 0);
+  std::vector<uint64_t> smallBuffer(16);
+  FillPattern(smallBuffer.data(), smallBuffer.size(), 0, 9, 0);
   size_t n = 0;
-  Check(RandomVerify(small.data(), small.size(), 0, 9, 0, 1000, 77, nullptr, 0, &n) == 0,
+  Check(RandomVerify(smallBuffer.data(), smallBuffer.size(), 0, 9, 0, 1000, 77, nullptr, 0, &n) == 0,
         "ram: random verify clean");
-  small[5] ^= 4;
-  Check(RandomVerify(small.data(), small.size(), 0, 9, 0, 1000, 77, nullptr, 0, &n) > 0,
+  smallBuffer[5] ^= 4;
+  Check(RandomVerify(smallBuffer.data(), smallBuffer.size(), 0, 9, 0, 1000, 77, nullptr, 0, &n) > 0,
         "ram: random verify detects flip");
   Check(PatternWord(1, 2) != PatternWord(2, 2) && PatternWord(1, 2) != PatternWord(1, 3),
         "pattern: address and seed dependent");
@@ -301,6 +301,31 @@ void TestLz() {
 }
 
 void TestFormatting() {
+  Check(MulHi64(0, UINT64_MAX) == 0 && MulHi64(UINT64_MAX, UINT64_MAX) == UINT64_MAX - 1 &&
+        MulHi64(1ull << 63, 2) == 1 && MulHi64(0x123456789abcdef0ull, 16) == 1,
+        "multiply-high is exact (native MSVC and portable implementations)");
+  // U+00E9, U+20AC and U+1F600 (a UTF-16 surrogate pair on Windows).
+  const std::wstring wide = ToWide("A\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80");
+  Check(ToNarrow(L"A\u00e9\u20ac") == "A\xC3\xA9\xE2\x82\xAC" &&
+            ToNarrow(wide) == "A\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80" &&
+            wide.size() == (sizeof(wchar_t) == 2 ? 5u : 4u) && wide[1] == L'\u00e9',
+        "UTF-8 <-> wide conversion is lossless (no per-byte truncation)");
+  Check(ToWide("x\xFFy\xC0\xAF\xE2\x82") == L"x\uFFFDy\uFFFD\uFFFD\uFFFD\uFFFD" &&
+            ToNarrow(std::wstring(1, (wchar_t)0xD800)) == "\xEF\xBF\xBD",
+        "malformed UTF-8/UTF-16 maps to U+FFFD");
+  // U+0131 truncated to its low byte was '1', silently accepted as a count.
+  auto errorsOf = [](std::initializer_list<std::wstring> args) {
+    std::string all;
+    for (const auto &e : ParseCliArgs(std::vector<std::wstring>(args)).errors)
+      all += ToNarrow(e) + " ";
+    return all;
+  };
+  const std::string lookalike =
+      errorsOf({L"ShaderStress", L"--mode", L"steady", L"--threads", L"\u0131"});
+  const std::string plain =
+      errorsOf({L"ShaderStress", L"--mode", L"steady", L"--threads", L"2"});
+  Check(!lookalike.empty() && plain.empty(), "numeric options reject non-ASCII look-alike digits",
+        "U+0131: [" + lookalike + "] '2': [" + plain + "]");
   Check(FmtBytes(1536) == L"1.5 KiB" && FmtBytes(3ull << 30) == L"3.00 GiB" &&
             FmtHex64(255) == L"0x00000000000000ff",
         "formatting helpers");

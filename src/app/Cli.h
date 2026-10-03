@@ -62,8 +62,6 @@ constexpr wchar_t kProgramInvocation[] = L"ShaderStress.com";
 constexpr wchar_t kProgramInvocation[] = L"./shaderstress";
 #endif
 
-std::string ToNarrow(const std::wstring &value);
-std::wstring ToWide(const std::string &value);
 std::wstring ToLowerCopy(std::wstring value);
 std::wstring GetRuntimeOsName();
 

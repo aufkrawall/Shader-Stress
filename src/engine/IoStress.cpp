@@ -53,13 +53,9 @@ std::wstring TempFilePath() {
   const char *env = getenv("TMPDIR");
   std::string dir = (env && *env) ? env : (access("/var/tmp", W_OK) == 0 ? "/var/tmp" : "/tmp");
   std::string p = dir + "/ShaderStress_io_" + std::to_string((long)getpid()) + ".tmp";
-  return std::wstring(p.begin(), p.end());
+  return ToWide(p);
 #endif
 }
-
-#if !defined(PLATFORM_WINDOWS)
-std::string Narrow(const std::wstring &w) { return std::string(w.begin(), w.end()); }
-#endif
 
 // Minimal cross-platform file wrapper for the tester.
 struct IoFile {
@@ -88,7 +84,7 @@ bool CreatePatternFile(const std::wstring &path, uint64_t bytes, uint64_t seed, 
   f.h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                     FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
 #else
-  f.fd = open(Narrow(path).c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  f.fd = open(ToNarrow(path).c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
 #endif
   if (!f.Valid()) return false;
   uint64_t *p = static_cast<uint64_t *>(chunkBuf);
@@ -118,7 +114,7 @@ bool OpenUncached(const std::wstring &path, IoFile &f, std::wstring &mode) {
   mode = L"unbuffered";
   return f.Valid();
 #else
-  std::string p = Narrow(path);
+  std::string p = ToNarrow(path);
 #ifdef PLATFORM_LINUX
   f.fd = open(p.c_str(), O_RDONLY | O_DIRECT);
   mode = L"O_DIRECT";
@@ -157,7 +153,7 @@ void DeleteTempFile(const std::wstring &path) {
 #ifdef PLATFORM_WINDOWS
   DeleteFileW(path.c_str());
 #else
-  unlink(Narrow(path).c_str());
+  unlink(ToNarrow(path).c_str());
 #endif
 }
 } // namespace

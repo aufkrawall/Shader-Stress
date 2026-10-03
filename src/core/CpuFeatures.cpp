@@ -5,6 +5,26 @@
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) ||             \
     defined(_M_IX86)
+// MSVC exposes CPUID through integer arrays rather than <cpuid.h> helpers.
+static bool GetCpuidCount(unsigned leaf, unsigned subleaf, unsigned *eax,
+                          unsigned *ebx, unsigned *ecx, unsigned *edx) {
+#if defined(_MSC_VER)
+  int r[4];
+  __cpuidex(r, (int)(leaf & 0x80000000u), 0);
+  if ((unsigned)r[0] < leaf) return false;
+  __cpuidex(r, (int)leaf, (int)subleaf);
+  *eax = (unsigned)r[0]; *ebx = (unsigned)r[1];
+  *ecx = (unsigned)r[2]; *edx = (unsigned)r[3];
+  return true;
+#else
+  return __get_cpuid_count(leaf, subleaf, eax, ebx, ecx, edx) != 0;
+#endif
+}
+static bool GetCpuid(unsigned leaf, unsigned *eax, unsigned *ebx,
+                     unsigned *ecx, unsigned *edx) {
+  return GetCpuidCount(leaf, 0, eax, ebx, ecx, edx);
+}
+
 // Helper with target attribute for safe XGETBV
 #if defined(_MSC_VER)
 static unsigned long long safe_xgetbv(unsigned int index) {
@@ -30,11 +50,11 @@ std::wstring GetCpuBrand() {
   unsigned int eax, ebx, ecx, edx;
   char brand[48] = {0};
 
-  if (__get_cpuid(0x80000000, &eax, &ebx, &ecx, &edx) && eax >= 0x80000004) {
+  if (GetCpuid(0x80000000, &eax, &ebx, &ecx, &edx) && eax >= 0x80000004) {
     unsigned int buf[12];
-    __get_cpuid(0x80000002, &buf[0], &buf[1], &buf[2], &buf[3]);
-    __get_cpuid(0x80000003, &buf[4], &buf[5], &buf[6], &buf[7]);
-    __get_cpuid(0x80000004, &buf[8], &buf[9], &buf[10], &buf[11]);
+    GetCpuid(0x80000002, &buf[0], &buf[1], &buf[2], &buf[3]);
+    GetCpuid(0x80000003, &buf[4], &buf[5], &buf[6], &buf[7]);
+    GetCpuid(0x80000004, &buf[8], &buf[9], &buf[10], &buf[11]);
     std::memcpy(&brand[0], buf, sizeof(buf));
   }
 
@@ -72,7 +92,7 @@ CpuFeatures GetCpuInfo() {
     defined(_M_IX86)
   unsigned int eax, ebx, ecx, edx;
 
-  if (!__get_cpuid(0, &eax, &ebx, &ecx, &edx))
+  if (!GetCpuid(0, &eax, &ebx, &ecx, &edx))
     return f;
 
   unsigned int maxFunc = eax;
@@ -82,7 +102,7 @@ CpuFeatures GetCpuInfo() {
   // This follows Intel/AMD architectural encoding and avoids vendor-string
   // dependency mistakes.
   if (maxFunc >= 1) {
-    __get_cpuid(1, &eax, &ebx, &ecx, &edx);
+    GetCpuid(1, &eax, &ebx, &ecx, &edx);
     const unsigned int signature = eax;
     const unsigned int baseFamily = (signature >> 8) & 0xF;
     const unsigned int baseModel = (signature >> 4) & 0xF;
@@ -103,7 +123,7 @@ CpuFeatures GetCpuInfo() {
 
       if ((xcr0 & 0x6) == 0x6) {
         if (maxFunc >= 7) {
-          __get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx);
+          GetCpuidCount(7, 0, &eax, &ebx, &ecx, &edx);
           f.hasAVX2 = (ebx & (1 << 5)) != 0;
           f.hasAVX512F = (ebx & (1 << 16)) != 0;
           f.isHybrid = (edx & (1 << 15)) != 0;

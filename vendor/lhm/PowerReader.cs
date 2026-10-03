@@ -4,6 +4,7 @@
 
 using System;
 using System.IO;
+using System.Globalization;
 using LibreHardwareMonitor.Hardware;
 
 class Program {
@@ -38,7 +39,7 @@ class Program {
             }
 
             computer.Close();
-            Console.WriteLine(power.ToString("F1"));
+            Console.WriteLine(power.ToString("F1", CultureInfo.InvariantCulture));
             return 0;
         } catch (Exception ex) {
             Console.Error.WriteLine(ex.GetType().Name + ": " + ex.Message);

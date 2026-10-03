@@ -18,6 +18,9 @@ Target version: 3.6.0 (`VERSION`).
 - **Linux I/O tester silently idled on tmpfs** (`O_DIRECT` rejected); it now falls back to cached reads with page-cache eviction and uses `$TMPDIR` or `/var/tmp`.
 - **x86-64-v3/v4 packages crashed silently on CPUs without AVX2/AVX-512** (illegal instruction in a static initializer, even for `--version`). They now print which package to use and exit with code 3.
 - **Crash dumps** were never written on Windows (SEH path compiled out) and would have been full-memory dumps including the RAM test buffer.
+- **Synthetic kernels lost register space to compiler auto-vectorization.** LLVM's SLP vectorizer packed the integer multiply/rotate network into vector registers, so the AVX2 hot loop of the x64-v3 build spilled and reloaded three 256-bit registers per block, and the 128-bit (SSE2) kernel executed 256-bit integer code on v3 builds. The kernels are now built without SLP and outside LTO; disassembly of every x64 build shows no 256/512-bit spills (checked by the test suite). Effect on package power: not yet measured.
+- **Text with non-ASCII characters was truncated byte-wise** in console output, the wizard and Linux temp paths; numeric options accepted look-alike characters (`--threads ı` ran with 1 thread).
+- **Power readout lost its decimals on systems with a decimal-comma locale** (e.g. German Windows).
 
 ### New
 
@@ -31,6 +34,10 @@ Target version: 3.6.0 (`VERSION`).
 - **Exit code 5** when CPU, RAM or I/O errors were detected (for scripted overnight runs).
 - **Crash reports** on Windows (`Crash_*/crash_info.txt` with workload/seed/repro line plus a compact minidump) and richer crash output on Linux/macOS.
 - **Debug symbols** for release builds: `ShaderStress.pdb` (Windows) and `shaderstress.debug` (Linux), not included in the archives.
+- **Native MSVC comparison build** (`bin/x64-msvc-v3`): built by `python build.py` when Visual Studio's x64 C++ tools are installed (`python build.py msvc` requires them). Strict IEEE FP and bit-identical results to the Clang builds; not part of the release archives.
+- **Compiler comparison builds** that change exactly one setting: `win-v3-znver3`, `win-v3-nolto`, `win-v3-strictalias`, `win-v3-slp` (old kernel codegen), alongside `win-v3-nounroll` / `zig-v3-nounroll`.
+- **Power measurement tooling** (`scripts/measure.ps1`, `scripts/sweep_power.ps1`, elevated, manual only): defaults to the 16-thread compute-only benchmark, filters warmup by sensor timestamp, rejects failed runs and sensor gaps, repeats candidates in shuffled order, sweeps buffer size x rounds across LLVM, Zig and MSVC builds without touching release binaries, and keeps every run's log as evidence.
+- **Kernel codegen audit**: `python scripts/kernel_codegen.py` reports FMA count, vector width, divides and register spills of the synthetic kernels in built binaries.
 
 ### Improved
 
@@ -39,7 +46,8 @@ Target version: 3.6.0 (`VERSION`).
 - **Dynamic mode**: instant event-driven start/stop of workers, preemption of running jobs on role changes, 1 ms timer resolution while running, a staircase ramp phase (was a no-op loop), randomized cores for the 1-2 thread phases, and a single-core boost sweep phase. The phase name is shown in the GUI and CLI.
 - **Golden values** now run every 8 jobs in core-cycle mode.
 - **Logging**: topology and worker-to-CPU order, golden values, phase changes, a health/verification summary every minute, and RAM/I/O tester throughput.
-- **Power readout** no longer blocks the watchdog at startup and cannot hang on a stuck helper process.
+- **Power readout** no longer blocks the watchdog at startup and cannot hang on a stuck helper process. The log now records every fresh sensor reading with one decimal, its time since run start and the job count; readings older than 15 s are no longer displayed.
+- **Log header** names the compiler and build directory (e.g. `Compiler: MSVC ...`, `Build: x64-zig-v3`).
 
 ### Changed
 
@@ -48,4 +56,5 @@ Target version: 3.6.0 (`VERSION`).
 - **GUI**: the redundant "Close" button is now "Core Cycle"; the ISA buttons are renamed to AVX-512 / AVX2 / SSE2 (or NEON) / Scalar (Realistic).
 - **Wizard**: added Core Cycle as option 4; Verify Hash moved to option 5.
 - **Repository layout**: sources moved to `src/{core,workloads,engine,app,launcher}`, plus `resources/`, `docs/` (`cli-report.md` is now `docs/cli.md`), `scripts/` (`sweep_power.ps1`, `measure.ps1`) and a git-ignored `toolchains/` folder (the old root-level toolchain location still works). Tests run binaries in `bin/test-work/`, so logs no longer land in the repo root.
-- **Experimental `-nounroll` builds** are no longer part of `python build.py` / release archives (`python build.py experimental`).
+- **Experimental `-nounroll` builds** are no longer part of `python build.py` / release archives (`python build.py experimental`), and now only drop `-funroll-loops` (previously also `-fno-strict-aliasing`).
+- **`SHADERSTRESS_EXTRA_DEFINES` builds** go to separate `<out>-tuning` folders and produce no archives.

@@ -178,6 +178,10 @@ ShaderStress.com --repro <seed> <complexity> --isa <isa>
 
 # Single-thread kernel cost and health (no multi-thread stress):
 ShaderStress.com --perf-stats
+
+# Static kernel codegen audit (PDB + llvm-objdump, never runs a workload): FMA count,
+# widest register, divides and ymm/zmm stack spills per kernel and build:
+python scripts/kernel_codegen.py [x64-llvm-v3 x64-zig-v3 x64-msvc-v3 ...]
 ```
 
 ### Diagnostic-only behaviour
@@ -188,4 +192,5 @@ ShaderStress.com --perf-stats
   never run them during tests or diagnosis unless explicitly asked. The app itself
   auto-installs PawnIO only when started elevated with the `lhm/` folder present.
 - `SHADERSTRESS_EXTRA_DEFINES` (env) forwards `-D` kernel knobs to every compile
-  (`scripts/sweep_power.ps1`).
+  (also MSVC as `/D`); builds then go to `<out>-tuning` and are never archived, so
+  release binaries stay intact (`scripts/power_measure.py --sweep`).

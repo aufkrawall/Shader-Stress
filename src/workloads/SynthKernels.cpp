@@ -135,7 +135,9 @@ uint64_t SynthChecksum(const double *buf, size_t n, const uint64_t g[8]) {
 // NEON (ARM64, fused), or plain scalar doubles on other architectures.
 // ---------------------------------------------------------------------------
 NOINLINE uint64_t SynthKernel128(uint64_t seed, int complexity, KernelDiag *diag) {
+#if defined(__clang__)
 #pragma clang fp contract(off)
+#endif
 #if defined(SK_ARCH_NEON)
 #define SK_VEC float64x2_t
 #define SK_W 2
@@ -226,7 +228,7 @@ NOINLINE uint64_t RunComputeWorkload(WorkloadType type, uint64_t seed, int compl
 // ---------------------------------------------------------------------------
 static uint64_t ReadCycleCounter() {
 #if defined(__x86_64__) || defined(_M_X64)
-  return __builtin_ia32_rdtsc();
+  return __rdtsc();
 #elif defined(__aarch64__)
   uint64_t v;
   asm volatile("mrs %0, cntvct_el0" : "=r"(v));

@@ -104,6 +104,14 @@ void InitializeRuntime(bool quiet) {
     std::cerr << "Warning: failed to open ShaderStress.log for writing." << '\n';
 
   g_App.LogRaw(L"--- Session Start (v" + std::wstring(APP_VERSION) + L") ---");
+#if defined(__clang__)
+  g_App.LogRaw(L"Compiler: Clang " + ToWide(__clang_version__));
+#elif defined(_MSC_VER)
+  g_App.LogRaw(L"Compiler: MSVC " + std::to_wstring(_MSC_FULL_VER));
+#endif
+#ifdef SHADERSTRESS_BUILD_LABEL
+  g_App.LogRaw(L"Build: " + ToWide(SHADERSTRESS_BUILD_LABEL));
+#endif
   g_App.LogRaw(L"OS: " + GetRuntimeOsName());
   g_App.LogRaw(L"Architecture: " + GetArchName());
   g_Cpu = GetCpuInfo();

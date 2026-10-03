@@ -8,8 +8,9 @@
 //  - Linux: highest-priority ELF constructor.
 // All guard code is compiled for baseline x86-64 via target("arch=x86-64") and
 // uses inline asm for CPUID/XGETBV (no helper that could be compiled for v3/v4).
-#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__AVX2__) || defined(__AVX512F__)) && \
-    (defined(__clang__) || defined(__GNUC__))
+// MSVC: this object is built without /arch and LTCG (scripts/build_msvc.py,
+// SS_BUILD_V3) and uses the __cpuidex/_xgetbv intrinsics.
+#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__AVX2__) || defined(__AVX512F__) || defined(SS_BUILD_V3))
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -20,17 +21,32 @@
 #include <unistd.h>
 #endif
 
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#define SS_BASELINE __declspec(noinline)
+#else
 #define SS_BASELINE __attribute__((target("arch=x86-64"), noinline))
+#endif
 
 namespace {
 SS_BASELINE void Cpuid(unsigned leaf, unsigned sub, unsigned r[4]) {
+#if defined(_MSC_VER) && !defined(__clang__)
+  int values[4];
+  __cpuidex(values, (int)leaf, (int)sub);
+  for (int i = 0; i < 4; ++i) r[i] = (unsigned)values[i];
+#else
   __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(sub));
+#endif
 }
 
 SS_BASELINE unsigned long long Xgetbv0() {
+#if defined(_MSC_VER) && !defined(__clang__)
+  return _xgetbv(0);
+#else
   unsigned lo, hi;
   __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
   return ((unsigned long long)hi << 32) | lo;
+#endif
 }
 
 // Returns true when the CPU and OS support everything this binary was built for.
@@ -74,6 +90,9 @@ const char kMessageA[] =
 
 #if defined(_WIN32)
 extern "C" int WinMainCRTStartup(void);
+#if defined(_MSC_VER) && !defined(__clang__)
+extern "C" int wWinMainCRTStartup(void);
+#endif
 extern "C" int mainCRTStartup(void);
 
 extern "C" SS_BASELINE int ShaderStressGuardedEntry(void) {
@@ -101,7 +120,11 @@ extern "C" SS_BASELINE int ShaderStressGuardedEntry(void) {
 #if defined(SHADERSTRESS_CONSOLE_ENTRY)
   return mainCRTStartup();
 #else
+#if defined(_MSC_VER) && !defined(__clang__)
+  return wWinMainCRTStartup();
+#else
   return WinMainCRTStartup();
+#endif
 #endif
 }
 #else
