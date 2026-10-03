@@ -518,6 +518,23 @@ struct CpuPowerSample {
   uint64_t tick = 0;    // monotonic acquisition time, same clock as GetTick()
 };
 CpuPowerSample SampleCpuPower();
+// Bounded FIFO of readings between the power thread (1 s cadence) and the
+// watchdog (250 ms loop), so no reading is lost or merged; the oldest entry is
+// dropped (and counted) only if the consumer stalls for over a minute.
+class PowerSampleQueue {
+public:
+  static constexpr size_t kCapacity = 64;
+  void Push(const CpuPowerSample &s);
+  std::vector<CpuPowerSample> Drain();
+  uint64_t Dropped();
+
+private:
+  std::mutex m_;
+  std::deque<CpuPowerSample> q_;
+  uint64_t dropped_ = 0;
+};
+// All readings since the last call, oldest first; *dropped = total overflow.
+std::vector<CpuPowerSample> TakePowerSamples(uint64_t *dropped = nullptr);
 // Parses PowerReader's "watts effMHz tempC vcoreV" line (locale-independent,
 // '.' decimals). Returns false unless watts is valid; malformed tokens such as
 // "121,3" reject the whole line. Leaves out.tick untouched.

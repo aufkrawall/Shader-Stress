@@ -1,7 +1,8 @@
 // PowerMeasure.cpp - CPU package power sampling via PowerReader.exe (LHM helper)
 // PowerReader.exe is compiled at build time from vendor/lhm/PowerReader.cs.
-// It loads LibreHardwareMonitorLib.dll, reads package power, average effective
-// clock, temperature and core voltage via PawnIO, and prints them on one line.
+// It loads LibreHardwareMonitorLib.dll and, in --stream mode, prints package
+// power, average effective clock, temperature and core voltage once per
+// second over contiguous windows (so averaging readings averages energy).
 // Requires admin privileges.
 #include "core/Common.h"
 
@@ -77,27 +78,56 @@ std::wstring FormatPowerReadout(const CpuPowerSample &s) {
   return r;
 }
 
+void PowerSampleQueue::Push(const CpuPowerSample &s) {
+  std::lock_guard<std::mutex> lock(m_);
+  if (q_.size() == kCapacity) {
+    q_.pop_front();
+    ++dropped_;
+  }
+  q_.push_back(s);
+}
+
+std::vector<CpuPowerSample> PowerSampleQueue::Drain() {
+  std::lock_guard<std::mutex> lock(m_);
+  std::vector<CpuPowerSample> out(q_.begin(), q_.end());
+  q_.clear();
+  return out;
+}
+
+uint64_t PowerSampleQueue::Dropped() {
+  std::lock_guard<std::mutex> lock(m_);
+  return dropped_;
+}
+
 #if defined(_WIN32)
 namespace {
+constexpr int kReaderIntervalMs = 1000; // contiguous measurement windows
 std::mutex g_powerMutex;
 CpuPowerSample g_cachedPower;
+PowerSampleQueue g_sampleQueue; // every reading, for the watchdog's sample log
 void PublishPower(CpuPowerSample sample) {
   std::lock_guard<std::mutex> lock(g_powerMutex);
   if (sample.watts > 0) {
     sample.tick = GetTick();
     g_cachedPower = sample;
+    g_sampleQueue.Push(sample);
   } else {
     g_cachedPower = CpuPowerSample{};
   }
 }
 HANDLE g_stopEvent = NULL; // manual-reset; signaled on shutdown
 std::thread g_powerThread;
+// Running PowerReader instance. Shutdown closes its stdin (graceful EOF) and,
+// if it hangs, terminates it so the power thread's blocking ReadFile returns.
+std::mutex g_readerMutex;
+HANDLE g_readerProcess = NULL, g_readerStdin = NULL;
 
 // Waits for `h` or the stop event. Returns true if `h` signaled.
 bool WaitOrStop(HANDLE h, DWORD ms) {
   HANDLE hs[2] = {h, g_stopEvent};
   return WaitForMultipleObjects(2, hs, FALSE, ms) == WAIT_OBJECT_0;
 }
+bool StopRequestedPower() { return WaitForSingleObject(g_stopEvent, 0) != WAIT_TIMEOUT; }
 wchar_t g_readerExe[MAX_PATH] = {};
 
 bool IsPawnIOInstalled() {
@@ -152,51 +182,81 @@ bool InstallPawnIO() {
   return false;
 }
 
-CpuPowerSample RunPowerReader() {
+// Starts "PowerReader.exe --stream <ms>" with piped stdin/stdout. Returns the
+// stdout read handle (NULL on failure or when shutdown already began).
+HANDLE StartStreamingReader() {
   wchar_t lhmDir[MAX_PATH];
-  GetModuleFileNameW(NULL, lhmDir, MAX_PATH);
-  wchar_t *lastSlash = wcsrchr(lhmDir, L'\\');
-  if (!lastSlash) return {};
-  wcscpy(lastSlash + 1, L"lhm");
-
+  wcscpy(lhmDir, g_readerExe);
+  *wcsrchr(lhmDir, L'\\') = 0;
   SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
-  HANDLE hRead = NULL, hWrite = NULL;
-  if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return {};
-  SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+  HANDLE outRead = NULL, outWrite = NULL, inRead = NULL, inWrite = NULL;
+  if (!CreatePipe(&outRead, &outWrite, &sa, 0)) return NULL;
+  if (!CreatePipe(&inRead, &inWrite, &sa, 0)) {
+    CloseHandle(outRead);
+    CloseHandle(outWrite);
+    return NULL;
+  }
+  SetHandleInformation(outRead, HANDLE_FLAG_INHERIT, 0);
+  SetHandleInformation(inWrite, HANDLE_FLAG_INHERIT, 0);
 
   STARTUPINFOW si = {sizeof(si)};
   si.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
   si.wShowWindow = SW_HIDE;
-  si.hStdOutput = hWrite;
+  si.hStdInput = inRead;
+  si.hStdOutput = outWrite;
   si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
-  PROCESS_INFORMATION pi;
-  if (!CreateProcessW(g_readerExe, NULL, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, lhmDir,
-                      &si, &pi)) {
-    CloseHandle(hRead);
-    CloseHandle(hWrite);
-    return {};
+  PROCESS_INFORMATION pi = {};
+  std::wstring cmd = L"PowerReader.exe --stream " + std::to_wstring(kReaderIntervalMs);
+  std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+  cmdBuf.push_back(0);
+  BOOL started = FALSE;
+  DWORD error = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_readerMutex);
+    if (!StopRequestedPower()) {
+      started = CreateProcessW(g_readerExe, cmdBuf.data(), NULL, NULL, TRUE, CREATE_NO_WINDOW,
+                               NULL, lhmDir, &si, &pi);
+      error = GetLastError();
+      if (started) {
+        g_readerProcess = pi.hProcess;
+        g_readerStdin = inWrite;
+        inWrite = NULL;
+      }
+    }
   }
-  CloseHandle(hWrite);
-
-  // A hung reader must not block this thread forever: kill it on timeout so
-  // the pipe closes and ReadFile returns.
-  if (!WaitOrStop(pi.hProcess, 8000)) {
-    TerminateProcess(pi.hProcess, 1);
-    WaitForSingleObject(pi.hProcess, 2000);
+  CloseHandle(outWrite);
+  CloseHandle(inRead);
+  if (inWrite) CloseHandle(inWrite);
+  if (!started) {
+    CloseHandle(outRead);
+    if (error) g_App.Log(L"Power: could not start PowerReader.exe (error " +
+                         std::to_wstring(error) + L")");
+    return NULL;
   }
-  // Read until EOF: the line is short, but a pipe read may return it in pieces.
-  char buf[128] = {};
-  DWORD totalRead = 0, n = 0;
-  while (totalRead < sizeof(buf) - 1 &&
-         ReadFile(hRead, buf + totalRead, sizeof(buf) - 1 - totalRead, &n, NULL) && n > 0)
-    totalRead += n;
-  CloseHandle(hRead);
-  CloseHandle(pi.hProcess);
   CloseHandle(pi.hThread);
+  return outRead;
+}
 
-  CpuPowerSample sample;
-  if (totalRead == 0 || !ParsePowerReaderOutput(buf, sample)) return {};
-  return sample;
+// Closes the reader's stdin, waits briefly for it to exit (terminating a hung
+// one) and returns its exit code.
+DWORD ReleaseReader() {
+  HANDLE process = NULL, in = NULL;
+  {
+    std::lock_guard<std::mutex> lock(g_readerMutex);
+    std::swap(process, g_readerProcess);
+    std::swap(in, g_readerStdin);
+  }
+  if (in) CloseHandle(in);
+  DWORD code = (DWORD)-1;
+  if (process) {
+    if (WaitForSingleObject(process, 3000) == WAIT_TIMEOUT) {
+      TerminateProcess(process, 1);
+      WaitForSingleObject(process, 3000);
+    }
+    GetExitCodeProcess(process, &code);
+    CloseHandle(process);
+  }
+  return code;
 }
 
 void LogSensorAvailability(const CpuPowerSample &s) {
@@ -205,6 +265,37 @@ void LogSensorAvailability(const CpuPowerSample &s) {
   if (s.tempC <= 0) msg += L"; temperature sensor unavailable";
   if (s.vcore <= 0) msg += L"; core voltage sensor unavailable";
   g_App.Log(msg);
+}
+
+// Publishes every streamed line until the reader exits. Returns the number
+// of valid readings.
+uint64_t StreamReadings(HANDLE out) {
+  std::string line;
+  char buf[512];
+  DWORD n = 0;
+  uint64_t valid = 0;
+  bool failed = false;
+  while (ReadFile(out, buf, sizeof(buf), &n, NULL) && n > 0) {
+    for (DWORD i = 0; i < n; ++i) {
+      if (buf[i] != '\n') {
+        if (line.size() < 256) line += buf[i]; // overlong lines fail to parse
+        continue;
+      }
+      CpuPowerSample sample;
+      const bool ok = ParsePowerReaderOutput(line.c_str(), sample);
+      line.clear();
+      PublishPower(ok ? sample : CpuPowerSample{});
+      if (ok) {
+        if (valid++ == 0) LogSensorAvailability(sample);
+        else if (failed) g_App.Log(L"Power: sensor readings resumed");
+        failed = false;
+      } else if (valid > 0 && !failed) {
+        failed = true;
+        g_App.Log(L"Power: sensor read failed; cached sample invalidated");
+      }
+    }
+  }
+  return valid;
 }
 
 void PowerThreadMain() {
@@ -221,25 +312,34 @@ void PowerThreadMain() {
     g_App.Log(L"Power: PawnIO not installed, attempting auto-install...");
     if (!InstallPawnIO()) return;
   }
-  g_App.Log(L"Power: testing sensor read...");
-  CpuPowerSample test = RunPowerReader();
-  if (test.watts <= 0) {
-    g_App.Log(L"Power: sensor read failed (not admin, PawnIO not working or unparsable "
-              L"PowerReader output)");
-    return;
-  }
-  PublishPower(test);
-  LogSensorAvailability(test);
-  // Sample every 5 s until shutdown signals the stop event.
-  bool failed = false;
-  while (WaitForSingleObject(g_stopEvent, 5000) == WAIT_TIMEOUT) {
-    CpuPowerSample sample = RunPowerReader();
-    PublishPower(sample);
-    if ((sample.watts <= 0) != failed) {
-      failed = sample.watts <= 0;
-      g_App.Log(failed ? L"Power: sensor read failed; cached sample invalidated"
-                       : L"Power: sensor readings resumed");
+  g_App.Log(L"Power: starting sensor stream (" + std::to_wstring(kReaderIntervalMs) +
+            L" ms windows)");
+  uint64_t total = 0;
+  int failedStarts = 0;
+  while (!StopRequestedPower()) {
+    HANDLE out = StartStreamingReader();
+    if (!out) break;
+    const uint64_t valid = StreamReadings(out);
+    CloseHandle(out);
+    const DWORD code = ReleaseReader();
+    PublishPower(CpuPowerSample{});
+    if (StopRequestedPower()) break;
+    total += valid;
+    if (total == 0) {
+      g_App.Log(L"Power: sensor read failed (not admin, PawnIO not working or unparsable "
+                L"PowerReader output; reader exit code " + std::to_wstring((long)code) +
+                L"); power readout disabled");
+      break;
     }
+    failedStarts = valid ? 0 : failedStarts + 1;
+    g_App.Log(L"Power: PowerReader exited (code " + std::to_wstring((long)code) + L") after " +
+              std::to_wstring(valid) + L" readings");
+    if (failedStarts >= 3) {
+      g_App.Log(L"Power: reader keeps failing; power readout disabled");
+      break;
+    }
+    // Back-off before restarting a reader that died mid-run.
+    if (WaitForSingleObject(g_stopEvent, 5000) != WAIT_TIMEOUT) break;
   }
 }
 } // namespace
@@ -255,18 +355,43 @@ void StartPowerMeasurement() {
 
 CpuPowerSample SampleCpuPower() {
   std::lock_guard<std::mutex> lock(g_powerMutex);
-  if (g_cachedPower.tick == 0 || GetTick() - g_cachedPower.tick > 15000) return {};
+  if (g_cachedPower.tick == 0 || GetTick() - g_cachedPower.tick > 5000) return {};
   return g_cachedPower;
 }
 double SampleCpuPackagePower() { return SampleCpuPower().watts; }
 
+std::vector<CpuPowerSample> TakePowerSamples(uint64_t *dropped) {
+  if (dropped) *dropped = g_sampleQueue.Dropped();
+  return g_sampleQueue.Drain();
+}
+
 void ShutdownPowerMeasurement() {
   if (g_stopEvent) SetEvent(g_stopEvent);
+  HANDLE process = NULL;
+  {
+    std::lock_guard<std::mutex> lock(g_readerMutex);
+    if (g_readerStdin) {
+      CloseHandle(g_readerStdin); // EOF: the reader exits on its own
+      g_readerStdin = NULL;
+    }
+    if (g_readerProcess)
+      DuplicateHandle(GetCurrentProcess(), g_readerProcess, GetCurrentProcess(), &process, 0,
+                      FALSE, DUPLICATE_SAME_ACCESS);
+  }
+  if (process) {
+    // Bounded: a hung reader must not block exit (its pipe closes on termination).
+    if (WaitForSingleObject(process, 3000) == WAIT_TIMEOUT) TerminateProcess(process, 1);
+    CloseHandle(process);
+  }
   if (g_powerThread.joinable()) g_powerThread.join();
 }
 #else
 void StartPowerMeasurement() {}
 CpuPowerSample SampleCpuPower() { return {}; }
 double SampleCpuPackagePower() { return -1.0; }
+std::vector<CpuPowerSample> TakePowerSamples(uint64_t *dropped) {
+  if (dropped) *dropped = 0;
+  return {};
+}
 void ShutdownPowerMeasurement() {}
 #endif

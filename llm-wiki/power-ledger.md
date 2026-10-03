@@ -19,6 +19,8 @@ understand and reproduce the change.
 
 ## Targets and current best (benchmark mode, all 16 threads)
 
+"Best measured" rows come from `--mode benchmark` runs only (short-mode watts are for A/B).
+
 | Workload | `--isa` | Target | Best measured | Eff MHz | Build / commit | Experiment |
 |---|---|---|---|---|---|---|
 | Realistic compiler sim | `scalar-sim` | >= ~115 W | not measured | - | - | - |
@@ -32,6 +34,7 @@ re-testing after a baseline change). Take the next free ID for new ideas.
 
 | ID | Type | Hypothesis (one change) | ISAs | Status |
 |---|---|---|---|---|
+| P000 | method | Validate the short protocol once: one `--mode benchmark` session of the current build, then inspect the per-second `Power sample` trace (transient after start: is 8 s warmup enough?) and compare the 9-23 s mean with the benchmark window; later check that short and benchmark A/B deltas agree for the first accepted change | all | open |
 | P001 | compiler | Establish the first measured baseline and the best toolchain: `x64-llvm-v3` (baseline) vs `x64-zig-v3` vs `x64-msvc-v3`, same commit | all | open |
 | P002 | flag | Quantify the SLP fix: `x64-llvm-v3-slp` (old kernel codegen, ymm spills) vs `x64-llvm-v3` | scalar, avx2 | open |
 | P003 | knob | Smaller buffer / more rounds: two SMT threads x 512 KiB overflow the 512 KiB L2; start with 128 KiB x 4 rounds (`--sweep`) | scalar, avx2 | open |
@@ -52,7 +55,7 @@ Newest first. Copy the template.
 - Baseline: <snapshot label> (GitHead <sha>, clean?) — measured on top of <previous accepted ID>.
 - Candidate(s): <snapshot label(s)>.
 - Conditions: background load <x>%, ambient/fans/power plan if known, anything unusual.
-- Command: python scripts/power_measure.py --label ... --exe ... [--isas ...] [--repeats ...]
+- Command: python scripts/power_measure.py --label ... --exe ... [--mode short|benchmark] [--isas ...] [--repeats ...]
 - Result: <paste summary.md table>
 - Verdict: <accepted | rejected | inconclusive> — <reason per decision rules; thermal limit?>.
 - Side effects: jobs/s <delta> (benchmark score), golden checksums <unchanged | re-recorded>,

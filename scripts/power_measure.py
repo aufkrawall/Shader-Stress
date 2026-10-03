@@ -5,9 +5,12 @@ via UAC when needed (PawnIO sensors). Workflow and decision rules:
 llm-wiki/power-optimization.md; results ledger: llm-wiki/power-ledger.md.
 
     # A/B: baseline snapshot vs current build, interleaved, all three target ISAs
+    # (default short mode: 30 s preheat, then 8 s warmup + 15 s window per run, 5 repeats)
     python scripts/power_measure.py --snapshot P001-base
     python scripts/power_measure.py --label P001-my-change \\
         --exe audit/power-baselines/P001-base/ShaderStress.com,bin/x64-llvm-v3/ShaderStress.com
+    # Confirm absolute numbers in the real 180 s benchmark
+    python scripts/power_measure.py --mode benchmark --label P001-confirm
     # Buffer x rounds x compiler sweep (isolated -tuning builds)
     python scripts/power_measure.py --sweep --targets win-v3 --buffers 128,512 --rounds 2,4
     # Re-summarize an existing CSV
@@ -49,6 +52,14 @@ T95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8:
        9: 2.262, 10: 2.228}
 MIN_POWER_DELTA_W = 1.0      # smaller power deltas are never acted on
 MIN_CLOCK_DELTA_MHZ = 15.0   # smaller clock deltas never decide a tie
+# Per mode: ShaderStress run, warmup, measurement window, repeats, preheat.
+# "short" = steady mode with every thread on compute: the same worker layout
+# as the benchmark (SetWork(cpu, 0)), fixed 12k-complexity jobs instead of the
+# benchmark's 5k-500k mix. It screens A/B differences; "benchmark" confirms
+# absolute numbers in the user's 180 s scenario.
+MODE_DEFAULTS = {"short": {"warmup": 8, "measure": 15, "repeats": 5, "preheat": 30},
+                 "benchmark": {"warmup": 30, "measure": 148, "repeats": 3, "preheat": 0}}
+BENCHMARK_SECONDS = 180
 NUMERIC = {"BufKiB": int, "Rounds": int, "Repeat": int, "Threads": int, "Samples": int,
            "Watts": float, "StdDevW": float, "MinW": float, "MaxW": float,
            "JobsPerSecond": float, "EffMHz": float, "TempMeanC": float, "TempMaxC": float,
@@ -68,11 +79,18 @@ def mean_or_none(values, digits):
     return round(statistics.mean(values), digits) if values else None
 
 
-def summarize_samples(log, warmup, duration, exit_code=0):
+def summarize_samples(log, warmup, measure, exit_code=0, interval=1.0, max_gap=3.0):
+    """Mean of the readings whose window lies in [warmup, warmup + measure] s.
+
+    Each reading averages the `interval` s before its timestamp (PowerReader
+    --stream: contiguous windows), so complete coverage averages energy.
+    """
     if exit_code != 0:
         raise ValueError(f"workload exited with code {exit_code}; measurement rejected")
     samples = []
     previous_tick = -1
+    first_ms = round((warmup + interval) * 1000)  # first window starting after warmup
+    end_ms = round((warmup + measure) * 1000)
     for line in log.splitlines():
         match = SAMPLE.fullmatch(line.strip())
         if not match:
@@ -83,16 +101,20 @@ def summarize_samples(log, warmup, duration, exit_code=0):
         if tick <= previous_tick:
             raise ValueError("duplicate/out-of-order acquisition timestamp")
         previous_tick = tick
-        if warmup * 1000 <= tick < duration * 1000:
+        if first_ms <= tick <= end_ms:
             samples.append((tick, watts, jobs, sensor(match[4]), sensor(match[5]),
                             sensor(match[6])))
-    if len(samples) < 3:
-        raise ValueError("fewer than three fresh post-warmup power readings")
     # Reject incomplete windows and sensor outages instead of averaging a few
-    # surviving readings. The helper interval includes process/sensor startup.
-    times = [warmup * 1000] + [s[0] for s in samples] + [duration * 1000]
-    if any(b - a > 15000 for a, b in zip(times, times[1:])):
-        raise ValueError("power sampling gap exceeds 15 seconds")
+    # surviving readings (binaries before 1 s streaming sampled every ~6.5 s:
+    # use --sample-interval 6.5 --max-gap 15 for them).
+    expected = measure / interval
+    if len(samples) < max(3, math.floor(0.8 * expected)):
+        raise ValueError(f"only {len(samples)} power readings in the {measure} s window "
+                         f"(expected ~{expected:.0f})")
+    times = [first_ms] + [s[0] for s in samples] + [end_ms]
+    gap = max(b - a for a, b in zip(times, times[1:]))
+    if gap > max_gap * 1000:
+        raise ValueError(f"power sampling gap of {gap / 1000:.1f} s exceeds {max_gap} s")
     if samples[-1][2] <= samples[0][2]:
         raise ValueError("no completed compute jobs during the measurement window")
     watts = [s[1] for s in samples]
@@ -108,9 +130,16 @@ def summarize_samples(log, warmup, duration, exit_code=0):
             "VcoreV": mean_or_none([s[5] for s in samples], 3)}
 
 
-def workload_args(mode, duration, isa, threads):
+def run_seconds(mode, warmup, measure):
+    return BENCHMARK_SECONDS if mode == "benchmark" else math.ceil(warmup + measure) + 2
+
+
+def workload_args(mode, seconds, isa, threads):
     # threads 0 = all logical CPUs, exactly like a user's benchmark run.
-    args = ["--mode", mode, "--duration", str(duration), "--isa", isa]
+    if mode == "benchmark":
+        args = ["--mode", "benchmark", "--isa", isa]  # fixed 180 s
+    else:
+        args = ["--mode", "steady", "--duration", str(seconds), "--isa", isa]
     if threads:
         args += ["--threads", str(threads)]
     return args + ["--no-ram", "--no-io", "--no-decompress", "--quiet"]
@@ -132,26 +161,43 @@ def git(*args):
     return r.stdout.decode("utf-8", errors="replace") if r.returncode == 0 else None
 
 
-def measure(exe, options, isa, session, label, repeat):
-    exe = exe.resolve(strict=True)
-    run_dir = Path(tempfile.mkdtemp(prefix=f"run-{label}-{isa}-r{repeat}-", dir=session))
-    command = [str(exe), *workload_args(options.mode, options.duration, isa, options.threads)]
+def run_workload(exe, mode, seconds, isa, threads, run_dir):
+    command = [str(exe.resolve(strict=True)), *workload_args(mode, seconds, isa, threads)]
     with (run_dir / "console.log").open("wb") as output:
         try:
             result = subprocess.run(command, cwd=run_dir, stdout=output,
-                                    stderr=subprocess.STDOUT, timeout=options.duration + 120)
+                                    stderr=subprocess.STDOUT, timeout=seconds + 120)
         except subprocess.TimeoutExpired as error:
-            raise RuntimeError(f"measurement timed out; evidence: {run_dir}") from error
+            raise RuntimeError(f"workload timed out; evidence: {run_dir}") from error
     log_path = run_dir / "ShaderStress.log"
     log = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+    return result.returncode, log
+
+
+def measure(exe, options, isa, session, label, repeat):
+    run_dir = Path(tempfile.mkdtemp(prefix=f"run-{label}-{isa}-r{repeat}-", dir=session))
+    seconds = run_seconds(options.mode, options.warmup, options.measure)
+    code, log = run_workload(exe, options.mode, seconds, isa, options.threads, run_dir)
     try:
-        summary = summarize_samples(log, options.warmup, options.duration, result.returncode)
+        summary = summarize_samples(log, options.warmup, options.measure, code,
+                                    options.sample_interval, options.max_gap)
     except ValueError as error:
         raise RuntimeError(f"{error}; evidence: {run_dir}") from error
     return {"ISA": isa, "Mode": options.mode, "Threads": options.threads or os.cpu_count(),
-            "Duration": options.duration, "Warmup": options.warmup,
-            "Executable": str(exe), "SHA256": binary_sha256(exe), **summary,
+            "RunSeconds": seconds, "Warmup": options.warmup, "Measure": options.measure,
+            "Executable": str(exe.resolve()), "SHA256": binary_sha256(exe), **summary,
             "Evidence": str(run_dir)}
+
+
+def preheat(exe, options, session):
+    """Unrecorded load so the cooler is warm before the first measured run."""
+    isa = "avx2" if "avx2" in options.isas else options.isas[0]
+    run_dir = session / "preheat"
+    run_dir.mkdir()
+    print(f"Preheat: {exe.parent.name} {isa} for {options.preheat} s (not recorded)", flush=True)
+    code, _ = run_workload(exe, "short", options.preheat, isa, options.threads, run_dir)
+    if code != 0:
+        raise RuntimeError(f"preheat run exited with code {code}; evidence: {run_dir}")
 
 
 def snapshot(label, source, dest_root=BASELINES):
@@ -286,11 +332,18 @@ def parse_args(argv=None):
                         help="comma-separated executables (repo-relative); the first is the "
                              "baseline, runs are interleaved in shuffled order")
     parser.add_argument("--label", default="adhoc", help="experiment id, e.g. P003-fadd-lane")
-    parser.add_argument("--mode", choices=("benchmark", "steady"), default="benchmark")
-    parser.add_argument("--duration", type=int, default=180)
-    parser.add_argument("--warmup", type=int, default=30)
+    parser.add_argument("--mode", choices=tuple(MODE_DEFAULTS), default="short",
+                        help="short: steady all-compute A/B screening (default); "
+                             "benchmark: the real 180 s benchmark for absolute numbers")
+    parser.add_argument("--warmup", type=float, help="seconds before the window (8 / 30)")
+    parser.add_argument("--measure", type=float, help="window length in seconds (15 / 148)")
+    parser.add_argument("--repeats", type=int, help="interleaved rounds (5 / 3)")
+    parser.add_argument("--preheat", type=int, help="unrecorded load before round 1 (30 / 0 s)")
     parser.add_argument("--threads", type=int, default=0, help="0 = all logical CPUs")
-    parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--sample-interval", type=float, default=1.0,
+                        help="PowerReader window in seconds (binaries before streaming: 6.5)")
+    parser.add_argument("--max-gap", type=float, default=3.0,
+                        help="largest tolerated gap between readings in seconds")
     parser.add_argument("--isas", default=None,
                         help=f"default {TARGET_ISAS} ({SWEEP_ISAS} with --sweep)")
     parser.add_argument("--sweep", action="store_true")
@@ -313,12 +366,18 @@ def parse_args(argv=None):
     parser.add_argument("--relay-log", help=argparse.SUPPRESS)
     parser.add_argument("--stop-file", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    if args.mode == "benchmark" and args.duration != 180:
-        parser.error("benchmark duration is fixed at 180 seconds; use steady for shorter runs")
-    if args.duration - args.warmup < 30 or args.warmup < 0:
-        parser.error("allow at least 30 seconds after a nonnegative warmup")
-    if args.threads < 0 or args.repeats < 1:
-        parser.error("threads must be >= 0 (0 = all) and repeats positive")
+    for key, value in MODE_DEFAULTS[args.mode].items():
+        if getattr(args, key) is None:
+            setattr(args, key, value)
+    if args.warmup < 3 or args.measure < 5:
+        parser.error("warmup must be >= 3 s and the measurement window >= 5 s")
+    if args.mode == "benchmark" and args.warmup + args.measure > BENCHMARK_SECONDS - 1:
+        parser.error(f"benchmark runs {BENCHMARK_SECONDS} s: warmup + measure must be <= "
+                     f"{BENCHMARK_SECONDS - 1}")
+    if args.threads < 0 or args.repeats < 1 or args.preheat < 0:
+        parser.error("threads must be >= 0 (0 = all), repeats positive, preheat >= 0")
+    if not (0 < args.sample_interval <= args.max_gap):
+        parser.error("need 0 < --sample-interval <= --max-gap")
     args.isas = comma_values(args.isas or (SWEEP_ISAS if args.sweep else TARGET_ISAS))
     if not args.isas or any(i not in ("scalar", "scalar-sim", "avx2", "avx512") for i in args.isas):
         parser.error("invalid ISA list")
@@ -359,15 +418,18 @@ def run_session(options, argv):
     if csv_path.exists():
         raise RuntimeError(f"refusing to replace existing results: {csv_path}; choose --csv")
     meta = {"Label": options.label, "Arguments": argv, "Started": stamp,
+            "Mode": options.mode, "Warmup": options.warmup, "Measure": options.measure,
+            "Repeats": options.repeats, "Preheat": options.preheat,
             "GitHead": (git("rev-parse", "HEAD") or "").strip() or None,
             "GitDirty": bool((git("status", "--porcelain") or "").strip()),
             "Processor": platform.processor(), "LogicalCpus": os.cpu_count(),
             "Python": sys.version.split()[0]}
     (session / "session.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     threads = options.threads or f"all ({os.cpu_count()})"
-    print(f"Manual full CPU load: {threads} threads, {options.mode}, {options.duration}s/run, "
-          f"{options.repeats} repeats, ISAs {','.join(options.isas)}. Evidence: {session}",
-          flush=True)
+    seconds = run_seconds(options.mode, options.warmup, options.measure)
+    print(f"Manual full CPU load: {threads} threads, {options.mode} mode, {seconds} s/run "
+          f"(warmup {options.warmup} s, window {options.measure} s), {options.repeats} repeats, "
+          f"ISAs {','.join(options.isas)}. Evidence: {session}", flush=True)
     if options.sweep:
         from scripts.build_options import select_configs  # configuration only, no toolchains
         configs = select_configs(comma_values(options.targets))
@@ -379,6 +441,9 @@ def run_session(options, argv):
         candidates = [(exe, None, None) for exe in options.exe]
     stop_file = Path(options.stop_file) if options.stop_file else None
     rows, stopped = [], False
+    if options.preheat:
+        power_host.wait_for_quiet_system(options.max_background_load)
+        preheat(options.exe[0], options, session)
     # Every repeat visits all candidates in a newly shuffled order so drift
     # (temperature, background) hits all of them alike. Tuning binaries are
     # isolated and rebuilt as necessary; release outputs stay intact.

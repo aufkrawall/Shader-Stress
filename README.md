@@ -123,7 +123,7 @@ python tests/run_tests.py --stress --sanitize
 python scripts/kernel_codegen.py                 # static kernel disassembly audit
 ```
 
-Power measurements are manual and create full CPU load (CPU package power, effective clock, temperature and Vcore via LibreHardwareMonitor; the script requests UAC elevation itself): `scripts/measure.ps1` A/B-compares binaries (e.g. a baseline snapshot from `python scripts/power_measure.py --snapshot <label>` against a new build), `scripts/sweep_power.ps1` compares LLVM/Zig/MSVC builds across kernel buffer sizes and rounds. Both keep each run's log under `audit/power-measurements/`. Workflow and results: `llm-wiki/power-optimization.md`, `llm-wiki/power-ledger.md`.
+Power measurements are manual and create full CPU load (CPU package power, effective clock, temperature and Vcore via LibreHardwareMonitor; the script requests UAC elevation itself): `scripts/measure.ps1` A/B-compares binaries in short runs (8 s warmup + 15 s window; `-Mode benchmark` for the full 180 s benchmark) (e.g. a baseline snapshot from `python scripts/power_measure.py --snapshot <label>` against a new build), `scripts/sweep_power.ps1` compares LLVM/Zig/MSVC builds across kernel buffer sizes and rounds. Both keep each run's log under `audit/power-measurements/`. Workflow and results: `llm-wiki/power-optimization.md`, `llm-wiki/power-ledger.md`.
 
 The build script:
 

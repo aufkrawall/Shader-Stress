@@ -284,8 +284,10 @@ def test_invariant_lhm(b):
     check('L"lhm\\\\PawnIO_setup.exe"' in power and "ShutdownPowerMeasurement" in hdr and
           "ShutdownPowerMeasurement()" in main_src and 'L"Power sample: elapsed_ms="' in power and
           "FormatPowerSampleLog(power, " in _read("src/engine/Watchdog.cpp") and
-          "ParsePowerReaderOutput(buf, sample)" in power and '"lhm"' in _read("build.py"),
-          "LHM power readout wiring (lhm/ subfolder, shutdown, periodic log, reader parser)")
+          "TakePowerSamples(&dropped)" in _read("src/engine/Watchdog.cpp") and
+          'L"PowerReader.exe --stream "' in power and "args[0] != \"--stream\"" in _read("vendor/lhm/PowerReader.cs") and
+          "ParsePowerReaderOutput(line.c_str(), sample)" in power and '"lhm"' in _read("build.py"),
+          "LHM power readout wiring (lhm/ subfolder, 1 s stream, every reading logged, shutdown, parser)")
 
 
 def test_invariant_file_sizes(b):

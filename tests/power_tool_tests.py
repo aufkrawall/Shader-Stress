@@ -15,8 +15,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts import power_host  # noqa: E402
 from scripts.power_measure import (binary_sha256, format_summary, load_rows,  # noqa: E402
-                                   parse_args, snapshot, summarize_runs, summarize_samples,
-                                   verdict, workload_args, write_rows)
+                                   parse_args, run_seconds, snapshot, summarize_runs,
+                                   summarize_samples, verdict, workload_args, write_rows)
 
 # Must equal the line asserted by TestPowerReaderFormat in src/app/SelfTest.cpp.
 SELF_TEST_LINE = ("Power sample: elapsed_ms=31000 watts=141.3 jobs=42 eff_mhz=4425 "
@@ -35,54 +35,75 @@ def rejects(fn, *args):
     return False
 
 
+def stream(ticks, watts=lambda t: 140.0, extra=""):
+    """1 s PowerReader stream as logged by the watchdog."""
+    return [sample(t, watts(t), t // 100, extra) for t in ticks]
+
+
 def test_samples(check):
-    lines = [sample(0, 20, 0), sample(10000, 30, 5)] + [
-        sample(t * 1000, w, t) for t, w in ((30, 120.2), (36, 122.4), (42, 124.6), (48, 122.4), (54, 120.2))]
+    # Short mode: 8 s warmup, 15 s window -> readings at 9..23 s (each covers the
+    # second before its timestamp). Earlier/later readings and summaries are ignored.
+    lines = stream(range(1000, 26000, 1000), lambda t: 130.0 if t < 9000 else 140.0 + (t // 1000) % 3)
     log = "\n".join(lines + ["[00:00:01.000] Final CPU Package Power: 900 W", "CPU Power: 900 W"])
-    result = summarize_samples(log, 30, 60)
-    check(result["Samples"] == 5 and result["Watts"] == 121.96 and result["JobsPerSecond"] == 1
-          and result["EffMHz"] is None and result["TempMaxC"] is None,
-          "power warmup uses acquisition time; summaries excluded; old log format accepted")
+    r = summarize_samples(log, 8, 15)
+    check(r["Samples"] == 15 and r["Watts"] == 141.0 and r["FirstSampleMs"] == 9000 and
+          r["LastSampleMs"] == 23000 and r["JobsPerSecond"] == 10 and r["EffMHz"] is None,
+          "short window: readings of 9..23 s after 8 s warmup, warmup/summary lines excluded", str(r))
+    window = [line for line in lines if 9000 <= int(line.split("elapsed_ms=")[1].split()[0]) <= 23000]
+    gappy = [line for line in window if "elapsed_ms=15000" not in line and "elapsed_ms=16000" not in line
+             and "elapsed_ms=17000" not in line]
+    sparse = window[::2]
     for label, text, code in (("failed workload", log, 5), ("missing samples", "", 0),
                               ("duplicate reading", log + "\n" + lines[-1], 0),
-                              ("sensor outage", "\n".join(lines[:4] + [sample(58000, 120, 60)]), 0),
-                              ("no completed work", "\n".join(sample(t, 120, 1) for t in (30000, 36000, 42000, 48000, 54000)), 0)):
-        check(rejects(summarize_samples, text, 30, 60, code), "power measurement rejects " + label)
+                              ("a 4 s sensor outage", "\n".join(gappy), 0),
+                              ("too few readings (old 6.5 s cadence)", "\n".join(sparse), 0),
+                              ("no completed work", "\n".join(sample(t, 140, 1) for t in range(9000, 24000, 1000)), 0)):
+        check(rejects(summarize_samples, text, 8, 15, code), "power measurement rejects " + label)
+    legacy = [sample(t * 1000, w, t) for t, w in ((30, 120.2), (36, 122.4), (42, 124.6), (48, 122.4), (54, 120.2), (60, 121.0))]
+    old = summarize_samples("\n".join(legacy), 30, 30, 0, 6.0, 15.0)
+    check(old["Samples"] == 5 and old["Watts"] == 122.12,
+          "binaries before streaming: --sample-interval 6 --max-gap 15 still measurable", str(old))
 
-    def full(tick, watts, jobs, eff, temp, vcore):
-        return sample(tick, watts, jobs, f" eff_mhz={eff} temp_c={temp} vcore_v={vcore}")
-    contract = "[00:00:31.000] " + SELF_TEST_LINE
-    sensors = "\n".join([contract.replace("elapsed_ms=31000", "elapsed_ms=30500"),
-                         full(36000, 140.1, 50, 4400, 84.9, 1.2),
-                         full(42000, 139.9, 60, -1, -1.0, -1.000),
-                         full(48000, 140.7, 70, 4380, 86.0, 1.188)])
-    r = summarize_samples(sensors, 30, 60)
-    check(r["Samples"] == 4 and r["EffMHz"] == 4402 and r["TempMaxC"] == 86.0 and
-          r["TempMeanC"] == 84.1 and r["VcoreV"] == 1.194,
-          "effective clock / temperature / Vcore averaged; -1 readings treated as unavailable",
-          str(r))
-    check(summarize_samples("\n".join([contract] + [contract.replace("31000", str(t)).replace("jobs=42", f"jobs={t}")
-                                                     for t in (40000, 50000)]), 30, 60)["EffMHz"] == 4425,
+    sensors = stream(range(9000, 24000, 1000), extra=" eff_mhz=4400 temp_c=84.9 vcore_v=1.200")
+    sensors[3] = sample(12000, 140.0, 120, " eff_mhz=-1 temp_c=-1.0 vcore_v=-1.000")
+    sensors[4] = sample(13000, 140.0, 130, " eff_mhz=4386 temp_c=86.0 vcore_v=1.186")
+    r = summarize_samples("\n".join(sensors), 8, 15)
+    check(r["Samples"] == 15 and r["EffMHz"] == 4399 and r["TempMaxC"] == 86.0 and
+          r["TempMeanC"] == 85.0 and r["VcoreV"] == 1.199,
+          "effective clock / temperature / Vcore averaged; -1 readings treated as unavailable", str(r))
+    contract = ["[00:00:31.000] " + SELF_TEST_LINE.replace("elapsed_ms=31000", f"elapsed_ms={t}")
+                .replace("jobs=42", f"jobs={t}") for t in range(31000, 46000, 1000)]
+    check(summarize_samples("\n".join(contract), 30, 15)["EffMHz"] == 4425,
           "self-test log line contract parses (SelfTest.cpp TestPowerReaderFormat)")
 
 
 def test_arguments(check):
-    args = workload_args("benchmark", 180, "avx2", 0)
-    check("--threads" not in args and all(x in args for x in ("--no-ram", "--no-io", "--no-decompress")),
-          "measurement default: all logical CPUs (benchmark thread count), compute only")
-    check(workload_args("steady", 60, "scalar", 16)[-6:-4] == ["--threads", "16"],
-          "explicit thread count is passed through")
+    args = workload_args("short", 25, "avx2", 0)
+    check(args[:4] == ["--mode", "steady", "--duration", "25"] and "--threads" not in args and
+          all(x in args for x in ("--no-ram", "--no-io", "--no-decompress")),
+          "short mode: steady all-compute on all logical CPUs (benchmark worker layout)")
+    check("--duration" not in workload_args("benchmark", 180, "avx2", 0) and
+          workload_args("short", 25, "scalar", 16)[-6:-4] == ["--threads", "16"],
+          "benchmark mode keeps its fixed 180 s; explicit thread count is passed through")
     d = parse_args([])
-    check(d.duration == 180 and d.threads == 0 and d.isas == ["scalar-sim", "scalar", "avx2"] and
+    check((d.mode, d.warmup, d.measure, d.repeats, d.preheat) == ("short", 8, 15, 5, 30) and
+          run_seconds(d.mode, d.warmup, d.measure) == 25 and d.threads == 0 and
+          d.isas == ["scalar-sim", "scalar", "avx2"] and
           d.exe == [PROJECT_ROOT / "bin/x64-llvm-v3/ShaderStress.com"] and d.csv is None,
-          "defaults: 180 s benchmark, all target ISAs, repo-relative exe, CSV in session dir")
+          "defaults: 8 s warmup + 15 s window, 5 repeats, 30 s preheat, all target ISAs")
+    b = parse_args(["--mode", "benchmark"])
+    check((b.warmup, b.measure, b.repeats, b.preheat) == (30, 148, 3, 0) and
+          run_seconds(b.mode, b.warmup, b.measure) == 180,
+          "benchmark mode defaults: 30 s warmup + 148 s window of the 180 s run, 3 repeats")
     check(parse_args(["--sweep"]).isas == ["scalar", "avx2"], "sweep default skips the realistic sim")
     ab = parse_args(["--exe", "audit/power-baselines/P1-base/ShaderStress.com,bin/x64-llvm-v3/ShaderStress.com"])
     check([e.parent.name for e in ab.exe] == ["P1-base", "x64-llvm-v3"] and ab.exe[0].is_absolute(),
           "A/B executables are labelled by their directory")
     with contextlib.redirect_stderr(io.StringIO()):
-        for invalid in (["--duration", "60"], ["--buffers", "31"], ["--rounds", "0"],
-                        ["--threads", "-1"], ["--warmup", "170"], ["--isas", "sse9"],
+        for invalid in (["--duration", "60"], ["--mode", "steady"], ["--warmup", "2"],
+                        ["--measure", "4"], ["--mode", "benchmark", "--measure", "150"],
+                        ["--buffers", "31"], ["--rounds", "0"], ["--threads", "-1"],
+                        ["--sample-interval", "5"], ["--isas", "sse9"],
                         ["--exe", "a/x/ShaderStress.com,b/x/ShaderStress.com"], ["--label", "../x"]):
             try:
                 parse_args(invalid)

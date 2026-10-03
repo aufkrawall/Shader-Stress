@@ -1,5 +1,25 @@
 # Recent Changes Log
 
+## 2026-10-03 — Short power runs: 1 s streaming sensor readout, 8 s warmup + 15 s window
+
+- Trigger: user asked whether ~8 s warmup + 15 s measurement is enough (was 30 s + 150 s
+  benchmark runs, ~1 h per A/B experiment).
+- Blockers found: ShaderStress relaunched PowerReader per reading (~6.5 s cadence, 1 s of
+  every ~6.5 s observed) and the watchdog (250 ms loop) logged only the latest cached
+  reading, so readings could be merged/skipped; benchmark mode is fixed at 180 s by the CLI.
+- Fix: `PowerReader --stream 1000` (contiguous 1 s windows until stdin closes; exits 1 if the
+  first reading has no package power), one persistent reader per run in `PowerMeasure.cpp`
+  (shutdown: close stdin, bounded wait, terminate fallback; restart with back-off if it dies
+  mid-run), `PowerSampleQueue` so every reading is logged (overflow counted and logged).
+- `power_measure.py --mode short` (default): steady all-compute (same `SetWork(cpu, 0)`
+  layout as benchmark; fixed 12k jobs vs the benchmark's 5k-500k mix), 30 s preheat, 8 s
+  warmup + 15 s window, 5 repeats, >= 80% readings and <= 3 s gaps. `--mode benchmark` keeps
+  the 180 s run for absolute numbers. Ledger P000 = validate the short protocol.
+- Verified (elevated, 1 thread, 14 s steady run, other user load present): 13 readings,
+  gaps 0.81-1.13 s, clean shutdown (15.1 s wall), no PowerReader left running; one-shot and
+  bad-argument reader modes behave. The pre-run one-shot read 108 W / 4488 MHz effective from
+  the user's other workload: the background-load guard matters.
+
 ## 2026-10-03 — Power optimization runbook, ledger, effective clock capture, UAC self-elevation
 
 - Trigger: user wants any agent told "continue power draw optimization" to know how to

@@ -333,6 +333,22 @@ void TestPowerReaderFormat() {
   Check(FormatPowerReadout(s) == L"141 W | eff 4425 MHz | 81 C" &&
             FormatPowerReadout(CpuPowerSample{}).empty(),
         "power readout text");
+
+  // 1 s readings vs the 250 ms watchdog: nothing may be merged; overflow
+  // drops the oldest and is counted.
+  PowerSampleQueue queue;
+  for (int i = 1; i <= 70; ++i) {
+    CpuPowerSample r;
+    r.watts = i;
+    r.tick = (uint64_t)i * 1000;
+    queue.Push(r);
+  }
+  std::vector<CpuPowerSample> drained = queue.Drain();
+  bool ordered = drained.size() == PowerSampleQueue::kCapacity;
+  for (size_t i = 0; ordered && i < drained.size(); ++i)
+    ordered = drained[i].watts == (double)(i + 7) && drained[i].tick == (i + 7) * 1000;
+  Check(ordered && queue.Dropped() == 6 && queue.Drain().empty(),
+        "power sample queue keeps every reading in order, counts overflow");
 }
 
 void TestFormatting() {

@@ -1,8 +1,8 @@
 # Power Optimization Runbook ("continue power draw optimization")
 
-Last verified: 2026-10-03. Stale-risk: medium — tooling verified by unit tests and one idle
-elevated sensor read (UAC auto-approved, LHM sensors present); no full-load session has
-been run with it yet.
+Last verified: 2026-10-03. Stale-risk: medium — tooling verified by unit tests and light
+elevated checks (UAC auto-approved, LHM sensors present, 1 s streaming); no full-load
+session has been run with it yet.
 
 When the user says **"continue power draw optimization"** (or similar), follow this page.
 Results go into [power-ledger.md](power-ledger.md); kernel/flag design background is in
@@ -17,9 +17,22 @@ or revert (ledger-only commit) → the accepted build becomes the next baseline.
 
 ## Goal and scoring
 
-Scenario (the user's): **benchmark mode** (`--mode benchmark`, fixed 180 s), **all logical
-CPUs** (the thread count the default compiler-sim benchmark uses; 16 on the 5700X), compute
-only, one ISA per run. Reference system: Ryzen 7 5700X, PBO limits open, <= 90 C.
+Scenario (the user's): **benchmark mode** (fixed 180 s), **all logical CPUs** (the thread
+count the default compiler-sim benchmark uses; 16 on the 5700X), compute only, one ISA per
+run. Reference system: Ryzen 7 5700X, PBO limits open, <= 90 C.
+
+Two measurement modes (`scripts/power_measure.py --mode`):
+
+| Mode | Run | Use |
+|---|---|---|
+| `short` (default) | 30 s unrecorded preheat per session, then per run 8 s warmup + 15 s window (25 s run, ~30 s with checks), 5 interleaved repeats | All A/B decisions. ShaderStress `--mode steady` with every thread on compute = the benchmark's worker layout, but fixed 12k-complexity jobs instead of the benchmark's 5k-500k mix |
+| `benchmark` | the real 180 s benchmark, 30 s warmup + 148 s window, 3 repeats | Absolute numbers vs the targets, "current best" rows, CHANGELOG claims, and A/B of scheduling/job-size changes (where the job mix matters) |
+
+Short runs are solid for *relative* comparisons: readings are contiguous 1 s windows of the
+energy counter (15 readings = the exact 15 s average), drift cancels in the paired deltas,
+and the preheat keeps the cooler in a similar state for all arms. Absolute watts can differ
+by a few W from a 3 min run (cooler/coolant still warming, leakage), hence the benchmark mode
+for targets.
 
 | Workload | `--isa` | Package power target (5700X) |
 |---|---|---|
@@ -45,7 +58,7 @@ cancels thermal/ambient drift) with a Student-t 95% CI:
 - `better (more power)`: ΔW > CI and ΔW >= 1 W. `worse (less power)`: mirror image.
 - `tie-break better/worse`: power within noise, but the effective clock differs beyond its
   CI and by >= 15 MHz (lower = better).
-- `inconclusive`: otherwise, or < 2 paired repeats. Re-measure with `--repeats 5` before
+- `inconclusive`: otherwise, or < 2 paired repeats. Re-measure with `--repeats 10` before
   deciding a close call; never accept on an inconclusive verdict.
 - **Accept** a change only if it is `better` (or `tie-break better`) on the ISA(s) it targets
   **and** not `worse` on any other target ISA it can affect (when unsure, measure all three).
@@ -118,11 +131,15 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
    python scripts/power_measure.py --label P012-<slug> --exe audit/power-baselines/P012-base/ShaderStress.com,audit/power-baselines/P012-<slug>/ShaderStress.com
    ```
 
-   Defaults: all three ISAs, 3 repeats, 30 s warmup, all logical CPUs. Duration ~ arms x
-   ISAs x repeats x ~3.3 min (2 x 3 x 3 = 18 runs ~ 1 h). Run it as a background command
-   (agent shells time out); the elevated child keeps going even if the parent is killed and
-   writes everything to `audit/power-measurements/session-<time>-<label>-*/`. Restrict
-   `--isas` only when the change provably cannot affect the others.
+   Defaults (short mode): all three ISAs, 5 repeats, all logical CPUs. Duration ~ 30 s
+   preheat + arms x ISAs x repeats x ~30 s (2 x 3 x 5 = 30 runs ~ 15 min). Run it as a
+   background command (agent shells time out); the elevated child keeps going even if the
+   parent is killed and writes everything to
+   `audit/power-measurements/session-<time>-<label>-*/`. Restrict `--isas` only when the
+   change provably cannot affect the others.
+   After accepting a change (or before claiming a target), confirm in the real benchmark:
+   `python scripts/power_measure.py --mode benchmark --label P012-confirm --exe <base>,<cand>`
+   (2 x 3 x 3 runs x ~3.3 min ~ 1 h).
 6. **Decide** from the printed `summary.md` table using the rules above.
 7. **Record** the ledger entry (template in the ledger): change, type, baseline/candidate
    labels + git state, conditions, command, summary table, verdict + reasoning, side effects
@@ -140,8 +157,8 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
 
 - `scripts/power_measure.py` (wrappers `scripts/measure.ps1`, `scripts/sweep_power.ps1`):
   `--exe a,b,...` (repo-relative; first = baseline; labels = parent dir names, must differ),
-  `--label`, `--isas`, `--repeats`, `--threads` (0 = all), `--sweep --targets --buffers
-  --rounds`, `--snapshot LABEL [--snapshot-source DIR]`, `--summarize CSV [--baseline NAME]`,
+  `--label`, `--mode short|benchmark`, `--warmup`, `--measure`, `--repeats`, `--preheat`,
+  `--isas`, `--threads` (0 = all), `--sweep --targets --buffers --rounds`, `--snapshot LABEL [--snapshot-source DIR]`, `--summarize CSV [--baseline NAME]`,
   `--max-background-load` (10%), `--temp-limit` (90), `--no-elevate`.
 - **UAC**: when not elevated, the script relaunches itself with `ShellExecuteExW("runas")`
   (`scripts/power_host.py`), relays the child's output from
@@ -152,14 +169,20 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
   W mean/SD/min/max, samples, jobs/s, EffMHz, TempMeanC/TempMaxC, VcoreV, background load,
   SHA-256, evidence), `results.json`, `summary.md`, `run-*/ShaderStress.log` + `console.log`.
   `audit/` is git-ignored: evidence is local; the ledger is the durable record.
-- Sensor path: `lhm/PowerReader.exe` (LibreHardwareMonitor 0.9.6 + PawnIO) primes the
-  counters, waits a 1 s window, prints `watts effMHz tempC vcoreV` (`-1` = unavailable;
-  AMD: `Package`, `Cores (Average Effective)`, `Core (Tctl/Tdie)`, `Core (SVI2 TFN)`).
-  ShaderStress polls it every ~5 s (+ reader runtime) and logs
-  `Power sample: elapsed_ms=.. watts=.. jobs=.. eff_mhz=.. temp_c=.. vcore_v=..`.
-  Format contract: `TestPowerReaderFormat` (`src/app/SelfTest.cpp`) ↔ `tests/power_tool_tests.py`.
-- A run is rejected (session aborts, evidence kept) on non-zero exit, < 3 post-warmup samples,
-  duplicate ticks, > 15 s sampling gaps or no completed jobs.
+- Sensor path: ShaderStress keeps one `lhm/PowerReader.exe --stream 1000` process
+  (LibreHardwareMonitor 0.9.6 + PawnIO) running for the whole run; it primes the counters
+  and prints `watts effMHz tempC vcoreV` for contiguous 1 s windows (`-1` = unavailable;
+  AMD: `Package`, `Cores (Average Effective)`, `Core (Tctl/Tdie)`, `Core (SVI2 TFN)`) until
+  its stdin closes. Every reading goes through `PowerSampleQueue` to the watchdog, which
+  logs `Power sample: elapsed_ms=.. watts=.. jobs=.. eff_mhz=.. temp_c=.. vcore_v=..`
+  (no reading is merged or skipped; overflow is logged). A reading at elapsed T covers
+  (T-1 s, T]; the window uses readings at warmup+1 s .. warmup+measure. Format contract:
+  `TestPowerReaderFormat` (`src/app/SelfTest.cpp`) ↔ `tests/power_tool_tests.py`.
+  `PowerReader.exe` without arguments (elevated) prints one reading: a quick sensor check.
+- A run is rejected (session aborts, evidence kept) on non-zero exit, < 80% of the expected
+  readings, duplicate ticks, a gap > `--max-gap` (3 s) or no completed jobs. Binaries
+  built before 1 s streaming sampled every ~6.5 s: measure them with
+  `--sample-interval 6.5 --max-gap 15` (benchmark mode) or rebuild them.
 
 ## Diagnostics / failure modes
 
@@ -174,7 +197,11 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
 ## Open questions / stale-risk
 
 - First full-load session with this tooling not yet run; effective-clock/Vcore readings under
-  load and the noise floor (CI width at 3 repeats) are unverified.
+  load and the noise floor (CI width at 5 short repeats) are unverified. Ledger item P000
+  validates the short protocol against the benchmark (per-second power trace: is 8 s
+  warmup past the boost/temperature transient? do short and benchmark A/B deltas agree?).
+- PowerReader competes with the workers for CPU time; reading jitter is absorbed by the
+  contiguous windows, and its own small load is part of every run, equally for all arms.
 - Sensor names on Intel/other AMD generations are fallbacks (`CPU Package`, `CPU Core`,
   per-core `(Effective)` average) and unverified.
 - Targets are for the 5700X only; other CPUs need their own reference rows in the ledger.

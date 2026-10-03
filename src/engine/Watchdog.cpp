@@ -78,7 +78,7 @@ void Watchdog() {
   int lastBenchIntervalIndex = -1;
   uint64_t lastRateTime = GetTick();
   uint64_t lastRateShaders = 0;
-  uint64_t lastPowerLogTick = 0;
+  uint64_t lastPowerDropped = 0;
   uint64_t lastHealthLogTick = GetTick();
 
   while (!g_App.quit) {
@@ -139,10 +139,16 @@ void Watchdog() {
         lastRateShaders = current;
       }
 
-      CpuPowerSample power = SampleCpuPower();
-      if (power.watts > 0 && power.tick >= runStart && power.tick > lastPowerLogTick) {
-        lastPowerLogTick = power.tick;
-        g_App.Log(FormatPowerSampleLog(power, power.tick - runStart, totalShaders));
+      // Every reading (contiguous 1 s windows) is logged; power_measure.py
+      // averages them, so none may be skipped between watchdog iterations.
+      uint64_t dropped = 0;
+      for (const CpuPowerSample &power : TakePowerSamples(&dropped))
+        if (power.tick >= runStart)
+          g_App.Log(FormatPowerSampleLog(power, power.tick - runStart, totalShaders));
+      if (dropped != lastPowerDropped) {
+        g_App.Log(L"Power: " + std::to_wstring(dropped - lastPowerDropped) +
+                  L" readings dropped (watchdog stalled)");
+        lastPowerDropped = dropped;
       }
       if (now - lastHealthLogTick >= 60000) {
         lastHealthLogTick = now;
@@ -184,6 +190,7 @@ void Watchdog() {
       }
     } else {
       runStart = 0;
+      TakePowerSamples(); // readings outside a run are not logged
     }
 
     std::this_thread::sleep_for(250ms); // UI/accounting cadence

@@ -83,12 +83,13 @@ results and hypothesis backlog: [power-ledger.md](power-ledger.md). Manual only 
 load); never part of tests. Essentials:
 
 - `scripts/power_measure.py` (wrappers `measure.ps1`, `sweep_power.ps1`) self-elevates via
-  UAC, runs the benchmark scenario (180 s, all logical CPUs, compute only, 30 s warmup),
-  interleaves baseline/candidates in shuffled order per repeat and reports paired deltas of
-  package power and effective clock (plus temperature, Vcore, jobs/s).
+  UAC, runs all logical CPUs compute-only — short mode (default, A/B: 8 s warmup + 15 s
+  window, 5 repeats, preheat) or the real 180 s benchmark (absolute numbers) — interleaves
+  baseline/candidates in shuffled order per repeat and reports paired deltas of package
+  power and effective clock (plus temperature, Vcore, jobs/s).
 - Samples come from `Power sample: ... watts= jobs= eff_mhz= temp_c= vcore_v=` log lines
-  (PowerReader 1 s window, ~5 s cadence, readings older than 15 s dropped); runs with
-  failures, < 3 samples or > 15 s gaps are rejected.
+  (one streaming PowerReader, contiguous 1 s windows, every reading logged); runs with
+  failures, < 80% of the expected readings or > 3 s gaps are rejected.
 - Golden values are computed at startup, so tuning builds verify themselves. After
   changing defaults, re-record golden checksums
   (`python tests/run_tests.py --stress --record-golden`).
