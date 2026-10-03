@@ -24,6 +24,15 @@
   kept regardless: identical watts at 15-18% fewer cycles per block is strictly more
   benchmark score per watt, and checksums are identical. Full numbers in the ledger.
 
+## 2026-10-03 — P003 buffer x rounds: the 512 KiB x 2 default wins by 7-22 W
+
+- Sweep (`--sweep`, LLVM win-v3, scalar+avx2, 3 repeats): 128x2 / 128x4 / 512x4 all
+  lose 7-22 W vs the 512 KiB x 2 default on both ISAs (all significant, paired t-CI).
+  The L2-overflow hypothesis was backwards — spilling past L2 is what draws current:
+  more rounds starve the load/store + integer side (power AND jobs/s fall), a smaller
+  buffer replaces L3/memory pressure with L2-resident traffic. Default kept (no code
+  change); MSVC knob transfer untested (ranking assumed shared). Full table in the ledger.
+
 ## 2026-10-03 — Short power runs: 1 s streaming sensor readout, 8 s warmup + 15 s window
 
 - Trigger: user asked whether ~8 s warmup + 15 s measurement is enough (was 30 s + 150 s

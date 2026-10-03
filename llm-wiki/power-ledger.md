@@ -1,6 +1,7 @@
 # Power Experiment Ledger
 
-Last verified: 2026-10-03. Stale-risk: low for the rules, **no agent measurement recorded yet**.
+Last verified: 2026-10-03. Stale-risk: low — P001/P002/P003 measured short-mode
+(benchmark-mode numbers still open).
 
 Durable record of every power experiment (procedure and decision rules:
 [power-optimization.md](power-optimization.md)). Rules: one entry per experiment ID, one
@@ -44,7 +45,7 @@ heavier per-cycle current, matching the boost/backoff model).
 | P000 | method | Validate the short protocol once: one `--mode benchmark` session of the current build, then inspect the per-second `Power sample` trace (transient after start: is 8 s warmup enough?) and compare the 9-23 s mean with the benchmark window; later check that short and benchmark A/B deltas agree for the first accepted change | all | open |
 | P001 | compiler | Establish the first measured baseline and the best toolchain: `x64-llvm-v3` (baseline) vs `x64-zig-v3` vs `x64-msvc-v3`, same commit | all | accepted (MSVC power baseline; short-mode only, needs benchmark confirm) |
 | P002 | flag | Quantify the SLP fix: `x64-llvm-v3-slp` (old kernel codegen, ymm spills) vs `x64-llvm-v3` | scalar, avx2 | inconclusive on power (+-0.2 W); fix kept for throughput (+15-18% score per watt) |
-| P003 | knob | Smaller buffer / more rounds: two SMT threads x 512 KiB overflow the 512 KiB L2; start with 128 KiB x 4 rounds (`--sweep`) | scalar, avx2 | open |
+| P003 | knob | Smaller buffer / more rounds: two SMT threads x 512 KiB overflow the 512 KiB L2; start with 128 KiB x 4 rounds (`--sweep`) | scalar, avx2 | accepted (keep 512x2 default: all alternatives lose 7-22 W) |
 | P004 | kernel | Zen 3 FADD pipes idle in the AVX2 kernel: butterflies issue only MUL/FMA (FP0/FP1), so FP2/FP3 sit idle; add independent norm-preserving add/sub work on live data (verify pipe mapping first) | avx2 (scalar shares the body) | open |
 | P005 | kernel | Integer network: the g0..g7 chains are serial across blocks (multiply+rotate latency, one 64-bit DIV); restructure for more independent GPR work, keep DIV + verification | scalar, avx2 | open |
 | P006 | flag | `-mtune=znver3` (`win-v3-znver3`) — mostly codegen of the realistic sim | all | open |
@@ -52,12 +53,53 @@ heavier per-cycle current, matching the boost/backoff model).
 | P008 | flag | PGO (`build.py --pgo-gen/--pgo-use`) for the realistic sim; needs a bounded profiling run design (no long full-load profiling) | scalar-sim | open |
 | P009 | kernel | Scalar integer network on MSVC: LLVM's scalar loop is 15% faster per block at 6 W less power — likely tighter GPR scheduling; try 2 independent DIV chains or unserializing g4..g7 on the LLVM baseline first (MSVC codegen may already do this) | scalar | open |
 | P010 | method | P002 follow-up: SLP spills cost no package power but +15-22% cycles — is the spill traffic L1-contained (no package-power effect expected)? Retry the SLP pair in benchmark mode if a future kernel change moves spill traffic off-chip | scalar, avx2 | open |
+| P003b | knob | Retry only if the kernel bottleneck moves: 256 KiB x 2 rounds (between L2-fit and the winning 512x2 default) | scalar, avx2 | open |
 
 ## Entries
 
 Newest first. Copy the template.
 
 ```
+### P003 — buffer x rounds sweep: the 512 KiB x 2 default wins decisively (accepted = keep default)
+- Date: 2026-10-03. Type: knob.
+- Change (exactly one per arm): `SYNTH_BUF_KIB` x `SYNTH_ROUNDS` via `--sweep`
+  (`SHADERSTRESS_EXTRA_DEFINES`, isolated `bin/x64-llvm-v3-tuning/`; release builds
+  untouched). 4 arms on LLVM win-v3: 128x4, 128x2, 512x4, 512x2 (= default).
+- Baseline: 512 KiB x 2 rounds (the committed default; re-summarized with
+  `--baseline "x64-llvm-v3-tuning buf=512 rounds=2"` since the tool defaults to the
+  first arm).
+- Candidate(s): 128x4, 128x2, 512x4.
+- Conditions: short mode (8 s warmup + 15 s window, 3 interleaved repeats, 30 s preheat
+  on win-v3 avx2), scalar+avx2, all 16 threads, background load mostly 2-9% (two runs
+  at exactly 10.0%, the guard limit), avx2 Tmax 89.5-91.3 C (thermal-limit flag set,
+  all arms alike). Light browser load by the user.
+- Command: python scripts/power_measure.py --sweep --label P003-bufrounds --targets win-v3 --buffers 128,512 --rounds 2,4 --isas scalar,avx2 --repeats 3
+- Result (vs 512x2 default; paired per repeat, t95 df=2 = 4.303):
+  | Candidate | ISA | Runs | W (SD) | dW vs 512x2 (CI95) | Eff MHz | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|
+  | 512x4 | scalar | 3 | 104.6 (0.8) | -11.8 +-2.1 | 4419 | 138 | worse |
+  | 512x4 | avx2 | 3 | 114.0 (0.1) | -14.7 +-0.9 | 4316 | 125 | worse |
+  | 128x2 | scalar | 3 | 109.2 (1.1) | -7.3 +-3.1 | 4398 | 264 | worse |
+  | 128x2 | avx2 | 3 | 114.9 (0.5) | -13.9 +-2.3 | 4290 | 251 | worse |
+  | 128x4 | scalar | 3 | 102.6 (0.3) | -13.8 +-0.6 | 4423 | 138 | worse |
+  | 128x4 | avx2 | 3 | 106.9 (0.4) | -21.9 +-0.3 | 4325 (+32 +-11) | 126 | worse |
+  | 512x2 default | scalar | 3 | 116.5 (0.1) | - | 4396 | 251 | baseline |
+  | 512x2 default | avx2 | 3 | 128.8 (0.5) | - | 4293 | 242 | baseline |
+- Verdict: accepted (keep the default) — every alternative loses 7-22 W on both ISAs,
+  far beyond the 1 W threshold. Pattern: doubling rounds (2→4) halves jobs/s
+  (251→138/125) AND drops power 11-15 W — the extra in-register butterflies add
+  FP work per byte but starve the load/store + integer side that the default keeps
+  busy; shrinking the buffer (512→128 KiB) drops power 7-14 W, likely L2-resident
+  traffic replacing L3/memory pressure. The L2-overflow hypothesis was backwards:
+  spilling past L2 is what draws the current. jobs/s note: 128x2 scalar does 264
+  jobs/s (fastest) at 109 W — best score per watt is not best watts.
+- Side effects: sweep builds are `-tuning` isolates (self-verifying golden checksums);
+  no committed default changed, so no golden re-record. No code change.
+- Evidence: audit/power-measurements/P003-bufrounds-20261003-173825-12264-00/ (local).
+- Follow-ups: P003b (256 KiB x 2) deferred until a kernel change moves the bottleneck;
+  MSVC knob transfer untested (ranking assumed shared).
+```
+
 ### P002 — SLP spills vs clean kernels (inconclusive on power, fix kept for throughput)
 - Date: 2026-10-03. Type: flag.
 - Change (exactly one): kernel objects with LLVM SLP vectorizer re-enabled
