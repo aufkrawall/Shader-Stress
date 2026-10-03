@@ -142,12 +142,7 @@ void Watchdog() {
       CpuPowerSample power = SampleCpuPower();
       if (power.watts > 0 && power.tick >= runStart && power.tick > lastPowerLogTick) {
         lastPowerLogTick = power.tick;
-        std::wostringstream sample;
-        sample.imbue(std::locale::classic());
-        sample << L"Power sample: elapsed_ms=" << (power.tick - runStart)
-               << L" watts=" << std::fixed << std::setprecision(1) << power.watts
-               << L" jobs=" << totalShaders;
-        g_App.Log(sample.str());
+        g_App.Log(FormatPowerSampleLog(power, power.tick - runStart, totalShaders));
       }
       if (now - lastHealthLogTick >= 60000) {
         lastHealthLogTick = now;

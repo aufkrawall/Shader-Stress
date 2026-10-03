@@ -1,5 +1,29 @@
 # Recent Changes Log
 
+## 2026-10-03 — Power optimization runbook, ledger, effective clock capture, UAC self-elevation
+
+- Trigger: user wants any agent told "continue power draw optimization" to know how to
+  change, measure and document power experiments (benchmark mode, all threads; targets
+  5700X: scalar-sim ~115 W, scalar ~135 W, AVX2 ~140-145 W; higher power and lower effective
+  clock = better), one isolated change per experiment incl. compiler/flag changes, and
+  UAC handling (this machine: `ConsentPromptBehaviorAdmin=0`, silent elevation).
+- New pages: [power-optimization.md](../power-optimization.md) (runbook + decision rules),
+  [power-ledger.md](../power-ledger.md) (reference system, current best, backlog P001-P008,
+  entry template). AGENTS.md routes the trigger phrase there.
+- Probe (idle, elevated): LHM 0.9.6 exposes `Cores (Average Effective)` (196-198 MHz idle),
+  `Core (Tctl/Tdie)`, `Core (SVI2 TFN)`, per-core `(Effective)` clocks on the 5700X.
+- PowerReader now primes, waits a 1 s window and prints `watts effMHz tempC vcoreV`;
+  `ParsePowerReaderOutput` (locale-free, rejects `121,3`) feeds `CpuPowerSample`; log line
+  gains `eff_mhz= temp_c= vcore_v=`; dashboard/GUI show `141 W | eff 4425 MHz | 81 C`.
+- `power_measure.py`: UAC relaunch (`power_host.py`, ShellExecuteExW runas, log relay,
+  stop file), `--exe a,b` interleaved A/B, `--snapshot` (audit/power-baselines, records git
+  state + `changes.patch`), paired-delta summary with t-CI and verdicts, `--summarize`,
+  background-load guard, all logical CPUs by default, all three ISAs by default, CSV in the
+  session dir (no more root `sweep_results.csv`). Recorded SHA-256 now hashes
+  `ShaderStress.exe` (it hashed the `.com` launcher before, which did not identify builds).
+- Verified: elevated end-to-end check (silent UAC, relay, exit code passthrough, 1-thread
+  15 s run logging `eff_mhz=486 temp_c=79.4 vcore_v=1.319`). No full-load session run.
+
 ## 2026-10-03 — Kernel codegen fix (no SLP), native MSVC build, power measurement tooling
 
 - Trigger: user reports 16-thread benchmark AVX2 ~122 W on a Ryzen 7 5700X (target

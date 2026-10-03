@@ -1,16 +1,94 @@
 // PowerMeasure.cpp - CPU package power sampling via PowerReader.exe (LHM helper)
 // PowerReader.exe is compiled at build time from vendor/lhm/PowerReader.cs.
-// It loads LibreHardwareMonitorLib.dll, reads Package power via PawnIO, and
-// outputs watts to stdout. Requires admin privileges.
+// It loads LibreHardwareMonitorLib.dll, reads package power, average effective
+// clock, temperature and core voltage via PawnIO, and prints them on one line.
+// Requires admin privileges.
 #include "core/Common.h"
+
+namespace {
+// Locale-independent decimal parser ("-1", "141.3"); the whole token must be
+// consumed, so a decimal-comma reading ("121,3") is rejected, not truncated.
+bool ParseDecimalToken(const char *&p, double &out) {
+  bool negative = *p == '-';
+  if (negative) ++p;
+  // Exact integer mantissa / exact power of ten = one correctly rounded division.
+  uint64_t mantissa = 0, divisor = 1;
+  int digits = 0;
+  for (; *p >= '0' && *p <= '9'; ++p, ++digits)
+    if (digits < 15) mantissa = mantissa * 10 + (uint64_t)(*p - '0');
+  if (*p == '.') {
+    ++p;
+    for (; *p >= '0' && *p <= '9'; ++p, ++digits) {
+      if (digits >= 15) continue;
+      mantissa = mantissa * 10 + (uint64_t)(*p - '0');
+      divisor *= 10;
+    }
+  }
+  bool endOfToken = *p == 0 || *p == ' ' || *p == '\t' || *p == '\r' || *p == '\n';
+  if (digits == 0 || digits > 15 || !endOfToken) return false;
+  double value = (double)mantissa / (double)divisor;
+  out = negative ? -value : value;
+  return true;
+}
+
+void AppendFixed(std::wostringstream &o, const wchar_t *key, double v, int precision) {
+  o << key << std::fixed << std::setprecision(precision) << (v > 0 ? v : -1.0);
+}
+
+bool IsSpace(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
+} // namespace
+
+bool ParsePowerReaderOutput(const char *text, CpuPowerSample &out) {
+  if (!text) return false;
+  const char *p = text;
+  double fields[4] = {-1, -1, -1, -1};
+  int count = 0;
+  for (;;) {
+    while (IsSpace(*p)) ++p;
+    if (*p == 0) break;
+    if (count == 4 || !ParseDecimalToken(p, fields[count])) return false; // unknown format
+    ++count;
+  }
+  if (count == 0 || !(fields[0] > 0 && fields[0] < 1000)) return false;
+  out.watts = fields[0];
+  out.effMhz = fields[1] > 0 && fields[1] < 20000 ? fields[1] : -1.0;
+  out.tempC = fields[2] > 0 && fields[2] < 150 ? fields[2] : -1.0;
+  out.vcore = fields[3] > 0 && fields[3] < 3 ? fields[3] : -1.0;
+  return true;
+}
+
+std::wstring FormatPowerSampleLog(const CpuPowerSample &s, uint64_t elapsedMs, uint64_t jobs) {
+  std::wostringstream o;
+  o.imbue(std::locale::classic());
+  o << L"Power sample: elapsed_ms=" << elapsedMs;
+  AppendFixed(o, L" watts=", s.watts, 1);
+  o << L" jobs=" << jobs;
+  AppendFixed(o, L" eff_mhz=", s.effMhz, 0);
+  AppendFixed(o, L" temp_c=", s.tempC, 1);
+  AppendFixed(o, L" vcore_v=", s.vcore, 3);
+  return o.str();
+}
+
+std::wstring FormatPowerReadout(const CpuPowerSample &s) {
+  if (s.watts <= 0) return {};
+  std::wstring r = std::to_wstring((int)(s.watts + 0.5)) + L" W";
+  if (s.effMhz > 0) r += L" | eff " + std::to_wstring((int)(s.effMhz + 0.5)) + L" MHz";
+  if (s.tempC > 0) r += L" | " + std::to_wstring((int)(s.tempC + 0.5)) + L" C";
+  return r;
+}
 
 #if defined(_WIN32)
 namespace {
 std::mutex g_powerMutex;
 CpuPowerSample g_cachedPower;
-void PublishPower(double watts) {
+void PublishPower(CpuPowerSample sample) {
   std::lock_guard<std::mutex> lock(g_powerMutex);
-  g_cachedPower = watts > 0 ? CpuPowerSample{watts, GetTick()} : CpuPowerSample{};
+  if (sample.watts > 0) {
+    sample.tick = GetTick();
+    g_cachedPower = sample;
+  } else {
+    g_cachedPower = CpuPowerSample{};
+  }
 }
 HANDLE g_stopEvent = NULL; // manual-reset; signaled on shutdown
 std::thread g_powerThread;
@@ -74,16 +152,16 @@ bool InstallPawnIO() {
   return false;
 }
 
-double RunPowerReader() {
+CpuPowerSample RunPowerReader() {
   wchar_t lhmDir[MAX_PATH];
   GetModuleFileNameW(NULL, lhmDir, MAX_PATH);
   wchar_t *lastSlash = wcsrchr(lhmDir, L'\\');
-  if (!lastSlash) return -1.0;
+  if (!lastSlash) return {};
   wcscpy(lastSlash + 1, L"lhm");
 
   SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
   HANDLE hRead = NULL, hWrite = NULL;
-  if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return -1.0;
+  if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return {};
   SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
 
   STARTUPINFOW si = {sizeof(si)};
@@ -96,7 +174,7 @@ double RunPowerReader() {
                       &si, &pi)) {
     CloseHandle(hRead);
     CloseHandle(hWrite);
-    return -1.0;
+    return {};
   }
   CloseHandle(hWrite);
 
@@ -106,16 +184,27 @@ double RunPowerReader() {
     TerminateProcess(pi.hProcess, 1);
     WaitForSingleObject(pi.hProcess, 2000);
   }
-  char buf[64] = {};
-  DWORD totalRead = 0;
-  ReadFile(hRead, buf, sizeof(buf) - 1, &totalRead, NULL);
+  // Read until EOF: the line is short, but a pipe read may return it in pieces.
+  char buf[128] = {};
+  DWORD totalRead = 0, n = 0;
+  while (totalRead < sizeof(buf) - 1 &&
+         ReadFile(hRead, buf + totalRead, sizeof(buf) - 1 - totalRead, &n, NULL) && n > 0)
+    totalRead += n;
   CloseHandle(hRead);
   CloseHandle(pi.hProcess);
   CloseHandle(pi.hThread);
 
-  if (totalRead == 0) return -1.0;
-  double watts = atof(buf);
-  return (watts > 0 && watts < 1000) ? watts : -1.0;
+  CpuPowerSample sample;
+  if (totalRead == 0 || !ParsePowerReaderOutput(buf, sample)) return {};
+  return sample;
+}
+
+void LogSensorAvailability(const CpuPowerSample &s) {
+  std::wstring msg = L"Power: sensor OK (" + FormatPowerReadout(s) + L")";
+  if (s.effMhz <= 0) msg += L"; effective clock sensor unavailable";
+  if (s.tempC <= 0) msg += L"; temperature sensor unavailable";
+  if (s.vcore <= 0) msg += L"; core voltage sensor unavailable";
+  g_App.Log(msg);
 }
 
 void PowerThreadMain() {
@@ -133,20 +222,21 @@ void PowerThreadMain() {
     if (!InstallPawnIO()) return;
   }
   g_App.Log(L"Power: testing sensor read...");
-  double test = RunPowerReader();
-  if (test <= 0) {
-    g_App.Log(L"Power: sensor read failed (not admin or PawnIO not working)");
+  CpuPowerSample test = RunPowerReader();
+  if (test.watts <= 0) {
+    g_App.Log(L"Power: sensor read failed (not admin, PawnIO not working or unparsable "
+              L"PowerReader output)");
     return;
   }
   PublishPower(test);
-  g_App.Log(L"Power: sensor OK (" + std::to_wstring((int)test) + L" W)");
+  LogSensorAvailability(test);
   // Sample every 5 s until shutdown signals the stop event.
   bool failed = false;
   while (WaitForSingleObject(g_stopEvent, 5000) == WAIT_TIMEOUT) {
-    double watts = RunPowerReader();
-    PublishPower(watts);
-    if ((watts <= 0) != failed) {
-      failed = watts <= 0;
+    CpuPowerSample sample = RunPowerReader();
+    PublishPower(sample);
+    if ((sample.watts <= 0) != failed) {
+      failed = sample.watts <= 0;
       g_App.Log(failed ? L"Power: sensor read failed; cached sample invalidated"
                        : L"Power: sensor readings resumed");
     }
@@ -156,7 +246,7 @@ void PowerThreadMain() {
 
 void StartPowerMeasurement() {
   if (g_powerThread.joinable()) return;
-  PublishPower(-1.0);
+  PublishPower(CpuPowerSample{});
   if (!g_stopEvent) g_stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (!g_stopEvent) return;
   ResetEvent(g_stopEvent);

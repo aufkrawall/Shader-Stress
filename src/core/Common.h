@@ -508,11 +508,24 @@ uint64_t RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
 uint64_t RunComputeWorkload(WorkloadType type, uint64_t seed, int complexity);
 void RunPerfStats();
 double SampleCpuPackagePower();
+// One PowerReader reading. Fields other than watts are -1 when the sensor is
+// unavailable on this CPU (the reader prints -1 for them).
 struct CpuPowerSample {
   double watts = -1.0;
-  uint64_t tick = 0; // monotonic acquisition time, same clock as GetTick()
+  double effMhz = -1.0; // average effective core clock over the reader's window
+  double tempC = -1.0;  // CPU temperature (Tctl/Tdie on AMD, package on Intel)
+  double vcore = -1.0;  // core voltage (SVI2 TFN on AMD Zen 2/3)
+  uint64_t tick = 0;    // monotonic acquisition time, same clock as GetTick()
 };
 CpuPowerSample SampleCpuPower();
+// Parses PowerReader's "watts effMHz tempC vcoreV" line (locale-independent,
+// '.' decimals). Returns false unless watts is valid; malformed tokens such as
+// "121,3" reject the whole line. Leaves out.tick untouched.
+bool ParsePowerReaderOutput(const char *text, CpuPowerSample &out);
+// "Power sample: ..." log line consumed by scripts/power_measure.py.
+std::wstring FormatPowerSampleLog(const CpuPowerSample &s, uint64_t elapsedMs, uint64_t jobs);
+// Short live readout ("141 W | eff 4425 MHz | 81 C"), empty without watts.
+std::wstring FormatPowerReadout(const CpuPowerSample &s);
 void StartPowerMeasurement();
 void ShutdownPowerMeasurement();
 

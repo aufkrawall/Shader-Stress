@@ -240,8 +240,8 @@ static std::vector<std::string> BuildDashboardLines() {
   std::string perf = "Time: " + ToNarrow(FmtTime(g_App.elapsed.load())) + " | Jobs: " +
                      ToNarrow(FmtNum(g_App.shaders.load())) + " | Rate: " +
                      ToNarrow(FmtNum(g_App.currentRate.load())) + " jobs/s";
-  double watts = SampleCpuPackagePower();
-  if (watts > 0) perf += " | Power: " + std::to_string((int)watts) + " W";
+  std::wstring power = FormatPowerReadout(SampleCpuPower());
+  if (!power.empty()) perf += " | Power: " + ToNarrow(power);
   L.push_back(perf);
 
   if (mode == MODE_DYNAMIC) {

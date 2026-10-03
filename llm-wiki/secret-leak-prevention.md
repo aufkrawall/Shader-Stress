@@ -97,7 +97,8 @@ Optional second scanner: `trufflehog git file://. --max-depth=1 --no-verificatio
 - Local tool evidence: `tool-paths.env`, `debug-tool-manifest.json`,
   `debug-tool-warnings.txt`, `debug-tool-availability.md` (contain computer/user names)
 - Agent scratch/plans with absolute user paths (`.opencode/plans/`)
-- Power-sweep output (`sweep_results.csv`) and `audit/` reports unless explicitly requested
+- Power measurement output (`audit/power-measurements/`, baseline snapshots in
+  `audit/power-baselines/`, any `--csv` file outside `audit/`) unless explicitly requested
 
 Commits use the pseudonymous identity `ShaderStress Developer`; keep user names and
 absolute home-directory paths out of sources, docs and commit messages.

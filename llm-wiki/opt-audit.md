@@ -1,6 +1,6 @@
 # Power / Heat Design ("opt-audit")
 
-Last verified: 2026-10-03. Stale-risk: medium (defaults reasoned + single-thread measured; package power not yet measured; codegen verified by disassembly).
+Last verified: 2026-10-03. Stale-risk: medium (defaults reasoned + single-thread measured; package power not yet measured — see [power-ledger.md](power-ledger.md); codegen verified by disassembly).
 History before 3.6.0: [log/archive/opt-audit-2026-05-to-06.md](log/archive/opt-audit-2026-05-to-06.md) — its power comparisons are confounded (kernels ran on `inf`).
 
 ## Summary
@@ -78,26 +78,22 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
 
 ## Tuning / measuring
 
-Manual only (full CPU load, elevated terminal); never part of tests.
+Procedure, decision rules and tooling: [power-optimization.md](power-optimization.md);
+results and hypothesis backlog: [power-ledger.md](power-ledger.md). Manual only (full CPU
+load); never part of tests. Essentials:
 
-- `scripts/measure.ps1` (one executable) and `scripts/sweep_power.ps1` (builds x
-  `SYNTH_BUF_KIB` x `SYNTH_ROUNDS` grid; default `win-v3,zig-v3,msvc` x 64/128/256/512 KiB
-  x 2/4/8 rounds) wrap `scripts/power_measure.py`.
-- Defaults match the user's target scenario: `--mode benchmark` (fixed 180 s), 16 threads,
-  compute only (`--no-ram --no-io --no-decompress`), 30 s warmup, 3 repeats in a freshly
-  shuffled order per repeat (seeded), ISA list via `-ISA`/`-ISAs`.
-- Samples come from `Power sample: elapsed_ms=<acquisition tick - run start> watts=<x.y>
-  jobs=<n>` log lines (one per new 5 s sensor reading; readings older than 15 s are
-  dropped). Warmup is filtered by acquisition time, final-summary lines are ignored, and
-  a run is rejected on non-zero exit, < 3 samples, duplicate ticks, > 15 s sampling gaps
-  or no completed jobs. Each run keeps its own `ShaderStress.log` under
-  `audit/power-measurements/session-*/run-*`; the CSV records exe SHA-256 and evidence dir.
+- `scripts/power_measure.py` (wrappers `measure.ps1`, `sweep_power.ps1`) self-elevates via
+  UAC, runs the benchmark scenario (180 s, all logical CPUs, compute only, 30 s warmup),
+  interleaves baseline/candidates in shuffled order per repeat and reports paired deltas of
+  package power and effective clock (plus temperature, Vcore, jobs/s).
+- Samples come from `Power sample: ... watts= jobs= eff_mhz= temp_c= vcore_v=` log lines
+  (PowerReader 1 s window, ~5 s cadence, readings older than 15 s dropped); runs with
+  failures, < 3 samples or > 15 s gaps are rejected.
 - Golden values are computed at startup, so tuning builds verify themselves. After
   changing defaults, re-record golden checksums
   (`python tests/run_tests.py --stress --record-golden`).
-- Always record temperature, effective clock and PPT/TDC/EDC externally (same sensor
-  for all comparisons): the 5700X's specified max temperature is 90 C, so "stays below
-  90 C" can already mean thermal limiting.
+- The 5700X's specified max temperature is 90 C: runs near it are flagged as thermally
+  limited (power capped by cooling, not by the workload).
 
 ## Rejected / superseded
 
@@ -111,11 +107,9 @@ Manual only (full CPU load, elevated terminal); never part of tests.
 
 ## Open questions
 
-- Measure package power of the defaults on Zen 3 (5700X), a Raptor Lake system and a Zen 4/5 AVX-512 system; adjust `SYNTH_BUF_KIB`/`SYNTH_ROUNDS` per measurement.
-  User target on the 5700X (16 threads, benchmark): AVX2 140-150 W, SSE2 ("scalar
-  synthetic") 130-140 W, realistic sim ~115 W; reported before the SLP fix: AVX2 ~122 W.
-  Hypothesis to test first: smaller buffers (2 SMT threads x 512 KiB = 1 MiB per 512 KiB
-  L2), e.g. 128 KiB x 4 rounds.
-- If buffer/compiler tuning is insufficient: restructure the integer network's
-  cross-iteration dependencies (keep the per-block DIV and verification).
-- Consider per-CPU-family defaults if the optimum differs strongly.
+- Package power of the defaults is unmeasured; targets (5700X: scalar-sim >= ~115 W,
+  scalar >= ~135 W, AVX2 >= ~140-145 W) and the ordered hypotheses (compiler baseline,
+  SLP effect, buffer/rounds, idle Zen 3 FADD pipes, integer network dependencies, flags)
+  live in [power-ledger.md](power-ledger.md).
+- Raptor Lake and Zen 4/5 AVX-512 systems need their own measurements; consider
+  per-CPU-family defaults if the optimum differs strongly.

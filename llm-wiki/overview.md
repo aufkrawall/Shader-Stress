@@ -34,13 +34,13 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
 | `RamStress.cpp` / `IoStress.cpp` / `AuxStress.h` | Verified RAM and storage testers, pattern helpers |
 | `Watchdog.cpp` | Rates, benchmark minutes/hash, max duration, health log every 60 s |
 | `Platform.cpp` | Power request + 1 ms timer (Windows), throttling opt-out, FTZ/DAZ, crash handlers |
-| `PowerMeasure.cpp` | LHM `PowerReader.exe` package-power sampling (Windows, admin) |
+| `PowerMeasure.cpp` | LHM `PowerReader.exe` sampling of package power, effective clock, temperature, Vcore (Windows, admin); reader-line parser + `Power sample` log format |
 | `Cli.h`, `CliArgs.cpp`, `CliRun.cpp`, `ShaderStress.cpp` | CLI parsing/help/wizard, commands + dashboard, entry points |
 | `SelfTest.cpp` | `--self-test` in-binary unit tests |
 | `Gui.cpp` | Windows GDI UI |
 | `build.py` | Build orchestration (LLVM MinGW + Zig from `toolchains/`, optional native MSVC), sanitizers, symbols, archives |
 | `scripts/build_options.py` / `build_kernels.py` / `build_msvc.py` | Target table + aliases; non-LTO no-SLP kernel objects; MSVC discovery (manifest, vswhere, vcvarsall) and build |
-| `scripts/power_measure.py` (+ `measure.ps1`, `sweep_power.ps1`) | Manual elevated package-power measurement and buffer/rounds/compiler sweeps |
+| `scripts/power_measure.py` (+ `power_host.py`, `measure.ps1`, `sweep_power.ps1`) | Manual power measurement: UAC self-elevation, baseline snapshots, interleaved A/B + sweeps, paired-delta summaries ([power-optimization.md](power-optimization.md)) |
 | `scripts/kernel_codegen.py` | Static disassembly audit of the synthetic kernels (PDB + llvm-objdump) |
 | `tests/run_tests.py` | Test runner (lightweight / `--stress` smoke / `--sanitize`) |
 
@@ -67,7 +67,7 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
 
 ## Tests
 
-- `python tests/run_tests.py`: CLI contract, source invariants (incl. repo layout), build-option/MSVC command plans (mocked), power-log parser, kernel codegen audit of all built x64 Windows binaries, `--self-test`. Binaries run with cwd `bin/test-work/`.
+- `python tests/run_tests.py`: CLI contract, source invariants (incl. repo layout), build-option/MSVC command plans (mocked), power tooling (`tests/power_tool_tests.py`: log parser, A/B summary, snapshots, UAC relay helpers — no load, no elevation), kernel codegen audit of all built x64 Windows binaries, `--self-test`. Binaries run with cwd `bin/test-work/`.
 - `--stress`: bounded smoke runs (2 threads, 64 MiB RAM, 16 MiB I/O, <= 3 s) and golden checksums from `tests/golden_values.json` (x64; seed 42, complexity 1000); on AVX2 hosts also `--self-test` + golden checksums of the other built compilers (`x64-llvm-v3`, `x64-zig-v3`, `x64-msvc-v3`).
 - `--sanitize`: UBSan and ASan builds of `win-baseline` running `--self-test`, hash roundtrip and repro.
 
@@ -81,7 +81,7 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
 
 ## Open questions / stale-risk
 
-- Package power of the 3.6 kernels has not been measured yet (needs elevated `scripts/sweep_power.ps1` on the target CPUs); defaults (`SYNTH_BUF_KIB=512`, `SYNTH_ROUNDS=2`) are reasoned, not measured.
+- Package power of the 3.6 kernels has not been measured yet (procedure: [power-optimization.md](power-optimization.md)); defaults (`SYNTH_BUF_KIB=512`, `SYNTH_ROUNDS=2`) are reasoned, not measured.
 - AVX-512 kernel only compile-tested (no AVX-512 CPU available locally), including the MSVC build; `SYNTH_BLOCKS_AVX512` calibration is an estimate.
 - MSVC build: Windows x64 only, no ARM64/baseline/v4 variants, no sanitizer/PGO support.
 - Linux/macOS binaries are cross-compiled only; not executed in this environment.

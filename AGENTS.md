@@ -62,6 +62,7 @@
 - Do not disable features to avoid fixing bugs!
 - Regression unit tests, smoke tests etc. must not run the actual stresstest workloads, we do not want our program to cause heat and system load during development! The only exception are the bounded `--stress` smoke runs in `tests/run_tests.py` (seconds, <= 2 worker threads, 64 MiB RAM test, 16 MiB I/O file); never add full-thread or long-running stress to tests.
 - `RunRealisticCompilerSim_V3` (`src/workloads/WorkloadRealistic.cpp`) is user-pinned by a source-hash test: change it only for correctness (e.g. UB) and only when the golden checksum proves bit-identical output.
+- "Continue power draw optimization" (or any power/heat tuning of workloads, compilers or flags): follow `llm-wiki/power-optimization.md` and record every experiment, one change each, in `llm-wiki/power-ledger.md`.
 - Every compute result must stay bit-reproducible (strict IEEE FP, no `-ffast-math`, kernels behind one non-inlined dispatcher): the redundant cross-core verification depends on it.
 
 ## Build, diagnostics, and tests

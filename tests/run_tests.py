@@ -282,9 +282,10 @@ def test_invariant_lhm(b):
     hdr = _read("src/core/Common.h")
     main_src = _read("src/app/CliRun.cpp")
     check('L"lhm\\\\PawnIO_setup.exe"' in power and "ShutdownPowerMeasurement" in hdr and
-          "ShutdownPowerMeasurement()" in main_src and 'L"Power sample: elapsed_ms="' in _read("src/engine/Watchdog.cpp") and
-          '"lhm"' in _read("build.py"),
-          "LHM power readout wiring (lhm/ subfolder, shutdown, periodic log)")
+          "ShutdownPowerMeasurement()" in main_src and 'L"Power sample: elapsed_ms="' in power and
+          "FormatPowerSampleLog(power, " in _read("src/engine/Watchdog.cpp") and
+          "ParsePowerReaderOutput(buf, sample)" in power and '"lhm"' in _read("build.py"),
+          "LHM power readout wiring (lhm/ subfolder, shutdown, periodic log, reader parser)")
 
 
 def test_invariant_file_sizes(b):
@@ -389,38 +390,10 @@ def test_kernel_codegen(b):
 
 
 def test_power_measurement(b):
-    sys.path.insert(0, PROJECT_ROOT) if PROJECT_ROOT not in sys.path else None
-    from scripts.power_measure import summarize_samples, workload_args, parse_args
-    def sample(tick, watts, jobs):
-        return f"[23:59:59.000] Power sample: elapsed_ms={tick} watts={watts} jobs={jobs}"
-    lines = [sample(0, 20, 0), sample(10000, 30, 5)] + [
-        sample(t * 1000, w, t) for t, w in ((30000 // 1000, 120.2), (36, 122.4), (42, 124.6), (48, 122.4), (54, 120.2))]
-    log = "\n".join(lines + ["[00:00:01.000] Final CPU Package Power: 900 W", "CPU Power: 900 W"])
-    result = summarize_samples(log, 30, 60)
-    check(result["Samples"] == 5 and result["Watts"] == 121.96 and
-          result["JobsPerSecond"] == 1, "power warmup uses acquisition time; summaries excluded; decimals retained")
-    for label, text, code in (("failed workload", log, 5), ("missing samples", "", 0),
-                              ("duplicate reading", log + "\n" + lines[-1], 0),
-                              ("sensor outage", "\n".join(lines[:4] + [sample(58000, 120, 60)]), 0),
-                              ("no completed work", "\n".join(sample(t, 120, 1) for t in (30000, 36000, 42000, 48000, 54000)), 0)):
-        try:
-            summarize_samples(text, 30, 60, code)
-            rejected = False
-        except ValueError:
-            rejected = True
-        check(rejected, "power measurement rejects " + label)
-    args = workload_args("benchmark", 180, "avx2", 16)
-    check(all(x in args for x in ("--no-ram", "--no-io", "--no-decompress")) and
-          parse_args([]).duration == 180, "measurement defaults match 16-thread compute-only benchmark")
-    with contextlib.redirect_stderr(io.StringIO()):
-        for invalid in (["--duration", "60"], ["--buffers", "31"], ["--rounds", "0"],
-                        ["--threads", "0"], ["--warmup", "170"]):
-            try:
-                parse_args(invalid)
-                rejected = False
-            except SystemExit as error:
-                rejected = error.code == 2
-            check(rejected, "measurement rejects invalid arguments " + " ".join(invalid))
+    # Pure tooling tests (tests/power_tool_tests.py): no workload, no UAC elevation.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from power_tool_tests import run_power_tool_tests
+    run_power_tool_tests(check)
 
 
 LIGHTWEIGHT_TESTS = [

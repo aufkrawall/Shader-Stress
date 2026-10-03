@@ -300,6 +300,41 @@ void TestLz() {
   Check(HashBytes(d.data(), d.size()) != HashBytes(d.data(), d.size() - 1), "hash: length-sensitive");
 }
 
+// PowerReader line -> "Power sample" log line. The expected log line is also
+// parsed by tests/run_tests.py (test_power_measurement); keep them identical.
+void TestPowerReaderFormat() {
+  CpuPowerSample s;
+  bool ok = ParsePowerReaderOutput("141.3 4425 81.27 1.194\r\n", s);
+  Check(ok && s.watts == 141.3 && s.effMhz == 4425 && s.tempC == 81.27 && s.vcore == 1.194,
+        "power reader: watts, effective clock, temperature, vcore parsed");
+  Check(ToNarrow(FormatPowerSampleLog(s, 31000, 42)) ==
+            "Power sample: elapsed_ms=31000 watts=141.3 jobs=42 eff_mhz=4425 temp_c=81.3 "
+            "vcore_v=1.194",
+        "power sample log line format (contract with scripts/power_measure.py)",
+        ToNarrow(FormatPowerSampleLog(s, 31000, 42)));
+  CpuPowerSample old;
+  Check(ParsePowerReaderOutput("84.2", old) && old.watts == 84.2 && old.effMhz < 0 &&
+            old.tempC < 0 && old.vcore < 0 &&
+            ToNarrow(FormatPowerSampleLog(old, 5, 0)) ==
+                "Power sample: elapsed_ms=5 watts=84.2 jobs=0 eff_mhz=-1 temp_c=-1.0 "
+                "vcore_v=-1.000",
+        "power reader: watts-only line leaves other sensors unavailable");
+  CpuPowerSample missing;
+  Check(ParsePowerReaderOutput("97.5 -1 -1 -1", missing) && missing.watts == 97.5 &&
+            missing.effMhz < 0 && FormatPowerReadout(missing) == L"98 W",
+        "power reader: -1 marks an unavailable sensor");
+  CpuPowerSample bad;
+  bool rejected = true;
+  for (const char *line : {"121,3 4425 80 1.2", "121.3 4425,5 80 1.2", "-1 -1 -1 -1", "", "x",
+                           "141.3 4425 81 1.2 7", "1e3", "1200 4000 80 1.2"})
+    rejected = rejected && !ParsePowerReaderOutput(line, bad);
+  Check(rejected && bad.watts < 0,
+        "power reader: decimal comma, failures, extra fields and out-of-range watts rejected");
+  Check(FormatPowerReadout(s) == L"141 W | eff 4425 MHz | 81 C" &&
+            FormatPowerReadout(CpuPowerSample{}).empty(),
+        "power readout text");
+}
+
 void TestFormatting() {
   Check(MulHi64(0, UINT64_MAX) == 0 && MulHi64(UINT64_MAX, UINT64_MAX) == UINT64_MAX - 1 &&
         MulHi64(1ull << 63, 2) == 1 && MulHi64(0x123456789abcdef0ull, 16) == 1,
@@ -329,6 +364,7 @@ void TestFormatting() {
   Check(FmtBytes(1536) == L"1.5 KiB" && FmtBytes(3ull << 30) == L"3.00 GiB" &&
             FmtHex64(255) == L"0x00000000000000ff",
         "formatting helpers");
+  TestPowerReaderFormat();
   std::wstring hash = GenerateBenchmarkHash(1, 2, 3);
   HashResult hr = ValidateBenchmarkHash(hash);
   Check(hr.valid && hr.r0 == 1 && hr.r1 == 2 && hr.r2 == 3 &&

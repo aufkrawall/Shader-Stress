@@ -204,9 +204,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         activeISA + L"\nJobs Done: " + FmtNum(g_App.shaders) +
         L"\n\n--- Performance ---\nRate (Jobs/s): " + FmtNum(g_App.currentRate) +
         L"\nTime: " + FmtTime(g_App.elapsed);
-    double watts = SampleCpuPackagePower();
-    if (watts > 0)
-      part1 += L"\nCPU Package Power: " + std::to_wstring((int)watts) + L" W";
+    std::wstring power = FormatPowerReadout(SampleCpuPower());
+    if (!power.empty()) part1 += L"\nCPU Package Power: " + power;
 
     if (g_App.mode == MODE_DYNAMIC) {
       int ph = g_App.currentPhase.load();
