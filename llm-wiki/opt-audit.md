@@ -50,9 +50,12 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
 
 ## Build flags
 
-- Kept: `-O3 -funroll-loops -fno-strict-aliasing -flto -fno-stack-protector -fomit-frame-pointer`.
+- Kept: `-O3 -funroll-loops -flto -fstrict-aliasing -fno-stack-protector
+  -fomit-frame-pointer` (strict aliasing promoted to default by P007c: +1.9 W on the
+  realistic sim; type-punning through unrelated pointer types is UB — use memcpy).
 - Removed: `-ffast-math` (bit-reproducibility; no effect on intrinsic kernels or integer
-  workloads), `-fno-asynchronous-unwind-tables` (crash stacks; metadata only).
+  workloads), `-fno-asynchronous-unwind-tables` (crash stacks; metadata only),
+  `-fno-strict-aliasing` (P007c).
 - `-mprefer-vector-width=512` on v4 targets.
 - **Synthetic kernel objects** (`SynthKernels.cpp`, `SynthKernelsX86.cpp`) are compiled
   separately by `scripts/build_kernels.py`: same flags, but `-fno-lto -ffp-contract=off
@@ -72,8 +75,9 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
   `_mm512` intrinsics without `/arch:AVX512`. Golden checksums match the Clang builds (AVX2/SSE2/sim checked on the 5700X; AVX-512
   compile-tested only).
 - **One-setting comparison builds** (never packaged): `win-v3-nounroll` (no
-  `-funroll-loops`; until 2026-10-03 it also dropped `-fno-strict-aliasing`),
-  `win-v3-strictalias`, `win-v3-znver3` (`-mtune=znver3`), `win-v3-nolto`, `win-v3-slp`
+  `-funroll-loops`), `win-v3-strictalias-off` (pre-P007c `-fno-strict-aliasing`
+  default; `win-v3-strictalias` stays a compat alias), `win-v3-znver3`
+  (`-mtune=znver3`), `win-v3-nolto`, `win-v3-slp`
   (kernels with SLP, i.e. the old codegen), `zig-v3-nounroll`.
 
 ## Tuning / measuring

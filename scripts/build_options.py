@@ -34,7 +34,9 @@ BUILD_CONFIGS = [
 ]
 
 # Each comparison changes a single compiler setting; never package experiments.
-for variant in ("znver3", "nolto", "strictalias", "slp"):
+# ("strictalias" is the pre-P007c -fno-strict-aliasing default, kept as the
+# regression arm now that strict aliasing is the default.)
+for variant in ("znver3", "nolto", "strictalias-off", "slp"):
     BUILD_CONFIGS.append(("x86_64-windows-gnu", "bin/x64-llvm-v3-" + variant,
                           "x86_64_v3", True, "", True))
 
@@ -92,7 +94,7 @@ def print_help():
     print("  zig           - Windows Zig-built x64 and ARM64")
     print("  zig-v3        - Windows Zig-built x86_64_v3 only")
     print("  msvc / msvc-v3 - Native MSVC x64 AVX2 comparison (auto-detected by all)")
-    print("  win-v3-{nounroll,znver3,nolto,strictalias,slp} - One-setting comparisons")
+    print("  win-v3-{nounroll,znver3,nolto,strictalias-off,slp} - One-setting comparisons")
     print("  native        - Best target this machine can run")
     print("  experimental  - Comparison builds (win-v3-nounroll, zig-v3-nounroll)")
     print("Options:")
@@ -120,7 +122,8 @@ def select_configs(targets_requested):
     }
     aliases.update({Path(c[1]).name: [c[1]] for c in BUILD_CONFIGS})
     aliases.update({"win-v3-" + name: ["bin/x64-llvm-v3-" + name]
-                    for name in ("znver3", "nolto", "strictalias", "slp")})
+                    for name in ("znver3", "nolto", "strictalias-off", "slp")})
+    aliases["win-v3-strictalias"] = ["bin/x64-llvm-v3-strictalias-off"]  # renamed in P007c
     aliases.update({name: ["bin/x64-msvc-v3"] for name in ("msvc", "msvc-v3")})
     configs = []
     for t in targets_requested:

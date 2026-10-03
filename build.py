@@ -148,6 +148,9 @@ def common_cxx_flags(out_dir):
     -O3 with strict IEEE FP semantics (no -ffast-math): every result must be
     bit-reproducible across call sites and cores for the redundant job
     verification. Unwind tables are kept so crash dumps have usable stacks.
+    Strict aliasing is ON (no -fno-strict-aliasing): P007c measured +1.9 W on the
+    realistic sim from TBAA alone. Type-punning through unrelated pointer types
+    is therefore UB in this codebase — use memcpy or explicitly may_alias types.
     """
     flags = [
         "-std=c++20", "-O3",
@@ -166,7 +169,8 @@ def common_cxx_flags(out_dir):
         variant = variant.removesuffix(suffix)
     if not variant.endswith("-nounroll"):
         flags.append("-funroll-loops")
-    if not variant.endswith("-strictalias"):
+    if variant.endswith("-strictalias-off"):
+        # Regression arm: restores the pre-P007c -fno-strict-aliasing default.
         flags.append("-fno-strict-aliasing")
     if variant.endswith("-znver3"):
         flags.append("-mtune=znver3")

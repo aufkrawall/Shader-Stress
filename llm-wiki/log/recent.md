@@ -1,5 +1,24 @@
 # Recent Changes Log
 
+## 2026-10-03 — P007 flag trio done: strict aliasing +1.9 W sim (accepted), unroll/LTO noise
+
+- `win-v3-nounroll` and `win-v3-nolto` vs LLVM v3: all ISAs within noise (keep both
+  defaults — faster cycles at identical watts). `win-v3-strictalias`: scalar-sim
+  +1.9 W significant at the same clock, no thermal cap, others within noise —
+  accepted; jobs/s +25% too (more score AND more watts). Caution: enabling TBAA
+  makes the sim's `reinterpret_cast` alignment blocks TBAA-sensitive; sanitizers
+  re-run clean, but future edits near those casts must re-verify. Full tables in
+  the ledger. Next: P004/P005 kernel work, P008 PGO.
+
+## 2026-10-03 — P006 `-mtune=znver3`: rejected (only +1.7 W avx2, thermally capped)
+
+- `win-v3-znver3` vs LLVM v3 (3 ISAs, 5 repeats): sim/scalar within noise, avx2
+  +1.7 W — but both avx2 arms sat at 91+ C Tmax, so the delta may be cooler drift,
+  not workload current; never accept a thermally capped ISA without a benchmark-mode
+  retest. Screening (`--perf-stats`) had predicted the opposite direction (faster
+  avx2, slower sim/scalar), another warning. `znver3` stays a comparison build only.
+  Full table in the ledger. Next: P004/P005 kernel work, P007 flag trio for the sim.
+
 ## 2026-10-03 — P001 toolchain A/B: MSVC draws most on synthetics; evidence-dir ACL fix
 
 - First full-load A/B session ran (short mode, 3 toolchains x 3 ISAs x 5 repeats, ~15 min):

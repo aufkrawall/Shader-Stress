@@ -322,10 +322,10 @@ def test_build_comparisons(b):
     from scripts.build_options import select_configs
     base = set(build.common_cxx_flags("bin/x64-llvm-v3"))
     nounroll = set(build.common_cxx_flags("bin/x64-llvm-v3-nounroll"))
-    alias = set(build.common_cxx_flags("bin/x64-llvm-v3-strictalias"))
+    alias_off = set(build.common_cxx_flags("bin/x64-llvm-v3-strictalias-off"))
     zen = set(build.common_cxx_flags("bin/x64-llvm-v3-znver3"))
     check(base - nounroll == {"-funroll-loops"} and not nounroll - base and
-          base - alias == {"-fno-strict-aliasing"} and not alias - base and
+          alias_off - base == {"-fno-strict-aliasing"} and not base - alias_off and
           zen - base == {"-mtune=znver3"}, "comparison flags vary one setting at a time")
     check(any(c[0].endswith("-msvc") for c in select_configs(["all"])) and
           select_configs(["msvc"]) == select_configs(["x64-msvc-v3"]) and

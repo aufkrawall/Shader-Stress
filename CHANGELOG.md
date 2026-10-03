@@ -35,7 +35,7 @@ Target version: 3.6.0 (`VERSION`).
 - **Crash reports** on Windows (`Crash_*/crash_info.txt` with workload/seed/repro line plus a compact minidump) and richer crash output on Linux/macOS.
 - **Debug symbols** for release builds: `ShaderStress.pdb` (Windows) and `shaderstress.debug` (Linux), not included in the archives.
 - **Native MSVC comparison build** (`bin/x64-msvc-v3`): built by `python build.py` when Visual Studio's x64 C++ tools are installed (`python build.py msvc` requires them). Strict IEEE FP and bit-identical results to the Clang builds; not part of the release archives.
-- **Compiler comparison builds** that change exactly one setting: `win-v3-znver3`, `win-v3-nolto`, `win-v3-strictalias`, `win-v3-slp` (old kernel codegen), alongside `win-v3-nounroll` / `zig-v3-nounroll`.
+- **Compiler comparison builds** that change exactly one setting: `win-v3-znver3`, `win-v3-nolto`, `win-v3-strictalias-off` (pre-P007c `-fno-strict-aliasing` default; `win-v3-strictalias` stays a compat alias), `win-v3-slp` (old kernel codegen), alongside `win-v3-nounroll` / `zig-v3-nounroll`.
 - **Power measurement tooling** (`scripts/power_measure.py`, wrappers `scripts/measure.ps1`, `scripts/sweep_power.ps1`; manual only): runs short A/B runs (8 s warmup + 15 s window over continuous 1 s sensor readings) or the full 180 s benchmark on all logical CPUs, requests UAC elevation by itself for the sensor readout, compares a pinned baseline build against candidates in interleaved shuffled repeats and reports paired power and effective-clock differences with confidence intervals, sweeps buffer size x rounds across LLVM, Zig and MSVC builds without touching release binaries, refuses to measure on a busy system, filters warmup by sensor timestamp, rejects failed runs and sensor gaps, and keeps every run's log as evidence.
 - **Effective clock, temperature and core voltage readout** next to package power (log, CLI dashboard, GUI), e.g. `141 W | eff 4425 MHz | 81 C` (Windows, admin, via LibreHardwareMonitor). Readings are now continuous 1 s averages instead of a 1 s snapshot every ~6.5 s.
 - **Kernel codegen audit**: `python scripts/kernel_codegen.py` reports FMA count, vector width, divides and register spills of the synthetic kernels in built binaries.
@@ -52,6 +52,7 @@ Target version: 3.6.0 (`VERSION`).
 
 ### Changed
 
+- **Strict aliasing is now the default** (`-fno-strict-aliasing` removed): measured +1.9 W on the realistic sim at the same effective clock on a Ryzen 7 5700X (short A/B, 5 interleaved repeats, `--mode steady` all-compute; ledger P007c), with unchanged bit-identical results. Type-punning through unrelated pointer types is now UB — use `memcpy`.
 - **Strict IEEE floating point** (`-ffast-math` removed) so results are bit-reproducible across call sites and cores.
 - **Benchmark hashes** carry version 3.6. Scalar-sim (benchmark default) results stay comparable; AVX2/AVX-512/SSE2 jobs/s are not comparable with 3.5.x.
 - **GUI**: the redundant "Close" button is now "Core Cycle"; the ISA buttons are renamed to AVX-512 / AVX2 / SSE2 (or NEON) / Scalar (Realistic).

@@ -48,8 +48,8 @@ heavier per-cycle current, matching the boost/backoff model).
 | P003 | knob | Smaller buffer / more rounds: two SMT threads x 512 KiB overflow the 512 KiB L2; start with 128 KiB x 4 rounds (`--sweep`) | scalar, avx2 | accepted (keep 512x2 default: all alternatives lose 7-22 W) |
 | P004 | kernel | Zen 3 FADD pipes idle in the AVX2 kernel: butterflies issue only MUL/FMA (FP0/FP1), so FP2/FP3 sit idle; add independent norm-preserving add/sub work on live data (verify pipe mapping first) | avx2 (scalar shares the body) | open |
 | P005 | kernel | Integer network: the g0..g7 chains are serial across blocks (multiply+rotate latency, one 64-bit DIV); restructure for more independent GPR work, keep DIV + verification | scalar, avx2 | open |
-| P006 | flag | `-mtune=znver3` (`win-v3-znver3`) — mostly codegen of the realistic sim | all | open |
-| P007 | flag | `-funroll-loops` / LTO / strict aliasing one at a time (`win-v3-nounroll`, `-nolto`, `-strictalias`) for the realistic sim | scalar-sim | open |
+| P006 | flag | `-mtune=znver3` (`win-v3-znver3`) — mostly codegen of the realistic sim | all | rejected (+1.7 W avx2 at 91 C thermal cap — untrustworthy; sim/scalar within noise) |
+| P007 | flag | `-funroll-loops` / LTO / strict aliasing one at a time (`win-v3-nounroll`, `-nolto`, `-strictalias`) for the realistic sim | scalar-sim | done: nounroll + nolto rejected (noise); strictalias accepted (+1.9 W sim, no thermal cap) |
 | P008 | flag | PGO (`build.py --pgo-gen/--pgo-use`) for the realistic sim; needs a bounded profiling run design (no long full-load profiling) | scalar-sim | open |
 | P009 | kernel | Scalar integer network on MSVC: LLVM's scalar loop is 15% faster per block at 6 W less power — likely tighter GPR scheduling; try 2 independent DIV chains or unserializing g4..g7 on the LLVM baseline first (MSVC codegen may already do this) | scalar | open |
 | P010 | method | P002 follow-up: SLP spills cost no package power but +15-22% cycles — is the spill traffic L1-contained (no package-power effect expected)? Retry the SLP pair in benchmark mode if a future kernel change moves spill traffic off-chip | scalar, avx2 | open |
@@ -60,6 +60,139 @@ heavier per-cycle current, matching the boost/backoff model).
 Newest first. Copy the template.
 
 ```
+### P007c — strict aliasing on: +1.9 W scalar-sim, the sim's first real move (accepted)
+- Date: 2026-10-03. Type: flag.
+- Change (exactly one): `-fno-strict-aliasing` removed, i.e. strict aliasing enabled
+  (`bin/x64-llvm-v3-strictalias`). NOTE: this flips the TBAA contract for the whole
+  program — the realistic sim's `reinterpret_cast` alignment blocks (tree/table/pool,
+  `WorkloadRealistic.cpp:110-133`) become TBAA-sensitive. Bit-reproducibility held
+  (checksums identical, self-test 68/68 incl. UBSan/ASan in the pre-commit suite),
+  but any future edit near those casts must re-run the sanitizers.
+- Baseline: P002-llvm — measured on top of P007b (rejected).
+- Candidate(s): P007-strictalias.
+- Conditions: short mode (8 s warmup + 15 s window, 5 interleaved repeats, 30 s preheat
+  on P002-llvm avx2), all 3 ISAs, all 16 threads, background load 2.3-9.8% per run,
+  avx2 Tmax 91.6-92.1 C (thermal-limit flag set, all arms alike). Light browser load
+  by the user.
+- Command: python scripts/power_measure.py --label P007-strictalias --exe audit/power-baselines/P002-llvm/ShaderStress.com,audit/power-baselines/P007-strictalias/ShaderStress.com --baseline P002-llvm
+- Result:
+  | Candidate | ISA | Runs | W (SD) | dW vs base (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Vcore | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | P007-strictalias | scalar-sim | 5 | 112.3 (0.4) | +1.9 +-0.6 | 4459 | +0 +-3 | 82.0 | 1.236 | 5323 | better |
+  | P007-strictalias | scalar | 5 | 117.4 (0.7) | +0.0 +-1.1 | 4393 | +0 +-3 | 89.0 (thermal limit) | 1.182 | 258 | inconclusive |
+  | P007-strictalias | avx2 | 5 | 127.8 (0.6) | +0.1 +-1.0 | 4268 | +0 +-8 | 92.0 (thermal limit) | 1.145 | 250 | inconclusive |
+  | P002-llvm | scalar-sim | 5 | 110.3 (0.2) | - | 4459 | - | 82.0 | 1.238 | 4253 | baseline |
+  | P002-llvm | scalar | 5 | 117.4 (0.5) | - | 4393 | - | 89.1 (thermal limit) | 1.183 | 259 | baseline |
+  | P002-llvm | avx2 | 5 | 127.6 (0.8) | - | 4267 | - | 92.1 (thermal limit) | 1.144 | 249 | baseline |
+- Verdict: accepted for scalar-sim — +1.9 W, significant (CI +-0.6), same effective
+  clock, no thermal cap (82 C), and not worse on any other ISA (both within noise).
+  TBAA lets the sim's hash/tree/bit-vector loops keep values in registers instead of
+  re-loading through `char*` buffers. jobs/s jumps 4253→5323 (+25%): the sim does
+  more work per second at the same clock — this one genuinely raises benchmark score
+  AND watts. The flag trio is done: nounroll/nolto = noise, strictalias = +1.9 W sim.
+- Side effects: golden checksums identical (bit-reproducibility intact); self-test
+  68/68; `--perf-stats` screening sim 949→587 (-38% cycles/block).
+- Evidence: audit/power-measurements/P007-strictalias-20261003-185143-2372-00/ (local).
+- Follow-ups: P008 PGO may stack (different mechanism); kernel work P004/P005 next.
+  Re-verify TBAA-sensitive casts under sanitizers after any sim-adjacent edit.
+```
+
+### P007b — LTO off: no power effect anywhere (rejected, keep `-flto`)
+- Date: 2026-10-03. Type: flag.
+- Change (exactly one): `-flto` removed (`bin/x64-llvm-v3-nolto`).
+- Baseline: P002-llvm — measured on top of P007-nounroll (rejected).
+- Candidate(s): P007-nolto.
+- Conditions: short mode (8 s warmup + 15 s window, 5 interleaved repeats, 30 s preheat
+  on P002-llvm avx2), all 3 ISAs, all 16 threads, background load 1.9-9.8% per run,
+  avx2 Tmax up to 92.0 C (thermal-limit flag set, all arms alike). Light browser load
+  by the user.
+- Command: python scripts/power_measure.py --label P007-nolto --exe audit/power-baselines/P002-llvm/ShaderStress.com,audit/power-baselines/P007-nolto/ShaderStress.com --baseline P002-llvm
+- Result:
+  | Candidate | ISA | Runs | W (SD) | dW vs base (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Vcore | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | P007-nolto | scalar-sim | 5 | 108.7 (2.2) | -0.5 +-0.8 | 4470 | +7 +-11 | 81.9 | 1.240 | 3991 | inconclusive |
+  | P007-nolto | scalar | 5 | 117.7 (0.8) | +0.3 +-0.3 | 4391 | -2 +-6 | 89.1 (thermal limit) | 1.188 | 265 | inconclusive |
+  | P007-nolto | avx2 | 5 | 128.1 (0.8) | -0.1 +-0.1 | 4271 | +2 +-3 | 92.0 (thermal limit) | 1.143 | 252 | inconclusive |
+  | P002-llvm | scalar-sim | 5 | 109.2 (1.9) | - | 4463 | - | 82.3 | 1.234 | 4143 | baseline |
+  | P002-llvm | scalar | 5 | 117.4 (0.7) | - | 4393 | - | 89.1 (thermal limit) | 1.185 | 262 | baseline |
+  | P002-llvm | avx2 | 5 | 128.1 (0.8) | - | 4269 | - | 92.0 (thermal limit) | 1.142 | 251 | baseline |
+- Verdict: rejected — same story as nounroll: all deltas far below 1 W, clocks within
+  CI. LTO's cross-TU inlining/optimization changes `--perf-stats` cycles without
+  touching package power. Keep the `-flto` default.
+- Side effects: jobs/s within noise; golden checksums identical.
+- Evidence: audit/power-measurements/P007-nolto-20261003-183542-25264-00/ (local).
+- Follow-ups: `-strictalias` arm last of the trio.
+```
+
+### P007 — loop unrolling off: no power effect anywhere (rejected, keep `-funroll-loops`)
+- Date: 2026-10-03. Type: flag.
+- Change (exactly one): `-funroll-loops` removed (`bin/x64-llvm-v3-nounroll`;
+  single-setting variant since the 2026-10-03 comparison-build fix — no longer also
+  drops `-fno-strict-aliasing`).
+- Baseline: P002-llvm — measured on top of P006 (rejected).
+- Candidate(s): P007-nounroll (`--baseline P002-llvm`).
+- Conditions: short mode (8 s warmup + 15 s window, 5 interleaved repeats, 30 s preheat
+  on P002-llvm avx2), all 3 ISAs, all 16 threads, background load 2.5-9.8% per run,
+  avx2 Tmax 90.9-91.9 C (thermal-limit flag set, all arms alike). Light browser load
+  by the user.
+- Command: python scripts/power_measure.py --label P007-nounroll --exe audit/power-baselines/P002-llvm/ShaderStress.com,audit/power-baselines/P007-nounroll/ShaderStress.com --baseline P002-llvm
+- Result:
+  | Candidate | ISA | Runs | W (SD) | dW vs base (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Vcore | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | P007-nounroll | scalar-sim | 5 | 109.1 (0.8) | +0.0 +-1.9 | 4458 | -3 +-7 | 82.0 | 1.238 | 4167 | inconclusive |
+  | P007-nounroll | scalar | 5 | 116.9 (0.2) | -0.4 +-0.3 | 4392 | -1 +-2 | 88.8 | 1.183 | 259 | inconclusive |
+  | P007-nounroll | avx2 | 5 | 127.6 (0.6) | +0.1 +-1.4 | 4271 | +1 +-3 | 91.8 (thermal limit) | 1.144 | 248 | inconclusive |
+  | P002-llvm | scalar-sim | 5 | 109.1 (0.8) | - | 4461 | - | 81.8 | 1.232 | 4212 | baseline |
+  | P002-llvm | scalar | 5 | 117.3 (0.2) | - | 4393 | - | 89.0 (thermal limit) | 1.189 | 260 | baseline |
+  | P002-llvm | avx2 | 5 | 127.5 (0.8) | - | 4270 | - | 91.9 (thermal limit) | 1.144 | 250 | baseline |
+- Verdict: rejected — all three ISAs within noise (largest: -0.4 W scalar, below the
+  1 W threshold; clocks within CI). Loop unrolling moves `--perf-stats` cycles
+  (-19% sim) without moving package power: the sim's extra unrolled integer work
+  retires in otherwise-idle issue slots. Keep the `-funroll-loops` default (faster
+  at identical watts = more score per watt, same argument as P002).
+- Side effects: jobs/s within noise (sim 4167 vs 4212, scalar 259 vs 260, avx2 248
+  vs 250); golden checksums identical.
+- Evidence: audit/power-measurements/P007-nounroll-20261003-181846-31080-00/ (local).
+- Follow-ups: `-nolto` / `-strictalias` arms next, one at a time.
+```
+
+### P006 — `-mtune=znver3`: +1.7 W avx2 only, thermally capped (rejected)
+- Date: 2026-10-03. Type: flag.
+- Change (exactly one): `-mtune=znver3` for the main (non-kernel) objects
+  (`bin/x64-llvm-v3-znver3`; kernel objects compile with the same command line but
+  are intrinsic-fixed — codegen audit confirms 48 FMA / 0 spills, unchanged).
+- Baseline: P002-llvm (LLVM v3, same commit + tooling fix) — measured on top of P003.
+- Candidate(s): P006-znver3 (`--baseline P002-llvm`).
+- Conditions: short mode (8 s warmup + 15 s window, 5 interleaved repeats, 30 s preheat
+  on P002-llvm avx2), all 3 ISAs, all 16 threads, background load 1.7-9.7% per run,
+  avx2 Tmax 90.8-91.4 C (thermal-limit flag set, all arms alike). Light browser load
+  by the user.
+- Command: python scripts/power_measure.py --label P006-znver3 --exe audit/power-baselines/P002-llvm/ShaderStress.com,audit/power-baselines/P006-znver3/ShaderStress.com --baseline P002-llvm
+- Result:
+  | Candidate | ISA | Runs | W (SD) | dW vs base (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Vcore | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | P006-znver3 | scalar-sim | 5 | 109.8 (1.4) | +0.6 +-1.7 | 4453 | -8 +-7 | 82.6 | 1.227 | 4195 | inconclusive |
+  | P006-znver3 | scalar | 5 | 117.6 (1.4) | +0.8 +-1.9 | 4388 | -8 +-6 | 89.3 (thermal limit) | 1.181 | 275 | inconclusive |
+  | P006-znver3 | avx2 | 5 | 128.9 (1.2) | +1.7 +-0.9 | 4271 | -7 +-8 | 91.3 (thermal limit) | 1.141 | 252 | better |
+  | P002-llvm | scalar-sim | 5 | 109.2 (1.0) | - | 4461 | - | 82.0 | 1.239 | 4188 | baseline |
+  | P002-llvm | scalar | 5 | 116.8 (1.1) | - | 4396 | - | 88.5 | 1.185 | 258 | baseline |
+  | P002-llvm | avx2 | 5 | 127.2 (0.9) | - | 4279 | - | 91.4 (thermal limit) | 1.146 | 251 | baseline |
+- Verdict: rejected — the only significant delta (+1.7 W avx2) contradicts the
+  `--perf-stats` screening (avx2 -15% cycles/block on znver3, i.e. faster yet hotter)
+  and comes with avx2 Tmax pinned at 91+ C on both arms: at the thermal limit the
+  +1.7 W may be cooler/fan drift rather than workload current (paired repeats cancel
+  slow drift, but both arms throttle). Rule: never accept on a thermally capped ISA
+  without a benchmark-mode retest. scalar-sim and scalar are within noise despite the
+  screening predicting a loss — codegen scheduling differences do not move package
+  power here. The `znver3` variant stays a comparison build only.
+- Side effects: jobs/s within noise (sim 4195 vs 4188, scalar 275 vs 258 — the +17
+  jobs/s is inside run-to-run spread, avx2 252 vs 251); golden checksums identical;
+  codegen: scalar kernel 651→761 insns (unrolled differently), FMAs unchanged.
+- Evidence: audit/power-measurements/P006-znver3-20261003-180232-32496-00/ (local).
+- Follow-ups: retry only together with better cooling or in benchmark mode (P000);
+  next: P004/P005 kernel work, P007 unroll/LTO/aliasing for the sim.
+```
+
 ### P003 — buffer x rounds sweep: the 512 KiB x 2 default wins decisively (accepted = keep default)
 - Date: 2026-10-03. Type: knob.
 - Change (exactly one per arm): `SYNTH_BUF_KIB` x `SYNTH_ROUNDS` via `--sweep`

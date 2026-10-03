@@ -59,7 +59,7 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
 - Symbols: Windows PDB (`-g -gcodeview -Wl,--pdb=`), Linux split `shaderstress.debug`, macOS stripped.
 - Release targets (13): x64 baseline/v3/v4 + ARM64 for Windows (LLVM MinGW), x64/v3/ARM64 Windows (Zig), Linux x64/v3/v4/ARM64, macOS x64/ARM64.
 - `bin/x64-msvc-v3`: native MSVC comparison build, part of `all`/`windows` when VS C++ x64 tools are found (skipped otherwise and for `--sanitize`/PGO; error when requested explicitly via `msvc`); never archived. Discovery: `debug-tool-manifest.json`, then `vswhere`, then an existing x64 developer shell.
-- `experimental` = one-setting comparison builds (`win-v3-{nounroll,znver3,nolto,strictalias,slp}`, `zig-v3-nounroll`); every `bin/<dir>` name is also a target alias.
+- `experimental` = one-setting comparison builds (`win-v3-{nounroll,znver3,nolto,strictalias-off,slp}`, `zig-v3-nounroll`; `win-v3-strictalias` is a compat alias for `strictalias-off`); every `bin/<dir>` name is also a target alias.
 - `SHADERSTRESS_EXTRA_DEFINES` builds go to `<out>-tuning` without archives.
 - `--sanitize[=address|thread]` builds go to `<out>-ubsan|-asan|-tsan` (Windows: console subsystem, ASan runtime DLLs copied).
 - v3/v4 builds start in `CpuGuard.cpp` (Windows PE `--entry ShaderStressGuardedEntry`, Linux priority-101 constructor; baseline-only code via `target("arch=x86-64")`) and exit 3 with a message on CPUs lacking the ISA level.
