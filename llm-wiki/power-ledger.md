@@ -42,7 +42,8 @@ Status: `open`, `running`, `accepted`, `rejected`, `inconclusive`, `retry` (wort
 re-testing after a baseline change). Take the next free ID for new ideas.
 Baselines are experiment-specific: P001 favored MSVC for the old synthetics and
 LLVM for the realistic sim; P004 and P005 use LLVM v3. No compiler or knob set
-is established as globally optimal, and P012 must recheck the post-P004 ranking.
+is established as globally optimal. P012 rechecked the one-round ranking and
+favored LLVM over MSVC for realistic/scalar; current Zig ranking remains open.
 LLVM v3 stays the release baseline. P009's historical mechanism note (2026-10-03, from
 `kernel_codegen.py` + `--perf-stats` on the unchanged ebc7357 builds, no load):
 all three toolchains emit 48 explicit FMAs with no wide spills in
@@ -60,18 +61,120 @@ heavier per-cycle current, matching the boost/backoff model).
 | P005 | kernel | Remove the divider-result feedback into the multiply network: g3 XORs g4 instead of g7; retain the per-block DIV and all eight checksum states | scalar, avx2 | inconclusive (not retained; scalar -0.1 +-2.2 W, AVX2 +0.8 +-2.2 W) |
 | P006 | flag | `-mtune=znver3` (`win-v3-znver3`) — mostly codegen of the realistic sim | all | rejected (+1.7 W avx2 at 91 C thermal cap — untrustworthy; sim/scalar within noise) |
 | P007 | flag | `-funroll-loops` / LTO / strict aliasing one at a time (`win-v3-nounroll`, `-nolto`, `-strictalias`) for the realistic sim | scalar-sim | done: nounroll + nolto rejected (noise); strictalias accepted (+1.9 W sim, no thermal cap) |
-| P008 | flag | PGO (`build.py --pgo-gen/--pgo-use`) for the realistic sim; needs a bounded profiling run design (no long full-load profiling) | scalar-sim | open |
+| P008 | flag | PGO (`build.py --pgo-gen/--pgo-use`) with bounded single-thread repro training, same pinned realistic source and checksums | all (main-program flag) | inconclusive (not retained as default; all power changes within noise) |
 | P009 | kernel | Scalar integer network on MSVC: LLVM's scalar loop is 15% faster per block at 6 W less power — likely tighter GPR scheduling; try 2 independent DIV chains or unserializing g4..g7 on the LLVM baseline first (MSVC codegen may already do this) | scalar | open |
 | P010 | method | P002 follow-up: SLP spills cost no package power but +15-22% cycles — is the spill traffic L1-contained (no package-power effect expected)? Retry the SLP pair in benchmark mode if a future kernel change moves spill traffic off-chip | scalar, avx2 | open |
 | P003b | knob | Retry only if the kernel bottleneck moves: 256 KiB x 2 rounds (between L2-fit and the winning 512x2 default) | scalar, avx2 | open |
 | P011 | knob | Test the missing direction from P003: one butterfly round instead of two, with the 512 KiB buffer unchanged; more streaming/integer work per FP operation may raise package power | scalar, avx2 | accepted (+16.1 +-1.9 W scalar; +11.4 +-10.2 W AVX2 benchmark) |
-| P012 | compiler | Recheck current LLVM vs MSVC after P004; the pre-FADD toolchain ranking is conditional on the old kernel, and all three modes must be assessed in each binary | all | open |
+| P012 | compiler | Recheck current LLVM vs MSVC after P011; the old toolchain ranking is conditional on the old kernel, and all three modes must be assessed in each binary | all | rejected (MSVC -3.6 W realistic, -1.9 W scalar; old ranking reversed) |
 | P013 | method | Add optional run-seed control so paired builds can use the same job/input stream; currently `ResetVerification()` samples the clock for each process. Investigate P011 startup variation without attributing it to seed or layout prematurely | all | open |
-| P014 | method | Record process/worker CPU occupancy during the window to distinguish compute saturation from CPU time taken by background processes; pre-run background load alone does not establish occupancy during the run | all | open |
+| P014 | method | Record process/worker CPU occupancy during the window to distinguish compute saturation from CPU time taken by background processes; pre-run background load alone does not establish occupancy during the run | all | partial (local P008/P012 diagnostic collected; integrated tooling and old-outlier explanation open) |
+| P015 | knob | Test 1024 KiB instead of 512 KiB at one round: more L3 streaming may raise scalar synthetic power; the realistic source remains unchanged | scalar, avx2 | open |
+| P016 | flag | Request 64-byte loop alignment versus compiler default (`-falign-loops=64`); preserve instructions/checksums and measure front-end effects rather than assuming a benefit | all | open |
+| P017 | compiler | Recheck Zig on the one-round kernel against current LLVM; P001's old-kernel tie cannot establish the current ranking | all | open |
 
 ## Entries
 
 Newest first. Copy the template.
+
+### P012 — native MSVC versus LLVM on the one-round kernel (rejected)
+- Date: 2026-10-04. Type: compiler.
+- Change (exactly one): native MSVC toolchain versus LLVM MinGW, same source
+  at 071538f. Baseline P008-base, candidate P012-msvc, both clean snapshots.
+- Screening: 14/14 release builds and 161/161 full tests including cross-toolchain
+  goldens; one-round wide loops retain eight FMAs, one DIV and no wide spills.
+- Plan: combine P012 with P008's short session, each arm compared only to the
+  shared LLVM baseline (five paired repeats, all three modes). Confirm any
+  accepted candidate in benchmark mode; no assumed transfer of P001 ranking.
+- Result: five paired short repeats, all 16 workers:
+  | Candidate | ISA | W (SD) | dW (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|
+  | P012-msvc | scalar-sim | 110.3 (0.6) | -3.6 +-1.4 | 4494 | -3 +-7 | 82.1 | 4048 | worse |
+  | P012-msvc | scalar | 132.9 (1.1) | -1.9 +-1.4 | 4403 | +6 +-3 | 89.6 | 416 | worse |
+  | P012-msvc | avx2 | 146.5 (1.7) | -1.6 +-2.4 | 4265 | +46 +-29 | 93.0 | 376 | tie-break worse |
+- Verdict: rejected as a replacement for current LLVM. The P001 synthetic
+  toolchain ranking does not transfer to the P011 kernel; no MSVC power claim
+  is accepted. Native MSVC remains a supported comparison build.
+- Conditions/evidence/baseline table shared with P008 below; checksums unchanged.
+
+### P008 — profile-guided LLVM compilation on top of P011 (inconclusive, not default)
+- Date: 2026-10-04. Type: flag.
+- Change (exactly one): enable LLVM profile-use compilation for the main program
+  including the realistic sim; no workload source edits. Non-LTO synthetic objects
+  retain their usual strict-FP flags and exclude profile generation/use.
+- Baseline: P008-base, clean LLVM v3 snapshot at 071538f, on top of P011/P004/P007c.
+- Profiling plan: existing `--pgo-gen win-v3`; twelve sequential, single-thread
+  `--repro` jobs (seeds 7/42/123456789, realistic complexities 5000/15000/100000/500000),
+  plus scalar/AVX2 repro at seed 42, complexity 1000. Each repro executes twice;
+  no worker pool or long full-load profiling. Merge only this session's raw profiles
+  with installed `llvm-profdata`, then `--pgo-use win-v3`.
+- Gates: all existing goldens unchanged, self-test and screening tests; no power
+  decision from throughput. Five paired short repeats across all three modes,
+  followed by benchmark confirmation if better without regressions.
+- Evidence: local `audit/P008-*` build/training logs and profile files; final power
+  session path below. The trained profile is local generated evidence, not committed.
+- Training completed: 14 repro processes in 3.67 s; merged profile has 399
+  functions and 5171 blocks. Raw profiles and training log retained locally.
+- Initial whole-program PGO screening: 145/145 tests, unchanged goldens; not
+  power-measured. Compiler warned that explicitly hot AVX-512 was cold in this
+  AVX2-host profile. Refined scope before measuring: exclude profiling of native
+  synthetic objects (regression tests cover both generation/use, preserving main
+  flags, strict FP, symbols and optimization). Re-train the narrowed profile.
+- Narrowed training: 14 repro processes in 2.54 s, 382 functions / 5099 blocks;
+  `audit/P008b-training.log`, `audit/P008b-profiles/`. Generation/use builds have
+  no warnings. Full verification after scope fix: 14/14 release targets,
+  `python tests/run_tests.py --stress --sanitize` 163/163. Candidate P008-pgo-main
+  is a dirty snapshot at 071538f (build-scope fix, tests and documentation only).
+- Shared short command for P008/P012: `python scripts/power_measure.py --label P008-P012-screen --exe audit/power-baselines/P008-base/ShaderStress.com,audit/power-baselines/P008-pgo-main/ShaderStress.com,audit/power-baselines/P012-msvc/ShaderStress.com --baseline P008-base`.
+- Supplementary P014 diagnosis: local read-only process CPU-time sampling at
+  approximately one second, normalized to 16 logical CPUs, during this session.
+  Does not alter scheduling, affinity or power settings. Log in
+  `audit/P014-occupancy.csv`; no occupancy cause inferred without correlation.
+- Static screening of realistic code (P008-base / P008-pgo-main / P012-msvc):
+  4900/5074/3288 bytes, 1110/1129/829 instructions, 103/109/62 branch instructions.
+  LLVM emits no indirect jump in this routine; MSVC emits one. Thus blindly
+  adding `-fno-jump-tables` to LLVM is not a supported next mechanism here.
+  These counts do not prove dynamic utilization or watts. Local audit:
+  `audit/P015-sim-audit.py` and `audit/P015-*-realistic.asm`.
+- Result: five paired short repeats, all 16 workers:
+  | Candidate | ISA | W (SD) | dW (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|
+  | P008-pgo-main | scalar-sim | 113.7 (0.7) | -0.2 +-1.0 | 4493 | -3 +-5 | 81.5 | 5436 | inconclusive |
+  | P008-pgo-main | scalar | 134.6 (0.5) | -0.2 +-0.8 | 4395 | -1 +-5 | 90.8 | 496 | inconclusive |
+  | P008-pgo-main | avx2 | 148.3 (1.0) | +0.3 +-2.2 | 4222 | +4 +-11 | 93.6 | 442 | inconclusive |
+  | P008-base | scalar-sim | 113.9 (1.0) | - | 4496 | - | 81.5 | 5523 | baseline |
+  | P008-base | scalar | 134.8 (0.8) | - | 4397 | - | 90.9 | 500 | baseline |
+  | P008-base | avx2 | 148.0 (1.9) | - | 4219 | - | 94.1 | 445 | baseline |
+- Verdict: inconclusive, no PGO power improvement established; restore normal
+  compilation. Ten-pair retest needed before reconsidering a close result.
+  Retain the independent PGO build-scope correction because it prevents a
+  host profile from overriding unsupported kernels' hot placement. This is a
+  build correctness/portability improvement, not a measured power improvement.
+- Conditions: Windows Balanced, cooler/fan/ambient unknown, 45/45 completed runs,
+  pre-run background 1.6-9.8%, 13-14 readings/window, 30 s baseline preheat,
+  conservative temperature flags on synthetics. Light browser load authorized.
+- Evidence: `audit/power-measurements/P008-P012-screen-20261004-073513-7804-00/`.
+  Generation/use scope logs and full tests in `audit/P008*-build.log` and
+  `audit/P008-scope-full-tests.log`. Final normal rebuild after diagnostics:
+  14/14 targets, 13 archives; `python tests/run_tests.py --stress --sanitize`
+  163/163 (`audit/P008-final-full-tests.log`). Rebuilt LLVM v3 `.text` is
+  byte-identical to measured P011; final restored release artifact confirmed.
+- P014 correlation (read-only process CPU-time samples matched to power-window
+  log timestamps): mean CPU occupancy by realistic/scalar/AVX2 was LLVM baseline
+  95.90/95.76/95.67%, PGO 95.89/95.08/94.75%, MSVC 95.57/96.32/94.38%.
+  Individual ranges 90.52-97.29%; the 90.52% AVX2 run still drew 148.1 W.
+  Package power covers other processes too; do not normalize watts by occupancy.
+  No earlier 111-126 W AVX2 cluster reproduced, so its cause remains unknown.
+  Evidence: `audit/P014-occupancy.csv`, `audit/P014-correlated.csv`.
+- Method caution: realistic short mean 113.9 W differs materially from P011's
+  106.8 W benchmark mean. Pinned source initializes buffers every job; fixed
+  12k short jobs versus the benchmark's large-job mixture change that proportion.
+  This is a plausible contributor, not a controlled proof of the entire gap.
+  Short averages cannot establish the requested absolute targets.
+- Regression proof: the two profile-boundary assertions fail against the
+  pre-fix `compile_kernels` and pass after it (executed with mocked compilers).
+  Profile builds now explicitly log main/native profiling scope; no hot-loop
+  runtime logging added. Next experiments: P015 streaming size, P016 alignment.
 
 ### P011 — one butterfly round with the unchanged 512 KiB buffer (accepted)
 - Date: 2026-10-03. Type: knob.

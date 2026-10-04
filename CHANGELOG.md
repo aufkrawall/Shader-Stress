@@ -6,6 +6,7 @@ Target version: 3.6.0 (`VERSION`).
 
 ### Fixed
 
+- **Profile-guided builds:** keep native synthetic ISA kernels independent of host-specific profiles. Training on an AVX2 host no longer marks the unsupported AVX-512 kernel cold against its explicit hot annotation; the main program and realistic workload retain profiling.
 - **Synthetic AVX2/AVX-512/SSE2 kernels no longer run on infinity.** Their values overflowed to `inf` within the first ~0.05-0.16% of every job, so the FMA units spent >99.8% of the run on constant data (minimal switching) and computation errors were absorbed instead of detected. The scalar kernel's integer chains also collapsed to zero. The new kernels stay bounded with full-entropy mantissas (verified by `--self-test` and `--perf-stats`).
 - **Most work was never checked for errors.** Only ~1% of compute jobs were compared against golden values; decompression, RAM and I/O results were not checked at all.
 - **Dynamic mode load steps were blurred.** Idle workers polled every 1 ms (up to ~15 ms on default Windows timers) and running jobs could not be interrupted, so 50/100/500 ms on/off patterns did not produce sharp transients.

@@ -56,6 +56,11 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
 - Windows: LLVM MinGW 20260519 (LLVM 22) and Zig 0.15.2 variants; Linux/macOS: Zig.
 - Flags: `-std=c++20 -O3 -fno-math-errno -funroll-loops -fno-rtti -fno-exceptions -fno-stack-protector -fomit-frame-pointer -flto` (no LTO on macOS; strict aliasing is ON since P007c — see [power-ledger.md](power-ledger.md), so type-punning through unrelated pointer types is UB). **No `-ffast-math`** (bit-reproducibility).
 - Synthetic kernel sources are compiled as separate native objects (`-fno-lto -ffp-contract=off -fno-slp-vectorize`, `scripts/build_kernels.py`) so SLP cannot pack the integer chains into vector registers (see [opt-audit.md](opt-audit.md)).
+- PGO generation/use applies to main code, including the pinned realistic sim;
+  native synthetic objects exclude both profile flags so training on one ISA
+  host cannot change unsupported kernels' hot/cold placement. The main command
+  retains its profile flags. P008 power changes were within noise; PGO is not
+  the default. P012 rejects replacing current LLVM with MSVC on power grounds.
 - Symbols: Windows PDB (`-g -gcodeview -Wl,--pdb=`), Linux split `shaderstress.debug`, macOS stripped.
 - Release targets (14): x64 baseline/v3/v4 + ARM64 for Windows (LLVM MinGW), x64/v3/ARM64 Windows (Zig), Linux x64/v3/v4/ARM64, macOS x64/ARM64, plus native MSVC v3 (`bin/x64-msvc-v3`, Windows-only) when VS C++ x64 tools are found.
 - `bin/x64-msvc-v3`: native MSVC comparison build, part of `all`/`windows` when VS C++ x64 tools are found (skipped otherwise and for `--sanitize`/PGO; error when requested explicitly via `msvc`); never archived. Discovery: `debug-tool-manifest.json`, then `vswhere`, then an existing x64 developer shell.
@@ -86,7 +91,7 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
   131.3 W (+16.1 W), AVX2 139.4 W (+11.4 W). AVX2 has unexplained low runs;
   seven of ten sustain 146.9-148.6 W. Targets remain unmet. SLP-free kernels,
   strict aliasing, `-funroll-loops` and LTO remain. Earlier MSVC ranking applies
-  to an older kernel; P012 must recheck it. Procedure/history: [power-ledger.md](power-ledger.md).
+  to an older kernel; P012 now favors LLVM on realistic/scalar. Procedure/history: [power-ledger.md](power-ledger.md).
 - AVX-512 kernel only compile-tested (no AVX-512 CPU available locally), including the MSVC build; `SYNTH_BLOCKS_AVX512` calibration is an estimate.
 - MSVC build: Windows x64 only, no ARM64/baseline/v4 variants, no sanitizer/PGO support.
 - Linux/macOS binaries are cross-compiled only; not executed in this environment.

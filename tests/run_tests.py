@@ -344,6 +344,16 @@ def test_build_comparisons(b):
               "-ffp-contract=off" in c and "-fsanitize=undefined" in c for c in commands) and
               "src/workloads/WorkloadRealistic.cpp" in sources and not warnings,
               "only synthetic objects isolated; sanitizers/strict FP preserved")
+    for profile in ("-fprofile-generate", "-fprofile-use=fixture.profdata"):
+        command = ["clang", "-O3", "-flto", "-g", profile]
+        with mock.patch("scripts.build_kernels.subprocess.run", return_value=completed) as run_compile:
+            sources, warnings = build_kernels.compile_kernels(
+                command, list(build.SRC_COMMON), Path(WORK_DIR), Path(PROJECT_ROOT))
+            commands = [c.args[0] for c in run_compile.call_args_list]
+            check(len(commands) == 2 and all(profile not in c and "-g" in c and
+                  "-O3" in c and "-ffp-contract=off" in c and "-fno-lto" in c for c in commands) and
+                  profile in command and "src/workloads/WorkloadRealistic.cpp" in sources and
+                  not warnings, "PGO stays on main/realistic code, native kernels unchanged: " + profile)
     config = ("x86_64-windows-msvc", "bin/test-work/msvc-plan", "x86_64_v3", True, "", False)
     with mock.patch.object(build_msvc, "discover", return_value=({}, {k: k for k in ("cl", "link", "rc")})), \
          mock.patch("scripts.build_msvc.subprocess.run", return_value=completed) as compile_msvc, \

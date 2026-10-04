@@ -82,6 +82,13 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
   `Rotl64`/`Mix64`/`std::clamp` candidates into an AVX2 binary. MSVC emits the explicit
   `_mm512` intrinsics without `/arch:AVX512`. Golden checksums match the Clang builds (AVX2/SSE2/sim checked on the 5700X; AVX-512
   compile-tested only).
+- **PGO scope** (`scripts/build_kernels.py:compile_kernels`): profile generation/use
+  stays on main/realistic code; native synthetic objects keep their established
+  flags. Whole-program training on this AVX2 host left explicitly hot AVX-512
+  cold and produced a backend warning. Boundary regression tests ensure both
+  profile modes leave kernels unchanged without removing parent-command flags,
+  strict FP, symbols or optimization. Profile builds log this boundary. P008
+  measured no power benefit; PGO remains opt-in, with local generated profiles.
 - **One-setting comparison builds** (never packaged): `win-v3-nounroll` (no
   `-funroll-loops`), `win-v3-strictalias-off` (pre-P007c `-fno-strict-aliasing`
   default; `win-v3-strictalias` stays a compat alias), `win-v3-znver3`

@@ -1,5 +1,26 @@
 # Recent Changes Log
 
+## 2026-10-04 — P008 PGO inconclusive; P012 compiler ranking reversed; PGO scope fixed
+
+- P008/P012: 45 short runs (five paired repeats, three modes, three builds) on
+  top of P011. PGO changes -0.2/-0.2/+0.3 W are within noise. Current MSVC
+  loses 3.6 W realistic and 1.9 W scalar versus LLVM; AVX2 tie-break is worse.
+  Restore normal LLVM compilation; P011 remains the accepted power baseline.
+- PGO builds exposed explicitly hot AVX-512 becoming cold in an AVX2-host
+  profile. Native synthetic objects now exclude profile generation/use while
+  main/realistic code retains it. Two mocked compiler-plan regression checks
+  fail before the fix and pass after. Build diagnostics name the scope.
+- Local read-only occupancy trace gives means around 94-96%, with individual
+  windows 90.52-97.29%. A 90.52% AVX2 window still drew 148.1 W. No earlier
+  low AVX2 cluster reproduced; do not attribute it to background activity.
+  Realistic short power (113.9 W) is not the benchmark target result (106.8 W).
+- Full experiment details/evidence: [power-ledger.md](../power-ledger.md).
+  Next: P015 1024 KiB streaming buffer and P016 64-byte loop alignment.
+- Final normal release rebuild: 14/14 targets and 13 archives; full
+  `python tests/run_tests.py --stress --sanitize` passed 163/163 after scope
+  diagnostics. Restored LLVM v3 machine code matches measured P011. Wiki links,
+  source anchors and current-versus-historical power claims reviewed.
+
 ## 2026-10-04 — P011 one-round benchmark confirmation; P005 reverted
 
 - One synthetic butterfly round replaces two with the same 512 KiB buffer.
