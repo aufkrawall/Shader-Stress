@@ -1,7 +1,7 @@
 # Power Experiment Ledger
 
-Last verified: 2026-10-04. Stale-risk: medium — P026–P028 bounded benchmark
-results recorded; targets remain unmet.
+Last verified: 2026-10-04. Stale-risk: medium — P029–P035 general flag
+checks recorded; no new accepted improvement, current target ranges unestablished.
 
 Durable record of every power experiment (procedure and decision rules:
 [power-optimization.md](power-optimization.md)). Rules: one entry per experiment ID, one
@@ -23,7 +23,16 @@ understand and reproduce the change.
 - Windows Balanced plan verified by read-only query during P011.
 - Unknown, record when learned: cooler, fan profile, ambient, BIOS/AGESA.
 
-## Targets and historical confirmed baseline (180 s benchmark, all 16 threads)
+## Current user targets (2026-10-04)
+
+Realistic scalar: **115–120 W or higher**; scalar synthetic: **135–140 W
+or higher**; AVX2: **145–155 W or higher**, ideally in one binary. Light
+browser activity is authorized; retain the existing background-load guard.
+Historical targets and measurements below are evidence, not proof that these
+new ranges are reached reliably. A measured candidate is a provisional best
+among tested builds, never a global optimum.
+
+## Historical targets and confirmed baseline (180 s benchmark, all 16 threads)
 
 These rows come from completed 180 s benchmark sessions. They remain historical
 evidence, but do not substitute for the newly requested 8+15 s benchmark-job-mix
@@ -73,9 +82,10 @@ re-testing after a baseline change). Take the next free ID for new ideas.
 Baselines are experiment-specific: P001 favored MSVC for the old synthetics and
 LLVM for the realistic sim; P004 and P005 use LLVM v3. No compiler or knob set
 is established as globally optimal. P012 rechecked the one-round ranking and
-favored LLVM over MSVC for realistic/scalar; current Zig ranking remains open.
-These rankings are short-mode only; use the protocol audit above for their
-current validity. None proves the most power-hungry GUI benchmark compiler.
+favored LLVM over MSVC for realistic/scalar. P026 later favored Zig among
+current tested binaries in bounded benchmark windows; that is provisional,
+not a global optimum. The older rankings are short-mode only; use the protocol
+audit above for their current validity. None proves the most power-hungry GUI benchmark compiler.
 LLVM v3 stays the release baseline. P009's historical mechanism note (2026-10-03, from
 `kernel_codegen.py` + `--perf-stats` on the unchanged ebc7357 builds, no load):
 all three toolchains emit 48 explicit FMAs with no wide spills in
@@ -91,7 +101,7 @@ heavier per-cycle current, matching the boost/backoff model).
 | P003 | knob | Smaller buffer / more rounds: two SMT threads x 512 KiB overflow the 512 KiB L2; start with 128 KiB x 4 rounds (`--sweep`) | scalar, avx2 | accepted (keep 512x2 default: all alternatives lose 7-22 W) |
 | P004 | kernel | Zen 3 FADD pipes idle in the AVX2 kernel: butterflies issue only MUL/FMA (FP0/FP1), so FP2/FP3 sit idle; add independent norm-preserving add/sub work on live data (verify pipe mapping first) | avx2 (scalar shares the body) | accepted (+4.4 W avx2, -14 MHz eff clock, +26 jobs/s; keeps Zen 3 FADD pipes active) |
 | P005 | kernel | Remove the divider-result feedback into the multiply network: g3 XORs g4 instead of g7; retain the per-block DIV and all eight checksum states | scalar, avx2 | inconclusive (not retained; scalar -0.1 +-2.2 W, AVX2 +0.8 +-2.2 W) |
-| P006 | flag | `-mtune=znver3` (`win-v3-znver3`) — mostly codegen of the realistic sim | all | rejected (+1.7 W avx2 at 91 C thermal cap — untrustworthy; sim/scalar within noise) |
+| P006 | flag | `-mtune=znver3` (`win-v3-znver3`) — mostly codegen of the realistic sim | all | rejected historically (+1.7 W avx2 near diagnostic thermal threshold; sim/scalar within noise); CPU-specific tuning now excluded by user (P030) |
 | P007 | flag | `-funroll-loops` / LTO / strict aliasing one at a time (`win-v3-nounroll`, `-nolto`, `-strictalias`) for the realistic sim | scalar-sim | done: nounroll + nolto rejected (noise); strictalias accepted (+1.9 W sim, no thermal cap) |
 | P008 | flag | PGO (`build.py --pgo-gen/--pgo-use`) with bounded single-thread repro training, same pinned realistic source and checksums | all (main-program flag) | inconclusive (not retained as default; all power changes within noise) |
 | P009 | kernel | Scalar integer network on MSVC: LLVM's scalar loop is 15% faster per block at 6 W less power — likely tighter GPR scheduling; try 2 independent DIV chains or unserializing g4..g7 on the LLVM baseline first (MSVC codegen may already do this) | scalar | open |
@@ -108,17 +118,194 @@ heavier per-cycle current, matching the boost/backoff model).
 | P019 | kernel | SSE2-only multiply/rotate mixing of g4/g5/g6 after their additions, using existing odd constants: fill integer execution capacity while retaining the wider kernels' balance | scalar | done as P027 (rejected: scalar −2.3 ±1.4 W) |
 | P020 | flag | Set LLVM's preferred innermost-loop alignment to 64 bytes through the LTO linker backend; P016 changed native kernels but did not align the realistic function's loops | scalar-sim | open |
 | P021 | method | Record synthetic buffers' page offsets once per worker, without full addresses, to investigate startup memory-placement variation; heap/cache placement is a hypothesis, not an explanation of P011 outliers | scalar, avx2 | open |
-| P022 | flag | Compare `-O2` with `-O3` at unchanged strict FP settings; instruction scheduling and code size can alter power, and the nominal optimization level does not establish a watt optimum | all | open |
+| P022 | flag | Compare O2 with O3 under strict FP; nominal level is not a watt optimum | all | partial: P029 Zig frontend O2 produced identical realistic instructions; LLVM/LTO pipeline levels remain open |
 | P023 | kernel | Scope P018's divider-feedback decoupling to wide x86 kernels (`SK_W > 2`) while preserving the higher-power SSE2 network; measure against the unchanged accepted baseline | avx2 | inconclusive (not retained; full benchmark cancelled at user's time limit) |
 | P024 | flag | Compare vectorizer interleave count 1 with compiler default for the pinned realistic sim; current disassembly has eight ymm input loads and a ymm stack store in its popcount loop. Confirm actual LTO codegen changes, unchanged goldens and watts rather than assuming spills reduce power | scalar-sim | done as P028 (inconclusive +0.6 ±1.7 W) |
-| P025 | method | Validate bounded 8+15 s benchmark job-mix windows and establish a current reference, all 16 compiler-sim/compute workers with auxiliary work disabled | all | partial (runtime path verified; repeated reference/compiler ranking pending) |
+| P025 | method | Validate bounded 8+15 s benchmark job-mix windows and establish a current reference, all 16 compiler-sim/compute workers with auxiliary work disabled | all | completed (runtime path verified; repeated current compiler reference in P026) |
 | P026 | compiler | Recheck LLVM vs Zig vs MSVC on current sources in bounded benchmark job-mix windows, all three ISAs from the same binaries | all | completed (Zig best single binary: better sim+scalar, inconclusive AVX2; MSVC worse) |
 | P027 | kernel | SSE2-only multiply/rotate mixing of g4/g5/g6 after their additions, on the P026-zig baseline; check all three ISAs | scalar (others guard) | rejected (scalar −2.3 ±1.4 W) |
 | P028 | flag | Compare vectorizer interleave count 1 with compiler default for the pinned realistic sim, on the P026-zig baseline; confirm LTO codegen change, unchanged goldens, then watts | scalar-sim (others guard) | inconclusive (+0.6 ±1.7 W; plumbing kept) |
+| P029 | flag | O2 instead of O3 on the current Zig baseline | all | codegen gate stopped; no changed workload instructions established |
+| P030 | flag | Zen 3 tuning on the current Zig baseline | all | cancelled; CPU-specific tuning excluded by user |
+| P031 | flag | Disable automatic loop vectorization globally; preserve explicit intrinsic kernels | all | inconclusive (−0.5 ±1.8 W realistic); not retained |
+| P032 | flag | Disable automatic SLP globally; preserve explicit intrinsic kernels | all | rejected (−2.1 ±1.8 W realistic); not retained |
+| P033 | flag | Remove explicit loop-unrolling flag on the current Zig baseline; recheck historical P007 in benchmark job mix | all | codegen gate stopped; workload instructions unchanged |
+| P034 | flag | Request 64-byte non-fallthrough basic-block alignment through LTO backend (general compiler setting) | scalar-sim (others guard) | unsupported by Zig linker; no measurement |
+| P035 | flag | Same general LTO block-alignment setting on LLVM MinGW with compiler-matched baseline | scalar-sim (others guard) | inconclusive (+0.8 ±2.4 W); not retained |
+
+## Current disposition after P029–P035
+
+No source, algorithm, golden value or production flag changed. P026 Zig remains
+only a provisional best among measured single binaries; these flag experiments
+have not established the current user targets. Architecture-specific builds
+and tuning are excluded. This round used **552 s total planned full load**
+(69 s cancelled P030, 345 s P031/P032, 138 s P035), each individual run bounded
+at 23 s. No long benchmark or steady-mode substitute was run. Existing bounded
+unit-test smoke exceptions remain separate from manual power comparisons.
+Final verification: `python build.py` rebuilt **14/14 targets**, 13 archives;
+`python tests/run_tests.py --stress --sanitize` passed **181/181**, including
+UBSan/ASan and cross-toolchain goldens. Restored Zig/LLVM v3 `.text` sections
+are byte-identical to measured P029-zigbase/P035-llvmbase. Evidence:
+`audit/power-general-{final-build,final-tests,restored-code}.log`. Wiki semantic
+review corrected stale measurement/thermal claims, checked all 43 relative links
+on changed pages, backlog columns, current versus historical targets, and
+constraints; no new orphan pages. No changelog entry: documentation/experimental
+evidence only, no released behavior or power improvement changed.
+
+General follow-ups: effective LTO optimization levels, matched pair input streams
+(P013), and general scheduling/codegen ideas; do not treat rejected flags or old
+CPU/steady-only rankings as proof of a global optimum.
 
 ## Entries
 
 Newest first. Copy the template.
+
+### P035 — LTO backend block alignment on current LLVM MinGW (inconclusive)
+- Date: 2026-10-04. Type: flag. One change:
+  `-Wl,--plugin-opt=-align-all-nofallthru-blocks=6`. General backend setting,
+  no architecture-specific tuning/build. P034's Zig linker did not support it.
+- Baseline: P035-llvmbase, current LLVM v3 at 4e0e27e; dirty docs only,
+  source/build unchanged from preflight. Candidate: P035-align64, isolated
+  LLVM tuning build. Linker flag is unused during native object compilation
+  (diagnostic retained); only LTO/main objects receive the requested alignment.
+- Gate passed: realistic 1110 to 1184 instructions, 4900 to 5881 bytes,
+  native synthetic counts unchanged (586/328/316), one DIV/no wide spills.
+  Self-tests, all three goldens unchanged; finite numeric health/drift <1e-14.
+- Result: **111.5 W** vs baseline **110.7 W**, **+0.8 ±2.4 W** (three
+  paired repeats, 95% CI); effective clock −3 ±6 MHz (4459 vs 4462),
+  jobs/s 4646 vs 4674. **Inconclusive**, not retained. This does not establish
+  a watt gain or improvement over the provisional Zig single-binary reference.
+- Conditions: 6 valid benchmark-job-mix runs, 16 compute workers, 8+15 s,
+  138 s planned load, background 4.0–9.9%, 13–14 samples/window,
+  first tick 9234–9984 ms / last 22187–22969 ms, Tmax 82.4–83.4 C.
+  All health logs confirm zero errors/decompression/RAM/I/O, no score/hash.
+  No other ISA power guards: target improvement was not established.
+- Command: `python scripts/power_measure.py --mode benchmark --isas scalar-sim --repeats 3 --label P035-align64 --exe audit/power-baselines/P035-llvmbase/ShaderStress.com,audit/power-baselines/P035-align64/ShaderStress.com --baseline P035-llvmbase`.
+- Evidence: `audit/power-measurements/P035-align64-20261004-123950-28100-00/`,
+  `audit/P035-{align-build,gate,relay}.log`, snapshots
+  `audit/power-baselines/P035-{llvmbase,align64}/`.
+- No source/default changes, new regression units or runtime logging required:
+  existing golden, numeric-health, codegen and compute-only logs cover rejected
+  experimental builds. Complete restoration/full-suite result recorded above.
+
+### P034 — LTO backend block alignment on the current Zig baseline (unsupported)
+- Date: 2026-10-04. Type: flag. One change: request 64-byte alignment
+  of non-fallthrough blocks via `-Wl,--plugin-opt=-align-all-nofallthru-blocks=6`.
+  General LLVM backend setting; no CPU-family tuning. Explicit kernels remain
+  native objects. Related P020; verify actual LTO codegen, not just successful build.
+- Baseline: P029-zigbase, clean 4e0e27e. No candidate produced.
+- Build gate failed: Zig 0.15.2 rejects `--plugin-opt` as an unsupported
+  linker argument. No candidate, workload or watt result; defaults untouched.
+  Evidence: `audit/P034-align-build.log`. Retry on LLVM MinGW as P035,
+  with its own compiler-matched baseline; not a Zig watt rejection.
+
+### P033 — Default loop unrolling on the current Zig baseline (codegen gate stopped)
+- Date: 2026-10-04. Type: flag. One change: remove `-funroll-loops`,
+  existing `zig-v3-nounroll` comparison config; all other flags unchanged.
+  General setting, no CPU-family tuning or new architecture-specific build.
+- Baseline: P029-zigbase, clean snapshot at 4e0e27e.
+- Hypothesis: shorter/unrolled-loop balance can change realistic power;
+  P007's LLVM/old-kernel/steady-mode tie does not prove a current Zig tie.
+- Candidate: P033-nounroll. Gate stopped: realistic code is identical to
+  baseline (1071 instructions, 4754 bytes, identical normalized hash), native
+  synthetic counts unchanged. No power measurement or watt rejection claimed.
+- Self-test and all three golden checksums pass; finite numeric health,
+  no wide spills. Evidence: `audit/P033-{nounroll-build,gate}.log`,
+  `audit/P033-nounroll-realistic.asm`, snapshot
+  `audit/power-baselines/P033-nounroll/`. No defaults/source changes.
+
+### P032 — Disable automatic SLP on the current Zig baseline (rejected)
+- Date: 2026-10-04. Type: flag. One change: `-fno-slp-vectorize`
+  globally; loop vectorization, unrolling, strict FP and explicit kernels
+  preserved. The native kernels already disable SLP. No CPU-specific tuning.
+- Baseline: P029-zigbase (clean 4e0e27e). Candidate: P032-noslp, ad hoc
+  isolated Zig build via `SHADERSTRESS_EXTRA_DEFINES=-fno-slp-vectorize`.
+- Hypothesis: main-program integer packing can change execution balance;
+  do not infer its power effect from the historical kernel spill problem.
+- Gate passed: realistic 1071 to 1098 instructions (4895 bytes); synthetic
+  counts unchanged (538/334/321), one DIV and no wide spills. Self-test and
+  all three goldens unchanged; finite numeric health and drift below 1e-14.
+- Result: five paired realistic benchmark windows, candidate **108.9 W** vs
+  baseline **111.0 W**, **−2.1 ±1.8 W** (paired 95% CI), effective clock
+  +9 ±5 MHz (4469 vs 4459), jobs/s 4480 vs 4583. **Rejected**: lower power.
+- Conditions/evidence shared with P031: all 16 compute workers, 8+15 s,
+  zero auxiliary work. No other ISA power guards because target rejection
+  is decisive; no source/default flag changed. Evidence: `audit/P032-{noslp-build,gate}.log`,
+  `audit/power-baselines/P032-noslp/`, shared session below.
+
+### P031 — Disable automatic loop vectorization on the current Zig baseline (inconclusive)
+- Date: 2026-10-04. Type: flag. One change: `-fno-vectorize` globally;
+  explicit intrinsic kernels, SLP policy, strict FP and unrolling preserved.
+  General compiler setting, no CPU-specific tuning or new architecture build.
+- Baseline: P029-zigbase (clean 4e0e27e). Candidate: P031-novec, ad hoc
+  isolated Zig build via `SHADERSTRESS_EXTRA_DEFINES=-fno-vectorize`.
+- Hypothesis: replacing the realistic sim's auto-vectorized integer loops
+  with scalar instructions may improve execution balance/switching activity.
+  Source-pinned function unchanged. Check actual LTO output before measuring.
+- Gate passed: realistic 1071 to 1024 instructions (4533 bytes), vpshufb
+  count 16 to 2; synthetic counts unchanged. Self-test and all three goldens
+  unchanged; finite numeric health, drift below 1e-14, no wide spills.
+- Result: candidate **110.5 W** vs baseline **111.0 W**, **−0.5 ±1.8 W**
+  (five paired repeats, 95% CI), clock +0 ±4 MHz (4459 both), jobs/s 4463
+  vs 4583. **Inconclusive**, not retained; no other ISA power guards because
+  no target improvement is established. No source/default flag changed.
+- Conditions (both P031/P032): benchmark variable job mix, 16 compute
+  workers, 8+15 s; 15 valid runs / 345 s planned load. Background 2.0–6.8%,
+  light browser activity authorized. All runs 13–14 samples/window,
+  first tick 9016–10032 ms, last 21953–22953 ms; Tmax 82.3–83.9 C.
+  Every final health log confirms zero errors/decompression/RAM/I/O; no
+  score/hash. Retain every valid low result; short windows do not establish
+  three-minute steady-state draw or CPU architecture-independent watts.
+- Command: `python scripts/power_measure.py --mode benchmark --isas scalar-sim --label P031-P032-vectorizers --exe audit/power-baselines/P029-zigbase/ShaderStress.com,audit/power-baselines/P031-novec/ShaderStress.com,audit/power-baselines/P032-noslp/ShaderStress.com --baseline P029-zigbase`.
+- Evidence: `audit/power-measurements/P031-P032-vectorizers-20261004-122815-23368-00/`,
+  `audit/P031-P032-relay.log`, `audit/P031-{novec-build,gate}.log`,
+  `audit/power-baselines/P031-novec/`. No added tests/logging: experimental
+  flags were not retained, and existing checksum, numeric-health, codegen
+  and compute-only runtime logs cover the evaluated behavior.
+
+### P030 — Zen 3 tuning on the current Zig benchmark baseline (cancelled by user constraint)
+- Date: 2026-10-04. Type: flag. One change: `-mtune=znver3` on
+  current Zig v3, without changing architecture or strict FP semantics.
+- Baseline: P029-zigbase, clean snapshot at 4e0e27e.
+- Hypothesis: current Clang 20 instruction scheduling may increase switching
+  activity; P006's LLVM/steady-mode result does not establish this ranking.
+- Planned measurement: realistic first, five interleaved repeats against
+  the same baseline as P029; all 16 compute workers, benchmark job mix,
+  8+15 s windows, zero decompression/RAM/I/O. Light browser load authorized.
+- User clarified no architecture-specific optimization/builds during the
+  first comparison. Stop file requested after the first pair; the in-flight
+  bounded run finishes and no further run is launched. This candidate cannot
+  be accepted regardless of its partial power data. No release/source change.
+- Candidate: P030-znver3. All three goldens match; self-test passes; realistic
+  codegen 1071 to 1059 instructions. Numeric health finite, no wide spills.
+- Partial evidence: `audit/power-measurements/P030-znver3-20261004-122445-6256-00/`,
+  `audit/P030-{relay,znver3-build,correctness-codegen,znver3-perf}.log`.
+  Final evidence: three valid runs (69 s load), candidate 110.02 W
+  (one run) and baseline 109.07/112.44 W. Only one pair, +0.95 W;
+  inconclusive. Background 2.1–3.9%, 13–14 samples, Tmax 84.0 C.
+  No ranking claim; exit on stop request.
+
+### P029 — O2 instead of O3 on the current Zig benchmark baseline (codegen gate stopped)
+- Date: 2026-10-04. Type: flag. Backlog P022, one change: `-O2`
+  instead of `-O3`; loop unrolling, strict FP and kernel isolation unchanged.
+- Baseline: P029-zigbase, clean snapshot at 4e0e27e; SHA-256 in local
+  `SNAPSHOT.json`. Candidate: P029-o2, built using
+  `SHADERSTRESS_EXTRA_DEFINES=-O2`, isolated Zig v3 tuning output.
+- Hypothesis: compiler optimization level is not a power ranking; different
+  scheduling/front-end balance may increase current without changing results.
+- Gate result: no changed realistic instructions (1071 instructions, 4754
+  bytes, identical normalized disassembly hash); synthetic counts remain
+  538/334/321 with 0/8/8 FMAs, one DIV and no wide spills. No power run:
+  avoid spending load budget on a candidate without a changed workload.
+  This is not a measured watt rejection or proof O2 cannot help another build.
+- Correctness: all three golden checksums unchanged; 141/141 lightweight
+  tests; numeric health finite (scalar max 2.318, AVX2 2.495, energy drift
+  below 1e-14). Baseline rebuild 14/14 and preflight 141/141.
+- Evidence: `audit/P029-{preflight-build,preflight-tests,o2-build,o2-tests,
+  realistic-codegen,o2-perf}.log`, `audit/P030-correctness-codegen.log`,
+  `audit/P029-{zigbase,o2}-realistic.asm`, snapshots in
+  `audit/power-baselines/P029-{zigbase,o2}/`.
+- Verdict: stopped at codegen gate; no defaults or source changed.
 
 ### P028 — Realistic-sim vectorizer interleave 1 on the Zig baseline (inconclusive)
 - Date: 2026-10-04. Type: flag. Backlog P024: compare vectorizer interleave

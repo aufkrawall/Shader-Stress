@@ -54,11 +54,13 @@ but no new run may exceed the user's 8+15 s limit.
 
 | Workload | `--isa` | Package power target (5700X) |
 |---|---|---|
-| Realistic compiler sim ("scalar realistic") | `scalar-sim` | >= ~115 W |
-| Scalar synthetic (128-bit SSE2 kernel) | `scalar` | >= ~135 W |
-| AVX2 synthetic | `avx2` | >= ~140-145 W |
+| Realistic compiler sim ("scalar realistic") | `scalar-sim` | 115–120 W or higher |
+| Scalar synthetic (128-bit SSE2 kernel) | `scalar` | 135–140 W or higher |
+| AVX2 synthetic | `avx2` | 145–155 W or higher |
 
-The user prefers all three targets in **one binary** (reaffirmed 2026-10-03).
+The user prefers all three targets in **one binary** (reaffirmed 2026-10-04).
+The ranges above are the current user targets; earlier 140–145 W AVX2 goals
+are historical and do not establish that the current goal has been met.
 Report its three-mode result together; selecting a different compiler for each row
 does not establish that goal. "Best" means best among measured candidates under
 recorded conditions, never a proof that untested settings cannot draw more power.
@@ -91,6 +93,13 @@ reduces thermal/ambient drift) with a Student-t 95% CI:
   **and** not `worse` on any other target ISA it can affect (when unsure, measure all three).
 
 ## Hard rules
+
+- **No architecture-specific optimizations/builds (user instruction,
+  2026-10-04).** Do not add or select CPU-specific tuning such as
+  `-mtune=znver3`, CPU-family special cases, or CPU-specialized binaries.
+  Preserve existing selectable ISA kernels/compatibility tiers; improvements
+  must use general compiler/code changes across the supported builds.
+  This preference applies to future sessions, not just the current experiment.
 
 - **Compiler-sim threads / benchmark job mix only (user instruction, 2026-10-04).**
   Use `--mode benchmark --power-window 23`, the selected ISA and all compute

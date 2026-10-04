@@ -109,8 +109,8 @@ results and hypothesis backlog: [power-ledger.md](power-ledger.md). Manual only 
 load); never part of tests. Essentials:
 
 - `scripts/power_measure.py` (wrappers `measure.ps1`, `sweep_power.ps1`) self-elevates via
-  UAC, runs all logical CPUs compute-only — short mode (default, A/B: 8 s warmup + 15 s
-  window, 5 repeats, preheat) or the real 180 s benchmark (absolute numbers) — interleaves
+  UAC, runs all logical CPUs compute-only in benchmark mode (default A/B:
+  8 s warm-up + 15 s window, 5 repeats, no preheat) — interleaves
   baseline/candidates in shuffled order per repeat and reports paired deltas of package
   power and effective clock (plus temperature, Vcore, jobs/s).
 - Samples come from `Power sample: ... watts= jobs= eff_mhz= temp_c= vcore_v=` log lines
@@ -119,8 +119,13 @@ load); never part of tests. Essentials:
 - Golden values are computed at startup, so tuning builds verify themselves. After
   changing defaults, re-record golden checksums
   (`python tests/run_tests.py --stress --record-golden`).
-- The 5700X's specified max temperature is 90 C: runs near it are flagged as thermally
-  limited (power capped by cooling, not by the workload).
+- Runs near the configured diagnostic temperature threshold are flagged for
+  possible thermal constraints; this does not prove a hardware cap or throttling.
+- No architecture-specific tuning/builds: use general compiler/code changes
+  (user instruction 2026-10-04; [runbook](power-optimization.md#hard-rules)).
+- Current Zig general-flag checks P029–P033: O2 and default unrolling emitted
+  identical realistic instructions; loop-vectorizer-off was inconclusive, SLP-off
+  lowered realistic benchmark-window power. No default changes retained.
 
 ## Rejected / superseded
 

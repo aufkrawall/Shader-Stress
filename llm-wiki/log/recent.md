@@ -1,5 +1,33 @@
 # Recent Changes Log
 
+## 2026-10-04 — General power tuning only; current user target ranges
+
+- User requires **no architecture-specific optimizations/builds**. No CPU-family
+  tuning (`-mtune=znver3`), specialized binaries or architecture-specific new
+  optimization paths. Preserve existing selectable ISA compatibility tiers;
+  prefer general compiler/code changes. Durable constraint in
+  [power runbook](../power-optimization.md#hard-rules).
+- Targets reaffirmed: realistic 115–120+ W, scalar synthetic 135–140+ W,
+  AVX2 145–155+ W, ideally one binary. Light browser load authorized;
+  existing background-load guard remains. Historical rankings are provisional.
+- P029 O2 candidate stopped at codegen gate: identical realistic instructions,
+  unchanged synthetic counts/goldens. P030 CPU tuning gracefully cancelled
+  when the user clarified scope; only one pair, no acceptance/ranking claim.
+- P031/P032, five paired repeats each: loop-vectorizer-off inconclusive
+  (110.5 vs 111.0 W, −0.5 ±1.8 W); SLP-off rejected (108.9 W, −2.1 ±1.8 W).
+  All 15 runs had zero auxiliary work/errors, 13–14 samples; background
+  2.0–6.8%, Tmax 83.9 C. Neither flag retained.
+- P033 default unrolling also emits identical realistic code; no power run.
+  P034 Zig linker rejects general LTO alignment option. P035 LLVM backend
+  alignment is inconclusive (+0.8 ±2.4 W, three pairs). All goldens intact;
+  no setting retained. This round used 552 s total planned manual full load.
+- All power runs use benchmark job sizes, 16 compute workers, zero
+  decompression/RAM/I/O, bounded 8+15 s windows. Existing runtime/checksum
+  coverage and diagnostics are sufficient for rejected flags; no source changes.
+- Final standard rebuild 14/14, 13 archives; full stress/sanitizer suite
+  181/181. Restored LLVM/Zig v3 `.text` equals measured baselines. Wiki links,
+  tables, source anchors and protocol/target claims reviewed; no new orphan pages.
+
 ## 2026-10-04 — Bounded benchmark compiler ranking; P027 rejected, P028 inconclusive
 
 - Benchmark job mix only (all 16 compute workers, 8+15 s windows, no
