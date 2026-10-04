@@ -174,6 +174,10 @@ def common_cxx_flags(out_dir):
         flags.append("-fno-strict-aliasing")
     if variant.endswith("-znver3"):
         flags.append("-mtune=znver3")
+    if variant.endswith("-interleave1"):
+        # P028: vectorizer interleave 1 for the pinned realistic sim (LTO/main
+        # objects only; native kernel objects keep build_kernels.py flags).
+        flags += ["-mllvm", "-force-vector-interleave=1"]
     return flags
 
 

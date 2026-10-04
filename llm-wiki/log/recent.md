@@ -1,5 +1,25 @@
 # Recent Changes Log
 
+## 2026-10-04 — Bounded benchmark compiler ranking; P027 rejected, P028 inconclusive
+
+- Benchmark job mix only (all 16 compute workers, 8+15 s windows, no
+  auxiliary work). P026 rechecks current sources: Zig v3 is the best single
+  binary — realistic +1.4 ±0.8 W (111.8 W), scalar +1.6 ±1.1 W (134.6 W),
+  AVX2 +0.5 ±1.2 W inconclusive (147.1 W) vs LLVM; MSVC worse or tie-break
+  worse everywhere. No target is met. Full tables in the
+  [ledger](../power-ledger.md#P026--Current-compiler-ranking-in-bounded-benchmark-windows-\(completed\)).
+- P027 (SSE2-only extra integer mixing on the Zig baseline) rejected:
+  scalar −2.3 ±1.4 W (131.8 vs 134.0 W). Sources/goldens restored
+  (14/14 rebuild, 181/181 stress+sanitize); patch saved as
+  [P027-sse-mix.patch](../power-patches/P027-sse-mix.patch).
+- P028 (vectorizer interleave 1 for the pinned realistic sim) inconclusive:
+  +0.6 ±1.7 W (110.3 vs 109.8 W). Codegen gate passed (realistic 1110 →
+  1057 insns, reordered popcount/hash loop) with unchanged goldens on all
+  three toolchains. Plumbing kept as `*-interleave1` regression configs.
+- Next baseline: P027-zigref (Zig v3, 111.8 / 134.6 / 147.1 W); gaps to
+  115/135/140+ W are −3.2/−0.4/−0+ W. No code changes retained; release
+  defaults unchanged.
+
 ## 2026-10-04 — Benchmark job-mix power windows; historical protocol audit
 
 - User requires compiler-sim/compute workers only, benchmark job mix, zero

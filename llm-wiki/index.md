@@ -6,7 +6,7 @@
 | [verification.md](verification.md) | Error detection: paired jobs, golden values, RAM/IO/decompress checks, attribution | 2026-10-03 | Low |
 | [opt-audit.md](opt-audit.md) | Power/heat design: kernel structure, build flags, rejected approaches | 2026-10-04 | Medium (P011 measured; targets unmet) |
 | [power-optimization.md](power-optimization.md) | Power targets, benchmark job-mix / compiler-sim-only 8+15 s windows, bounded A/B rules and tooling | 2026-10-04 | Medium (historical steady-mode rankings unverified) |
-| [power-ledger.md](power-ledger.md) | Power experiments, historical benchmark baseline, protocol audit and recheck priorities | 2026-10-04 | Medium (P023 benchmark inconclusive; bounded references/compiler ranking pending) |
+| [power-ledger.md](power-ledger.md) | Power experiments, historical benchmark baseline, protocol audit and recheck priorities | 2026-10-04 | Medium (P026–P028 benchmark-window results; targets unmet) |
 | [debug-tools.md](debug-tools.md) | Debuggers, symbols, crash reports, sanitizer builds, known-good commands | 2026-10-03 | Medium (toolchain paths) |
 | [debug-tools-security-audit.md](debug-tools-security-audit.md) | Security/binary-analysis tool inventory + project risk notes | 2026-10-03 | Medium |
 | [secret-leak-prevention.md](secret-leak-prevention.md) | Mandatory pre/post-commit secret checks, gitleaks commands, sensitive artifacts | 2026-10-03 | Low |

@@ -1,0 +1,18 @@
+diff --git a/src/workloads/SynthKernel.inc b/src/workloads/SynthKernel.inc
+index dcea762..494904b 100644
+--- a/src/workloads/SynthKernel.inc
++++ b/src/workloads/SynthKernel.inc
+@@ -118,6 +118,13 @@
+         g4 += g1;
+         g5 += g2;
+         g6 += g3;
++#if SK_W == 2
++        // P027: SSE2-only extra integer mixing on live states, reusing the
++        // existing odd constants (no new entropy sources, no FP change).
++        g4 = Rotl64(g4 * 0x9E3779B97F4A7C15ull, 29);
++        g5 = Rotl64(g5 * 0xBF58476D1CE4E5B9ull, 31);
++        g6 = Rotl64(g6 * 0x94D049BB133111EBull, 27);
++#endif
+         g7 ^= g5 / ((g0 >> 31) | 0x100000001ull);
+       }
+     }

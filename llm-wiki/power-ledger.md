@@ -1,7 +1,7 @@
 # Power Experiment Ledger
 
-Last verified: 2026-10-04. Stale-risk: medium — P011 benchmark confirmed;
-AVX2 has unexplained low-power runs and the targets remain unmet.
+Last verified: 2026-10-04. Stale-risk: medium — P026–P028 bounded benchmark
+results recorded; targets remain unmet.
 
 Durable record of every power experiment (procedure and decision rules:
 [power-optimization.md](power-optimization.md)). Rules: one entry per experiment ID, one
@@ -105,17 +105,179 @@ heavier per-cycle current, matching the boost/backoff model).
 | P016 | flag | Request 64-byte loop alignment versus compiler default (`-falign-loops=64`); preserve checksums and measure front-end effects rather than assuming a benefit | all | rejected (scalar -2.0 +-1.5 W) |
 | P017 | compiler | Recheck Zig on the one-round kernel against current LLVM; P001's old-kernel tie cannot establish the current ranking | all | inconclusive (all modes +0.8 to +0.9 W, not retained) |
 | P018 | kernel | Retry P005's divider-feedback decoupling on the substantially changed one-round baseline; reducing FP work may expose the integer recurrence that was hidden at two rounds | scalar, avx2 | rejected globally (scalar -2.3 +-1.1 W; AVX2 clock tie-break better) |
-| P019 | kernel | SSE2-only multiply/rotate mixing of g4/g5/g6 after their additions, using existing odd constants: fill integer execution capacity while retaining the wider kernels' balance | scalar | open |
+| P019 | kernel | SSE2-only multiply/rotate mixing of g4/g5/g6 after their additions, using existing odd constants: fill integer execution capacity while retaining the wider kernels' balance | scalar | done as P027 (rejected: scalar −2.3 ±1.4 W) |
 | P020 | flag | Set LLVM's preferred innermost-loop alignment to 64 bytes through the LTO linker backend; P016 changed native kernels but did not align the realistic function's loops | scalar-sim | open |
 | P021 | method | Record synthetic buffers' page offsets once per worker, without full addresses, to investigate startup memory-placement variation; heap/cache placement is a hypothesis, not an explanation of P011 outliers | scalar, avx2 | open |
 | P022 | flag | Compare `-O2` with `-O3` at unchanged strict FP settings; instruction scheduling and code size can alter power, and the nominal optimization level does not establish a watt optimum | all | open |
 | P023 | kernel | Scope P018's divider-feedback decoupling to wide x86 kernels (`SK_W > 2`) while preserving the higher-power SSE2 network; measure against the unchanged accepted baseline | avx2 | inconclusive (not retained; full benchmark cancelled at user's time limit) |
-| P024 | flag | Compare vectorizer interleave count 1 with compiler default for the pinned realistic sim; current disassembly has eight ymm input loads and a ymm stack store in its popcount loop. Confirm actual LTO codegen changes, unchanged goldens and watts rather than assuming spills reduce power | scalar-sim | open |
+| P024 | flag | Compare vectorizer interleave count 1 with compiler default for the pinned realistic sim; current disassembly has eight ymm input loads and a ymm stack store in its popcount loop. Confirm actual LTO codegen changes, unchanged goldens and watts rather than assuming spills reduce power | scalar-sim | done as P028 (inconclusive +0.6 ±1.7 W) |
 | P025 | method | Validate bounded 8+15 s benchmark job-mix windows and establish a current reference, all 16 compiler-sim/compute workers with auxiliary work disabled | all | partial (runtime path verified; repeated reference/compiler ranking pending) |
+| P026 | compiler | Recheck LLVM vs Zig vs MSVC on current sources in bounded benchmark job-mix windows, all three ISAs from the same binaries | all | completed (Zig best single binary: better sim+scalar, inconclusive AVX2; MSVC worse) |
+| P027 | kernel | SSE2-only multiply/rotate mixing of g4/g5/g6 after their additions, on the P026-zig baseline; check all three ISAs | scalar (others guard) | rejected (scalar −2.3 ±1.4 W) |
+| P028 | flag | Compare vectorizer interleave count 1 with compiler default for the pinned realistic sim, on the P026-zig baseline; confirm LTO codegen change, unchanged goldens, then watts | scalar-sim (others guard) | inconclusive (+0.6 ±1.7 W; plumbing kept) |
 
 ## Entries
 
 Newest first. Copy the template.
+
+### P028 — Realistic-sim vectorizer interleave 1 on the Zig baseline (inconclusive)
+- Date: 2026-10-04. Type: flag. Backlog P024: compare vectorizer interleave
+  count 1 with compiler default for the pinned realistic sim.
+- Change (exactly one): add `-mllvm -force-vector-interleave=1` to the
+  main-program/LTO flags only (native synthetic kernel objects keep
+  `scripts/build_kernels.py` flags); pinned realistic source unchanged.
+- Baseline: P027-zigref (reused Zig v3 snapshot; sources restored to b658eb0
+  + P026/P027 ledger only).
+- Candidate: P028-interleave1 (Zig v3 snapshot, SHA-256
+  `d50d7df3960018f1bdee2eb76fbc33aacff8c06c7796ac65a9e3b5be32508b2b`).
+  Build plumbing: `common_cxx_flags()` maps `*-interleave1` to
+  `-mllvm -force-vector-interleave=1`; new experimental configs
+  `bin/x64-llvm-v3-interleave1` + `bin/x64-zig-v3-interleave1` with
+  regression coverage in `test_build_comparisons`; native kernel objects keep
+  `build_kernels.py` flags. Gate 2 (goldens): PASS on Zig interleave1 —
+  realistic `0x58b1a15ca01f7216`, scalar `0x4c16d08e29ebed5f`, AVX2
+  `0xd728a7ec6cf2a7e5` (LLVM interleave1 identical). Numeric health intact
+  (scalar max|x| 2.318, drift −1.00e-15, non-finite 0); single-thread
+  scalar-sim 633 vs 640 cycles/complexity on Zig.
+- Gate 1 (codegen): PASS — LTO codegen actually differs (LLVM v3
+  `RunRealisticCompilerSim_V3`: 1110 → 1057 insns; candidate hoists four
+  `vmovdqa ymm` constant loads out of the vector-init sequence and reorders
+  the popcount/hash loop; popcount path itself unchanged: 1 popcnt + 1
+  tzcnt + 1 lzcnt + integer DIV in both). Gate 2 (goldens): PASS — all
+  checksums unchanged on the interleave1 binary (realistic
+  `0x58b1a15ca01f7216`, scalar `0x4c16d08e29ebed5f`, AVX2 `0xd728a7ec6cf2a7e5`).
+  Proceeding to watts.
+- Conditions: benchmark job mix, all 16 compute workers, zero
+  decompression/RAM/I/O, 8 s warm-up + 15 s measurement.
+- Command: `python scripts/power_measure.py --mode benchmark --isas scalar-sim --label P028-interleave1 --exe audit/power-baselines/P027-zigref/ShaderStress.com,audit/power-baselines/P028-interleave1/ShaderStress.com --baseline P027-zigref`.
+- Result: scalar-sim inconclusive +0.6 ±1.7 W (candidate 110.3 W vs
+  Zig baseline 109.8 W, 5/5 valid, 230 s planned). No guard ISAs: flag targets
+  the realistic sim only and synthetics share no changed objects (native
+  kernels keep their flags; goldens identical).
+- Verdict: inconclusive — not retained as default; keep plumbing + configs as
+  regression arms.
+- Side effects: jobs/s candidate 4585 vs 4615 baseline; all goldens
+  unchanged; codegen deltas recorded above; perf-stats scalar-sim
+  633 vs 640 cycles/complexity on Zig.
+- Evidence: `audit/power-measurements/P028-interleave1-20261004-121052-27400-00/`,
+  `audit/P028-relay.log`, `audit/P028-realistic-{base,cand}.asm`;
+  snapshots `audit/power-baselines/P027-zigref/`,
+  `audit/power-baselines/P028-interleave1/`.
+
+### P027 — SSE2-only integer mixing on the Zig baseline (rejected)
+- Date: 2026-10-04. Type: kernel. Backlog P019, first candidate on the new
+  Zig reference.
+- Change (exactly one): SSE2 path only (`SK_W == 2` in
+  `src/workloads/SynthKernel.inc`): extra multiply/rotate mixing of g4/g5/g6
+  after their additions, reusing existing odd constants; wide kernels and all
+  FP operations unchanged. Pinned realistic source unchanged.
+- Baseline: P027-zigref = P026-zig binary re-pinned (SHA-256
+  `57131f55ea0df9140d6c62bf81c693aa209de4880bbd2b35d5eacc882d830b9f`,
+  GitHead b658eb0; dirty flag refers only to this ledger edit, sources clean).
+- Candidate: P027-sse-mix (Zig v3 snapshot, SHA-256
+  `dfaf9697620c39013a9102ac910df92424ba281c89abf8915135298051b1f5a6`).
+- Screening: 14/14 targets rebuilt warning-free; full
+  `python tests/run_tests.py --stress --sanitize` 181/181 (incl. cross-toolchain
+  goldens on LLVM/Zig/MSVC v3 + sanitizers). New scalar golden
+  `0xd51310fd1702075d` identical on all three v3 toolchains; realistic
+  `0x58b1a15ca01f7216` and AVX2 `0xd728a7ec6cf2a7e5` unchanged. Numeric health
+  intact (scalar max|x| 2.318, drift −1.00e-15, non-finite 0). Codegen: scalar
+  LLVM 604 / Zig 537 / MSVC 538 insns (xmm, 1 DIV, 0 wide spills); wide kernels
+  unchanged (8 FMAs, 1 DIV, 0 spills).
+- Expected goldens: realistic unchanged; scalar deliberately changes (record
+  + cross-toolchain verify); AVX2 unchanged (guard).
+- Conditions: benchmark job mix, all 16 compute workers, zero
+  decompression/RAM/I/O, 8 s warm-up + 15 s measurement.
+- Command: `python scripts/power_measure.py --mode benchmark --isas scalar --label P027-sse-mix --exe audit/power-baselines/P027-zigref/ShaderStress.com,audit/power-baselines/P027-sse-mix/ShaderStress.com --baseline P027-zigref` (then sim+avx2 guards if scalar is not worse).
+- Result: rejected on the targeted ISA — scalar worse −2.3 ±1.4 W
+  (candidate 131.8 W vs Zig baseline 134.0 W, 5/5 valid, background 1.5–5.0%,
+  12–14 samples/window). No sim/AVX2 guard runs: rejection on the target ISA
+  is decisive per runbook. Extra integer mixing lowered, not raised, scalar
+  power (candidate jobs/s also lower: 414 vs 441).
+- Verdict: rejected — accepted source/goldens restored and verified
+  (14/14 rebuild, 181/181 stress+sanitize); patch saved.
+- Side effects: candidate jobs/s 414 vs 441 baseline; goldens reverted to
+  accepted values; codegen deltas recorded above.
+- Evidence: `audit/power-measurements/P027-sse-mix-20261004-115851-30268-00/`,
+  `audit/P027-relay.log`; snapshots `audit/power-baselines/P027-zigref/`,
+  `audit/power-baselines/P027-sse-mix/`; patch
+  `llm-wiki/power-patches/P027-sse-mix.patch` (saved at revert).
+
+### P026 — Current compiler ranking in bounded benchmark windows (completed)
+- Date: 2026-10-04. Type: compiler. Exactly one variable per arm: same commit
+  b658eb0 sources, LLVM MinGW vs Zig vs MSVC v3 outputs.
+- Baseline: P026-base (GitHead b658eb0, clean) — current LLVM v3 release build.
+- Candidates: P026-zig, P026-msvc (same commit, pinned snapshots).
+- Conditions: benchmark job mix, all 16 compute workers, zero
+  decompression/RAM/I/O, 8 s warm-up + 15 s measurement.
+- Scalar-sim completed (5/5/5 valid, 345 s planned): Zig better +1.4 ±0.8 W,
+  MSVC worse −2.4 ±1.8 W vs LLVM 110.5 W.
+  Scalar completed (5/5/5 valid): Zig better +1.6 ±1.1 W, MSVC worse
+  −1.1 ±0.9 W vs LLVM 133.0 W. AVX2 r5 retry completed; combined verdict below.
+- AVX2 combined (5/5/5 valid across two sessions, r5 = retry session):
+  Zig +0.5 ±1.2 W inconclusive, MSVC tie-break worse (same power, +48 ±17 MHz)
+  vs LLVM 146.5 W. Repeat 5 ran ~1–2 W lower on all three builds than repeats
+  1–4; retained, no normalization.
+- Command: `python scripts/power_measure.py --mode benchmark --isas scalar-sim --label P026-compilers-sim --exe audit/power-baselines/P026-base/ShaderStress.com,audit/power-baselines/P026-zig/ShaderStress.com,audit/power-baselines/P026-msvc/ShaderStress.com --baseline P026-base` (scalar/avx2 sessions likewise).
+- Result: Zig is the best single binary of the three on current sources:
+  established gains on realistic (+1.4 ±0.8 W) and scalar (+1.6 ±1.1 W),
+  AVX2 within noise (+0.5 ±1.2 W); MSVC worse or tie-break worse on all modes.
+  New reference (Zig v3, same binary): 111.8 / 134.6 / 147.1 W —
+  still below all three targets.
+- Verdict: completed — no target claimed met; Zig selected as next baseline,
+  MSVC deprioritized. Scalar/AVX2 ran at the thermal-limit flag (≥89 °C);
+  recorded, not proof of throttling.
+- Side effects: all goldens identical across toolchains (no code change);
+  jobs/s LLVM 4747/410/390, Zig 4490/427/389, MSVC 3467/347/323.
+  Codegen: scalar insns LLVM 586 / Zig 538 / MSVC 527 (xmm, 1 DIV, 0 spills);
+  AVX2 all 8 FMAs, 1 DIV, 0 wide spills; single-thread cycles/complexity
+  scalar LLVM 5656 / Zig 5157 / MSVC 5283, AVX2 LLVM 5590 / Zig 4779 /
+  MSVC 5982.
+- Evidence: `audit/power-measurements/P026-compilers-sim-20261004-112046-3092-00/`, `audit/power-measurements/P026-compilers-scalar-20261004-112737-27124-00/`, `audit/power-measurements/P026-compilers-avx2-20261004-113427-19200-00/` + `audit/power-measurements/P026-avx2-r5-20261004-114042-23256-00/`, `audit/P026-{sim,scalar,avx2,avx2-r5}-relay.log`.
+- Follow-ups: P026-zig is the reference for the next kernel/flag candidate
+  (next free ID: P027).
+- Full P026 result tables (paired per-repeat deltas, Student-t 95% CI):
+
+  Scalar-sim (5/5/5 valid; background 2.0–5.9%; 13–14 samples/window):
+
+  | Candidate | ISA | Runs | W (SD) | dW vs base (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|---|
+  | P026-msvc | scalar-sim | 5 | 108.1 (0.8) | −2.4 ±1.8 | 4465 | −2 ±2 | 83.4 | 3467 | worse (less power) |
+  | P026-zig | scalar-sim | 5 | 111.8 (0.8) | +1.4 ±0.8 | 4463 | −4 ±2 | 83.9 | 4490 | better (more power) |
+  | P026-base (LLVM) | scalar-sim | 5 | 110.5 (1.0) | — | 4467 | — | 83.4 | 4747 | baseline |
+
+  Scalar (5/5/5 valid; background 1.9–9.4%; 13–14 samples/window):
+
+  | Candidate | ISA | Runs | W (SD) | dW vs base (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|---|
+  | P026-msvc | scalar | 5 | 131.9 (0.8) | −1.1 ±0.9 | 4397 | +4 ±5 | 90.3 (thermal limit) | 347 | worse (less power) |
+  | P026-zig | scalar | 5 | 134.6 (0.9) | +1.6 ±1.1 | 4389 | −4 ±4 | 91.3 (thermal limit) | 427 | better (more power) |
+  | P026-base (LLVM) | scalar | 5 | 133.0 (0.5) | — | 4392 | — | 91.0 (thermal limit) | 410 | baseline |
+
+  AVX2 combined (5/5/5 valid across initial session + r5 retry; background
+  1.6–8.4%; 13–14 samples/window):
+
+  | Candidate | ISA | Runs | W (SD) | dW vs base (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|---|
+  | P026-msvc | avx2 | 5 | 145.8 (1.2) | −0.7 ±0.5 | 4247 | +48 ±17 | 92.8 (thermal limit) | 323 | tie-break worse (same power, higher eff clock) |
+  | P026-zig | avx2 | 5 | 147.1 (1.8) | +0.5 ±1.2 | 4187 | −12 ±10 | 94.3 (thermal limit) | 389 | inconclusive (within noise) |
+  | P026-base (LLVM) | avx2 | 5 | 146.5 (1.0) | — | 4199 | — | 94.8 (thermal limit) | 390 | baseline |
+
+- AVX2 per-run note: repeat 5 read ~1–2 W lower on all three builds
+  (MSVC 143.8, Zig 144.0, LLVM 145.0 W) than repeats 1–4; retained without
+  normalization. The initial session's MSVC r5 failed sampling coverage
+  (11/15 readings, gap at elapsed 12.9–14.5 s; run rejected by the tool,
+  workload itself verified 0 errors) and was replaced by the retry session's
+  valid r5. No reading was discarded beyond that tool rejection.
+- Conditions: authorized light browser activity; Balanced plan unchanged;
+  cooler/fan/ambient unknown; no readings excluded or normalized beyond the
+  stated tool rejection.
+- P027 planning note (open): P026-zig (Zig v3, 111.8 / 134.6 / 147.1 W) is the
+  next baseline. Gaps to targets: realistic −3.2 W, scalar −0.4 W, AVX2 −0+
+  W (upper target band). Open backlog fits: P019 (SSE2 integer mixing,
+  targets scalar), P024 (realistic interleave, targets realistic), P009
+  (scalar integer network). P019 is the closest single gap; measure it on the
+  Zig baseline with all three ISAs checked.
 
 ### P025 — Bounded benchmark job-mix measurement path (validated; reference repeats pending)
 - Date: 2026-10-04. Type: method. One conceptual correction: measure the GUI
