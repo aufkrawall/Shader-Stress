@@ -72,15 +72,87 @@ heavier per-cycle current, matching the boost/backoff model).
 | P015 | knob | Test 1024 KiB instead of 512 KiB at one round: more L3 streaming may raise scalar synthetic power; the realistic source remains unchanged | scalar, avx2 | inconclusive (not retained; scalar -1.1 +-1.3 W, AVX2 -1.3 +-1.8 W) |
 | P016 | flag | Request 64-byte loop alignment versus compiler default (`-falign-loops=64`); preserve checksums and measure front-end effects rather than assuming a benefit | all | rejected (scalar -2.0 +-1.5 W) |
 | P017 | compiler | Recheck Zig on the one-round kernel against current LLVM; P001's old-kernel tie cannot establish the current ranking | all | inconclusive (all modes +0.8 to +0.9 W, not retained) |
-| P018 | kernel | Retry P005's divider-feedback decoupling on the substantially changed one-round baseline; reducing FP work may expose the integer recurrence that was hidden at two rounds | scalar, avx2 | open |
+| P018 | kernel | Retry P005's divider-feedback decoupling on the substantially changed one-round baseline; reducing FP work may expose the integer recurrence that was hidden at two rounds | scalar, avx2 | rejected globally (scalar -2.3 +-1.1 W; AVX2 clock tie-break better) |
 | P019 | kernel | SSE2-only multiply/rotate mixing of g4/g5/g6 after their additions, using existing odd constants: fill integer execution capacity while retaining the wider kernels' balance | scalar | open |
 | P020 | flag | Set LLVM's preferred innermost-loop alignment to 64 bytes through the LTO linker backend; P016 changed native kernels but did not align the realistic function's loops | scalar-sim | open |
 | P021 | method | Record synthetic buffers' page offsets once per worker, without full addresses, to investigate startup memory-placement variation; heap/cache placement is a hypothesis, not an explanation of P011 outliers | scalar, avx2 | open |
 | P022 | flag | Compare `-O2` with `-O3` at unchanged strict FP settings; instruction scheduling and code size can alter power, and the nominal optimization level does not establish a watt optimum | all | open |
+| P023 | kernel | Scope P018's divider-feedback decoupling to wide x86 kernels (`SK_W > 2`) while preserving the higher-power SSE2 network; measure against the unchanged accepted baseline | avx2 | open (P018 AVX2 -46 +-5 MHz at unchanged power) |
 
 ## Entries
 
 Newest first. Copy the template.
+
+### P018 — Independent divider feedback at one round (rejected globally)
+- Date: 2026-10-04. Type: kernel. Exactly one change: g3 XORs g4 instead
+  of g7 in `src/workloads/SynthKernel.inc`. g7 still accumulates each DIV
+  quotient and contributes to the final checksum; FP operations unchanged.
+- Baseline: P018-base, clean LLVM v3 at d4b0b8d, accepted P011 machine code.
+- Hypothesis: halving FP register work since P005 may expose the divider
+  recurrence; retry on this substantially changed baseline, not as a claim
+  that the inconclusive old experiment was wrong.
+- Plan: rebuild all targets, deliberately update synthetic goldens, verify
+  cross-toolchain bit identity and pinned realistic value/source unchanged;
+  check finite bounded data, energy, one DIV and eight wide FMAs/no spills.
+  Five paired short repeats across all three modes, benchmark-confirm a winner.
+- Regression assessment: existing seed/complexity/energy kernel units,
+  deliberately adjusted golden cases and cross-toolchain checks cover the
+  changed result; codegen test guards against removing DIV or widening SSE2.
+  Existing perf-stats health and power snapshot/checksum logs cover diagnosis;
+  no per-block logging added to the hot loop.
+- Local screening evidence is listed below; temporary source and goldens
+  were reverted after the completed comparison.
+- Screening complete: 14/14 release builds, 13 archives, no warnings;
+  deliberate golden recording 136/136, full `--stress --sanitize` 163/163.
+  New scalar/AVX2 values `0x40828ec895b23909` / `0x734f7eb1831d28cb`,
+  realistic unchanged `0x58b1a15ca01f7216` and pinned source check passed.
+  Candidate P018-div-independent is dirty on d4b0b8d, executable SHA prefix
+  `80c08ca391923b5e`; baseline remains the clean snapshot above.
+- All audited toolchains: one DIV, eight wide FMAs, zero wide spills,
+  SSE2 xmm-only. Perf health remains scalar/AVX2 max|x| 2.318/2.495,
+  non-finite 0, energy drift -1.00e-15/+6.69e-16. Single-thread timings
+  are diagnostic only, not the power verdict.
+- Logs: `audit/P018-build.log`, `audit/P018-record-golden.log`,
+  `audit/P018-full-tests.log`, `audit/P018-codegen.log`, `audit/P018-perf.log`,
+  `audit/P018-base-perf-idle.log`, `audit/P018-perf-idle.log`.
+- Short command: `python scripts/power_measure.py --label P018-div-independent --exe audit/power-baselines/P018-base/ShaderStress.com,audit/power-baselines/P018-div-independent/ShaderStress.com --baseline P018-base`.
+- Result: five paired short repeats, all 16 workers:
+
+  | Candidate | ISA | W (SD) | dW (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|
+  | P018-div-independent | scalar-sim | 112.4 (1.1) | +0.2 +-2.0 | 4489 | -1 +-3 | 82.0 | 5429 | inconclusive |
+  | P018-div-independent | scalar | 130.8 (1.7) | -2.3 +-1.1 | 4411 | +19 +-5 | 90.0 | 455 | worse |
+  | P018-div-independent | avx2 | 146.6 (0.8) | -0.2 +-0.7 | 4162 | -46 +-5 | 96.0 | 467 | tie-break better |
+  | P018-base | scalar-sim | 112.1 (1.1) | - | 4491 | - | 82.0 | 5609 | baseline |
+  | P018-base | scalar | 133.1 (1.2) | - | 4392 | - | 91.3 | 504 | baseline |
+  | P018-base | avx2 | 146.8 (0.8) | - | 4208 | - | 95.3 | 448 | baseline |
+
+- Verdict: reject the universal change because scalar power lost in every
+  pair, with a significant mean loss. AVX2 meets the runbook's clock tie-break
+  criterion but has no established package-power gain and temperature flags.
+  P023 will test the same divider change only on wide kernels; acceptance
+  requires no other-mode regression and real benchmark confirmation.
+- Side effects: scalar jobs/s 455 vs 504, AVX2 467 vs 448; realistic 5429
+  vs 5609 with unchanged source/checksum and power within paired uncertainty.
+  No benchmark target or CHANGELOG power claim. Existing
+  [P005 source patch](power-patches/P005-div-independent.patch) reproduces
+  the same code idea on this one-round baseline; temporary goldens above.
+- Conditions: 30/30 valid runs, 13-14 readings/window, background 1.4-9.6%,
+  authorized browser load, 30 s baseline AVX2 preheat, Windows Balanced
+  reverified read-only after the session. Cooler/fan/ambient and
+  configured thermal limit unknown; temperature flags retained on synthetics.
+- Read-only occupancy: candidate/baseline means scalar 96.55/97.11%, AVX2
+  96.63/95.94%, realistic 94.80/96.75% of total CPU capacity. AVX2's lower
+  clock did not coincide with lower process occupancy; temperature remains
+  a confounder. No readings removed or normalized by CPU time. Evidence:
+  `audit/P018-occupancy.csv`, `audit/P018-correlated.csv`, `audit/P018-summary.py`.
+- Measurement evidence:
+  `audit/power-measurements/P018-div-independent-20261004-090648-24308-00/`,
+  `audit/P018-short-relay.log`. Restoration: accepted source/goldens, 14/14
+  builds and 13 archives, full `--stress --sanitize` 163/163 passed in
+  `audit/P018-restored-build.log`, `audit/P018-restored-tests.log`. Release
+  `.text` matches measured P011. Wiki links/current claims checked; removed
+  stray Markdown fences that hid historical entries inside code blocks.
 
 ### P017 — Zig on the one-round kernel (inconclusive, not retained)
 - Date: 2026-10-04. Type: compiler. Exactly one change: Zig instead of LLVM
@@ -451,7 +523,6 @@ Newest first. Copy the template.
 - Evidence: audit/power-measurements/P004-fadd-20261003-200919-27452-00/ (local).
 - Follow-ups: P005 integer network restructuring next. Confirm in benchmark mode (P000).
 
-```
 ### P007c — strict aliasing on: +1.9 W scalar-sim, the sim's first real move (accepted)
 - Date: 2026-10-03. Type: flag.
 - Change (exactly one): `-fno-strict-aliasing` removed, i.e. strict aliasing enabled
@@ -487,7 +558,6 @@ Newest first. Copy the template.
 - Evidence: audit/power-measurements/P007-strictalias-20261003-185143-2372-00/ (local).
 - Follow-ups: P008 PGO may stack (different mechanism); kernel work P004/P005 next.
   Re-verify TBAA-sensitive casts under sanitizers after any sim-adjacent edit.
-```
 
 ### P007b — LTO off: no power effect anywhere (rejected, keep `-flto`)
 - Date: 2026-10-03. Type: flag.
@@ -514,7 +584,6 @@ Newest first. Copy the template.
 - Side effects: jobs/s within noise; golden checksums identical.
 - Evidence: audit/power-measurements/P007-nolto-20261003-183542-25264-00/ (local).
 - Follow-ups: `-strictalias` arm last of the trio.
-```
 
 ### P007 — loop unrolling off: no power effect anywhere (rejected, keep `-funroll-loops`)
 - Date: 2026-10-03. Type: flag.
@@ -546,7 +615,6 @@ Newest first. Copy the template.
   vs 250); golden checksums identical.
 - Evidence: audit/power-measurements/P007-nounroll-20261003-181846-31080-00/ (local).
 - Follow-ups: `-nolto` / `-strictalias` arms next, one at a time.
-```
 
 ### P006 — `-mtune=znver3`: +1.7 W avx2 only, thermally capped (rejected)
 - Date: 2026-10-03. Type: flag.
@@ -583,7 +651,6 @@ Newest first. Copy the template.
 - Evidence: audit/power-measurements/P006-znver3-20261003-180232-32496-00/ (local).
 - Follow-ups: retry only together with better cooling or in benchmark mode (P000);
   next: P004/P005 kernel work, P007 unroll/LTO/aliasing for the sim.
-```
 
 ### P003 — buffer x rounds sweep: the 512 KiB x 2 default wins decisively (accepted = keep default)
 - Date: 2026-10-03. Type: knob.
@@ -623,7 +690,6 @@ Newest first. Copy the template.
 - Evidence: audit/power-measurements/P003-bufrounds-20261003-173825-12264-00/ (local).
 - Follow-ups: P003b (256 KiB x 2) deferred until a kernel change moves the bottleneck;
   MSVC knob transfer untested (ranking assumed shared).
-```
 
 ### P002 — SLP spills vs clean kernels (inconclusive on power, fix kept for throughput)
 - Date: 2026-10-03. Type: flag.
@@ -656,7 +722,6 @@ Newest first. Copy the template.
 - Evidence: audit/power-measurements/P002-slp-20261003-172354-2448-00/ (local,
   readable: results.csv + summary.md + per-run logs verified from unelevated shell).
 - Follow-ups: P003 buffer/rounds sweep next (sweep covers win-v3/zig-v3/msvc).
-```
 
 ### P001 — toolchain baseline: MSVC draws most, LLVM/Zig tied on synthetics (accepted as baseline choice)
 - Date: 2026-10-03. Type: compiler.
@@ -699,8 +764,10 @@ Newest first. Copy the template.
   `P002-aclcheck-20261003-170713-28972-00`, results.csv + summary.md verified).
 - Follow-ups: P002 SLP comparison ran on the LLVM pair (isolates the codegen effect);
   benchmark-mode confirmation of the MSVC toolchain lead before any CHANGELOG power claim.
-```
 
+## Entry template
+
+```
 ### P0NN — <slug> (<status>)
 - Date: YYYY-MM-DD. Type: kernel | knob | compiler | flag | scheduling.
 - Change (exactly one): <what, where; key lines or patch path>.
@@ -715,6 +782,3 @@ Newest first. Copy the template.
 - Evidence: audit/power-measurements/session-... (local). Commit: <sha or "ledger only">.
 - Follow-ups: <new hypotheses, retry conditions>.
 ```
-
-(Measured entries: P001-P003, P006-P007 below. Tooling for effective clock/temperature/Vcore
-capture, UAC self-elevation, snapshots and paired A/B summaries landed 2026-10-03.)

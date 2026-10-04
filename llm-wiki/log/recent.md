@@ -1,5 +1,22 @@
 # Recent Changes Log
 
+## 2026-10-04 — P018 divider change rejected globally; wide-only retry next
+
+- 30 valid short runs, five paired repeats across all modes. Scalar loses
+  2.3 ±1.1 W; AVX2 power is unchanged within uncertainty (-0.2 ±0.7 W),
+  but effective clock drops 46 ±5 MHz at similar process occupancy.
+  Realistic +0.2 ±2.0 W, unchanged pinned source/checksum.
+- Reject universal decoupling and restore accepted source/goldens. P023
+  will preserve SSE2's network and test decoupling only on wide x86 kernels.
+  AVX2's tie-break result is not a watt improvement or benchmark target proof;
+  temperatures reached 96.0 C, requiring benchmark confirmation of any winner.
+- Candidate built 14/14 and passed 163/163 with sanitizers/cross-toolchain
+  goldens. Numeric health unchanged; one DIV/eight wide FMAs/no wide spills.
+  Existing P005 patch reproduces the idea; [ledger](../power-ledger.md) has
+  new one-round values, conditions and local evidence. Restoration rebuilt
+  14/14 and passed 163/163; release machine code matches measured P011.
+  Removed stray ledger fences so historical entries render as Markdown.
+
 ## 2026-10-04 — P016 alignment rejected; P017 Zig inconclusive
 
 - 45 valid short runs, five paired repeats per mode. Alignment lost
