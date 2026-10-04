@@ -1,19 +1,18 @@
 # Manual full CPU load: A/B-compare executables using fresh post-warmup samples
 # (package power, effective clock, temperature, Vcore). Self-elevates via UAC.
-# Workflow: llm-wiki/power-optimization.md. Default short mode: 30 s preheat,
-# then 8 s warmup + 15 s window per run, 5 interleaved repeats. -Mode benchmark
-# measures the real 180 s benchmark (absolute numbers).
-# Example: ./scripts/measure.ps1 -Label P001-change `
+# Workflow: llm-wiki/power-optimization.md. Default: GUI-equivalent benchmark,
+# only compiler-sim compute workers, no decompression/RAM/I/O; 8+15 s windows.
+# Example: ./scripts/measure.ps1 -ISA avx2 -Label P001-change `
 #   -Exe audit/power-baselines/P001-base/ShaderStress.com,bin/x64-llvm-v3/ShaderStress.com
 param(
   [string]$Exe = "bin/x64-llvm-v3/ShaderStress.com",
   [string]$Label = "adhoc",
-  [ValidateSet("short", "benchmark")][string]$Mode = "short",
+  [ValidateSet("short", "benchmark")][string]$Mode = "benchmark",
   [double]$WarmupSec = 0,
   [double]$MeasureSec = 0,
   [int]$Repeats = 0,
   [int]$Threads = 0,
-  [string]$ISA = "scalar-sim,scalar,avx2",
+  [string]$ISA = "scalar-sim",
   [string]$Csv = "",
   [switch]$NoElevate
 )

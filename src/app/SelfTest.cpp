@@ -381,6 +381,22 @@ void TestFormatting() {
             FmtHex64(255) == L"0x00000000000000ff",
         "formatting helpers");
   TestPowerReaderFormat();
+  auto window = ParseCliArgs({L"ShaderStress", L"--mode", L"benchmark", L"--isa", L"avx2",
+                             L"--power-window", L"23", L"--threads", L"2"});
+  ApplyCliDefaults(window.options);
+  Check(window.errors.empty() && window.options.mode == MODE_BENCHMARK &&
+            window.options.workload == WL_AVX2 && CliRunDurationSeconds(window.options) == 23 &&
+            window.options.run.threadLimit == 2 && window.options.run.noDecomp &&
+            window.options.run.noRam && window.options.run.noIo,
+        "power window retains benchmark mode and ISA, caps duration and disables auxiliary work");
+  auto normalBench = ParseCliArgs({L"ShaderStress", L"--benchmark"});
+  ApplyCliDefaults(normalBench.options);
+  auto steady = ParseCliArgs({L"ShaderStress", L"--mode", L"steady", L"--duration", L"7"});
+  ApplyCliDefaults(steady.options);
+  Check(normalBench.errors.empty() && CliRunDurationSeconds(normalBench.options) == 180 &&
+            normalBench.options.workload == WL_SCALAR_SIM && steady.errors.empty() &&
+            CliRunDurationSeconds(steady.options) == 7,
+        "power window preserves normal benchmark and timed-run duration contracts");
   std::wstring hash = GenerateBenchmarkHash(1, 2, 3);
   HashResult hr = ValidateBenchmarkHash(hash);
   Check(hr.valid && hr.r0 == 1 && hr.r1 == 2 && hr.r2 == 3 &&

@@ -1,13 +1,14 @@
 # Manual tuning tool; NEVER part of regression tests. Produces full CPU load.
 # Builds isolated -tuning outputs, preserves release binaries and raw evidence.
 # Self-elevates via UAC. Workflow: llm-wiki/power-optimization.md.
-# Example short compute-only sweep:
-# ./scripts/sweep_power.ps1 -Targets win-v3 -Buf 128,512 -Rounds 2,4
+# Uses the GUI benchmark job mix, only compiler-sim compute workers.
+# Example bounded comparison (five pairs of 8+15 s windows, 600 s load budget):
+# ./scripts/sweep_power.ps1 -Targets win-v3 -ISAs avx2 -Buf 128,512 -Rounds 1
 param(
   [string]$Targets = "win-v3,zig-v3,msvc",
   [string]$ISAs = "scalar,avx2",
   [string]$Label = "sweep",
-  [ValidateSet("short", "benchmark")][string]$Mode = "short",
+  [ValidateSet("short", "benchmark")][string]$Mode = "benchmark",
   [int]$Repeats = 0,
   [int]$Threads = 0,
   [string]$Buf = "64,128,256,512",

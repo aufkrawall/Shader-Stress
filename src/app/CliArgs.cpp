@@ -128,6 +128,7 @@ void PrintCliHelp() {
       << "  --isa <name>             auto, avx512, avx2, scalar (SSE2/NEON), scalar-sim.\n"
       << "  --duration <sec>         Stop after N seconds.\n"
       << "  --max-duration <sec>     Alias of --duration.\n"
+      << "  --power-window <sec>     Benchmark job mix for 1-23 s, compute only; no score/hash.\n"
       << "  --benchmark              Shortcut for --mode benchmark (180 s, defaults to scalar-sim).\n"
       << "  --threads <n>            Use at most N worker threads (fastest cores first).\n"
       << "  --dwell <sec>            Core-cycle time per core (default 60).\n"
@@ -234,6 +235,14 @@ CliParseResult ParseCliArgs(const std::vector<std::wstring> &args) {
       o.runRequested = true;
       continue;
     }
+    if (lowered == L"--power-window") {
+      int v = 0;
+      if (TakePositiveInt(args, i, L"--power-window", 1, 23, v, result.errors)) {
+        o.powerWindowSeconds = (uint64_t)v;
+        o.runRequested = true;
+      }
+      continue;
+    }
     if (lowered == L"--threads") {
       int v = 0;
       if (TakePositiveInt(args, i, L"--threads", 1, 4096, v, result.errors)) {
@@ -310,6 +319,13 @@ CliParseResult ParseCliArgs(const std::vector<std::wstring> &args) {
   if (o.showHelp || o.showVersion)
     return result;
 
+  if (o.powerWindowSeconds &&
+      (!o.hasMode || o.mode != MODE_BENCHMARK || o.hasDuration || o.forceWizard ||
+       o.hasDwell || o.selfTestRequested || o.perfStatsRequested || o.hashRoundtripRequested ||
+       o.reproRequested || o.verifyRequested)) {
+    AddError(result.errors, L"--power-window requires --mode benchmark and cannot be combined "
+                            L"with duration, wizard or diagnostic commands.");
+  }
   if (o.verifyRequested && o.reproRequested)
     AddError(result.errors, L"--verify and --repro cannot be combined.");
 
@@ -363,6 +379,19 @@ void ApplyCliDefaults(CliOptions &options) {
   } else if (!options.hasIsa) {
     options.workload = WL_AUTO;
   }
+  if (options.powerWindowSeconds) {
+    options.run.noDecomp = true;
+    options.run.noRam = true;
+    options.run.noIo = true;
+  }
+}
+
+uint64_t CliRunDurationSeconds(const CliOptions &options) {
+  if (options.powerWindowSeconds)
+    return options.powerWindowSeconds;
+  if (options.mode == MODE_BENCHMARK)
+    return BENCHMARK_DURATION_SEC;
+  return options.hasDuration ? options.durationSeconds : 0;
 }
 
 namespace {

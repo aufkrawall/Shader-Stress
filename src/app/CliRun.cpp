@@ -146,9 +146,7 @@ static void ApplyRunOptions(const CliOptions &options) {
   g_RunOpts = options.run;
   g_App.mode = options.mode;
   g_App.selectedWorkload = NormalizeWorkloadSelection(options.workload);
-  g_App.maxDuration = options.mode == MODE_BENCHMARK ? BENCHMARK_DURATION_SEC
-                      : options.hasDuration          ? options.durationSeconds
-                                                     : 0;
+  g_App.maxDuration = CliRunDurationSeconds(options);
 }
 
 // --- Simple commands ----------------------------------------------------------
@@ -301,7 +299,7 @@ static void DrawDashboard() {
   std::cout << frame << std::flush;
 }
 
-static void PrintFinalResults() {
+static void PrintFinalResults(const CliOptions &options) {
   VerifyStats v = GetVerifyStats();
   std::cout << "\n=== Final Results ===\n"
             << "Total Jobs: " << (unsigned long long)g_App.shaders.load() << "\n"
@@ -319,7 +317,7 @@ static void PrintFinalResults() {
             << ", RAM " << v.ramErrors << ", I/O " << v.ioErrors << ")\n";
   std::wstring cpus = FormatErrorCpus(16);
   if (!cpus.empty()) std::cout << "Error CPUs: " << ToNarrow(cpus) << "\n";
-  if (g_App.mode == MODE_BENCHMARK) {
+  if (g_App.mode == MODE_BENCHMARK && !options.powerWindowSeconds) {
     std::wstring finalHash = g_App.GetBenchHash();
     if (!finalHash.empty()) std::cout << "Benchmark Hash: " << ToNarrow(finalHash) << "\n";
   }
@@ -328,6 +326,10 @@ static void PrintFinalResults() {
 static int RunStressCommand(const CliOptions &options, const CliEnvironment &environment) {
   InitializeRuntime(options.quiet);
   ApplyRunOptions(options);
+  if (options.powerWindowSeconds) {
+    g_App.Log(L"Power measurement: benchmark job mix, compute workers only, no decompression/RAM/I/O; "
+              L"limit " + std::to_wstring(options.powerWindowSeconds) + L" s; no benchmark score/hash.");
+  }
   SetFpuFlushMode();
   InitGoldenValues();
   DetectBestConfig();
@@ -363,7 +365,7 @@ static int RunStressCommand(const CliOptions &options, const CliEnvironment &env
   CleanupWorkers();
   RemoveInterruptHandlers();
   if (WasInterrupted()) std::cout << "\nInterrupted. Stopping...\n";
-  PrintFinalResults();
+  PrintFinalResults(options);
   if (WasInterrupted()) return (int)CliExitCode::Interrupted;
   return g_App.errors.load() > 0 ? (int)CliExitCode::HardwareErrors : (int)CliExitCode::Success;
 }

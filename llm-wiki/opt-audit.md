@@ -3,6 +3,13 @@
 Last verified: 2026-10-04. Stale-risk: medium (P011 benchmark confirmed on the 5700X — see [power-ledger.md](power-ledger.md); targets remain unmet and AVX2 run variability is unresolved; codegen verified by disassembly).
 History before 3.6.0: [log/archive/opt-audit-2026-05-to-06.md](log/archive/opt-audit-2026-05-to-06.md) — its power comparisons are confounded (kernels ran on `inf`).
 
+2026-10-04 protocol correction: older short/steady-mode power deltas and compiler
+rankings below are historical screening, unverified for the GUI benchmark job mix.
+P011's completed 180 s runs remain benchmark evidence, but new measurements must
+use only compiler-sim/compute workers, benchmark job sizes and bounded 8+15 s
+windows (`--power-window 23`), with no auxiliary work or longer runs. See the
+[ledger protocol audit](power-ledger.md#2026-10-04-protocol-audit-compiler-sim-threads--benchmark-job-mix-only).
+
 ## Summary
 
 Goal: maximum sustained package power and broad execution-unit coverage on Zen 2-5,

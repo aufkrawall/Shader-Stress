@@ -4,15 +4,16 @@ Never invoked with real workloads by unit tests (full CPU load). Elevates itself
 via UAC when needed (PawnIO sensors). Workflow and decision rules:
 llm-wiki/power-optimization.md; results ledger: llm-wiki/power-ledger.md.
 
-    # A/B: baseline snapshot vs current build, interleaved, all three target ISAs
-    # (default short mode: 30 s preheat, then 8 s warmup + 15 s window per run, 5 repeats)
+    # GUI-equivalent A/B: 16/all compiler-sim compute threads, no auxiliary work.
+    # Default: benchmark job mix, 8 s warmup + 15 s window, five paired repeats.
     python scripts/power_measure.py --snapshot P001-base
-    python scripts/power_measure.py --label P001-my-change \\
+    python scripts/power_measure.py --isas avx2 --label P001-my-change \\
         --exe audit/power-baselines/P001-base/ShaderStress.com,bin/x64-llvm-v3/ShaderStress.com
-    # Confirm absolute numbers in the real 180 s benchmark
+    # Steady-mode short data are historical screening, not GUI benchmark evidence.
+    # The load-time budget defaults to ten minutes; split/select small comparisons.
     python scripts/power_measure.py --mode benchmark --label P001-confirm
     # Buffer x rounds x compiler sweep (isolated -tuning builds)
-    python scripts/power_measure.py --sweep --targets win-v3 --buffers 128,512 --rounds 2,4
+    python scripts/power_measure.py --sweep --targets win-v3 --isas avx2 --buffers 128,512 --rounds 1
     # Re-summarize an existing CSV
     python scripts/power_measure.py --summarize audit/power-measurements/<session>/results.csv
 """
@@ -53,13 +54,11 @@ T95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8:
 MIN_POWER_DELTA_W = 1.0      # smaller power deltas are never acted on
 MIN_CLOCK_DELTA_MHZ = 15.0   # smaller clock deltas never decide a tie
 # Per mode: ShaderStress run, warmup, measurement window, repeats, preheat.
-# "short" = steady mode with every thread on compute: the same worker layout
-# as the benchmark (SetWork(cpu, 0)), fixed 12k-complexity jobs instead of the
-# benchmark's 5k-500k mix. It screens A/B differences; "benchmark" confirms
-# absolute numbers in the user's 180 s scenario.
-MODE_DEFAULTS = {"short": {"warmup": 8, "measure": 15, "repeats": 5, "preheat": 30},
-                 "benchmark": {"warmup": 30, "measure": 148, "repeats": 3, "preheat": 0}}
-BENCHMARK_SECONDS = 180
+# "benchmark" uses the GUI's job mix, bounded by the CLI power-window option.
+# "short" retains the legacy steady job mix, never evidence for this goal.
+MODE_DEFAULTS = {"short": {"warmup": 8, "measure": 15, "repeats": 5, "preheat": 0},
+                 "benchmark": {"warmup": 8, "measure": 15, "repeats": 5, "preheat": 0}}
+MAX_POWER_WINDOW_SECONDS = 23
 NUMERIC = {"BufKiB": int, "Rounds": int, "Repeat": int, "Threads": int, "Samples": int,
            "Watts": float, "StdDevW": float, "MinW": float, "MaxW": float,
            "JobsPerSecond": float, "EffMHz": float, "TempMeanC": float, "TempMaxC": float,
@@ -136,13 +135,24 @@ def summarize_samples(log, warmup, measure, exit_code=0, interval=1.0, max_gap=3
 
 
 def run_seconds(mode, warmup, measure):
-    return BENCHMARK_SECONDS if mode == "benchmark" else math.ceil(warmup + measure) + 2
+    return math.ceil(warmup + measure)
+
+
+def planned_load_seconds(options):
+    """Workload time only; does not execute binaries, build or request elevation."""
+    count = len(options.exe)
+    if options.sweep:
+        from scripts.build_options import select_configs
+        count = (len(select_configs(comma_values(options.targets))) *
+                 len(options.buffers) * len(options.rounds))
+    return (options.preheat + count * len(options.isas) * options.repeats *
+            run_seconds(options.mode, options.warmup, options.measure))
 
 
 def workload_args(mode, seconds, isa, threads):
     # threads 0 = all logical CPUs, exactly like a user's benchmark run.
     if mode == "benchmark":
-        args = ["--mode", "benchmark", "--isa", isa]  # fixed 180 s
+        args = ["--mode", "benchmark", "--power-window", str(seconds), "--isa", isa]
     else:
         args = ["--mode", "steady", "--duration", str(seconds), "--isa", isa]
     if threads:
@@ -230,8 +240,10 @@ def preheat(exe, options, session):
     isa = "avx2" if "avx2" in options.isas else options.isas[0]
     run_dir = session / "preheat"
     run_dir.mkdir()
-    print(f"Preheat: {exe.parent.name} {isa} for {options.preheat} s (not recorded)", flush=True)
-    code, _ = run_workload(exe, "short", options.preheat, isa, options.threads, run_dir)
+    seconds = options.preheat
+    print(f"Preheat: {exe.parent.name} {isa}, {options.mode}, {seconds} s (not recorded)",
+          flush=True)
+    code, _ = run_workload(exe, options.mode, seconds, isa, options.threads, run_dir)
     if code != 0:
         raise RuntimeError(f"preheat run exited with code {code}; evidence: {run_dir}")
 
@@ -368,20 +380,24 @@ def parse_args(argv=None):
                         help="comma-separated executables (repo-relative); the first is the "
                              "baseline, runs are interleaved in shuffled order")
     parser.add_argument("--label", default="adhoc", help="experiment id, e.g. P003-fadd-lane")
-    parser.add_argument("--mode", choices=tuple(MODE_DEFAULTS), default="short",
-                        help="short: steady all-compute A/B screening (default); "
-                             "benchmark: the real 180 s benchmark for absolute numbers")
-    parser.add_argument("--warmup", type=float, help="seconds before the window (8 / 30)")
-    parser.add_argument("--measure", type=float, help="window length in seconds (15 / 148)")
-    parser.add_argument("--repeats", type=int, help="interleaved rounds (5 / 3)")
-    parser.add_argument("--preheat", type=int, help="unrecorded load before round 1 (30 / 0 s)")
+    parser.add_argument("--mode", choices=tuple(MODE_DEFAULTS), default="benchmark",
+                        help="benchmark (default): GUI benchmark job mix in a <=23 s compute-only window; "
+                             "short: legacy steady-mode screening, not benchmark evidence")
+    parser.add_argument("--warmup", type=float, help="seconds before the window (default/max 8)")
+    parser.add_argument("--measure", type=float, help="window length in seconds (default/max 15)")
+    parser.add_argument("--repeats", type=int, help="interleaved rounds (default 5)")
+    parser.add_argument("--max-load-seconds", type=int, default=600,
+                        help="planned workload-time budget (default 600 s); checked before UAC")
+    parser.add_argument("--preheat", type=int, help="optional unrecorded load before round 1 "
+                        "(default 0; max 23 s, same selected job mix)")
     parser.add_argument("--threads", type=int, default=0, help="0 = all logical CPUs")
     parser.add_argument("--sample-interval", type=float, default=1.0,
                         help="PowerReader window in seconds (binaries before streaming: 6.5)")
     parser.add_argument("--max-gap", type=float, default=3.0,
                         help="largest tolerated gap between readings in seconds")
     parser.add_argument("--isas", default=None,
-                        help=f"default {TARGET_ISAS} ({SWEEP_ISAS} with --sweep)")
+                        help=f"default scalar-sim in benchmark, {TARGET_ISAS} in legacy short "
+                             f"({SWEEP_ISAS} with --sweep)")
     parser.add_argument("--sweep", action="store_true")
     parser.add_argument("--targets", default="win-v3,zig-v3,msvc")
     parser.add_argument("--buffers", default="64,128,256,512")
@@ -408,14 +424,17 @@ def parse_args(argv=None):
             setattr(args, key, value)
     if args.warmup < 3 or args.measure < 5:
         parser.error("warmup must be >= 3 s and the measurement window >= 5 s")
-    if args.mode == "benchmark" and args.warmup + args.measure > BENCHMARK_SECONDS - 1:
-        parser.error(f"benchmark runs {BENCHMARK_SECONDS} s: warmup + measure must be <= "
-                     f"{BENCHMARK_SECONDS - 1}")
+    if args.warmup > 8 or args.measure > 15 or args.preheat > MAX_POWER_WINDOW_SECONDS:
+        parser.error("power runs are bounded: warmup <= 8 s, measurement <= 15 s, preheat <= 23 s")
     if args.threads < 0 or args.repeats < 1 or args.preheat < 0:
         parser.error("threads must be >= 0 (0 = all), repeats positive, preheat >= 0")
+    if args.max_load_seconds < 1:
+        parser.error("--max-load-seconds must be positive")
     if not (0 < args.sample_interval <= args.max_gap):
         parser.error("need 0 < --sample-interval <= --max-gap")
-    args.isas = comma_values(args.isas or (SWEEP_ISAS if args.sweep else TARGET_ISAS))
+    default_isas = SWEEP_ISAS if args.sweep else (
+        "scalar-sim" if args.mode == "benchmark" else TARGET_ISAS)
+    args.isas = comma_values(args.isas or default_isas)
     if not args.isas or any(i not in ("scalar", "scalar-sim", "avx2", "avx512") for i in args.isas):
         parser.error("invalid ISA list")
     args.exe = [repo_path(e) for e in comma_values(args.exe)]
@@ -463,13 +482,19 @@ def run_session(options, argv):
             "GitHead": (git("rev-parse", "HEAD") or "").strip() or None,
             "GitDirty": bool((git("status", "--porcelain") or "").strip()),
             "Processor": platform.processor(), "LogicalCpus": os.cpu_count(),
-            "Python": sys.version.split()[0]}
+            "Python": sys.version.split()[0], "PlannedLoadSeconds": planned_load_seconds(options),
+            "MaxLoadSeconds": options.max_load_seconds}
     (session / "session.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     threads = options.threads or f"all ({os.cpu_count()})"
     seconds = run_seconds(options.mode, options.warmup, options.measure)
     print(f"Manual full CPU load: {threads} threads, {options.mode} mode, {seconds} s/run "
           f"(warmup {options.warmup} s, window {options.measure} s), {options.repeats} repeats, "
           f"ISAs {','.join(options.isas)}. Evidence: {session}", flush=True)
+    print(f"Workload contract: compute/compiler-sim workers only; decompression, RAM and "
+          f"I/O disabled. Planned load: {planned_load_seconds(options)} s.", flush=True)
+    if options.mode == "short":
+        print("Legacy steady-mode job mix: these readings are NOT GUI benchmark evidence.",
+              flush=True)
     if options.sweep:
         from scripts.build_options import select_configs  # configuration only, no toolchains
         configs = select_configs(comma_values(options.targets))
@@ -555,6 +580,11 @@ def main(argv=None):
         missing = [str(e) for e in options.exe if not e.exists()]
         if missing:
             raise RuntimeError("executable not found: " + ", ".join(missing))
+    planned = planned_load_seconds(options)
+    if planned > options.max_load_seconds:
+        raise RuntimeError(f"planned load {planned} s exceeds --max-load-seconds "
+                           f"{options.max_load_seconds}; select fewer ISAs, builds, repeats "
+                           "or sweep candidates")
     if not power_host.is_admin():
         if options.no_elevate or options.elevated_child:
             raise RuntimeError("sensor readout needs an elevated process (omit --no-elevate "

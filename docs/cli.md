@@ -74,7 +74,9 @@ The wizard is intentionally limited to interactive terminal sessions.
 - Modifier-only invocations such as `--isa avx2` or `--no-avx512` are rejected unless paired with an explicit action like `--wizard`, `--mode`, `--duration`, `--benchmark`, `--verify`, or `--repro`.
 - Unknown flags are rejected.
 - Missing values for flags that require arguments are rejected.
-- Benchmark mode is fixed to 180 seconds. If no ISA is specified, it defaults to `scalar-sim`.
+- The normal scored benchmark is fixed to 180 seconds. If no ISA is specified,
+  it defaults to `scalar-sim`. The explicit `--power-window` measurement option
+  retains benchmark job sizes but caps the run at 23 seconds and emits no score/hash.
 - `--verify` is mutually exclusive with run and wizard options.
 - `--repro` is mutually exclusive with wizard, benchmark, duration, and run-tuning options (`--threads`, `--dwell`, `--no-ram`, `--no-io`, `--no-decompress`, `--ram-mb`, `--io-mb`).
 - `--dwell` is only accepted with `--mode corecycle` (or the wizard).
@@ -123,6 +125,25 @@ ShaderStress.com --mode steady --isa avx2 --duration 60
 ShaderStress.com --benchmark
 ./shaderstress --benchmark
 ```
+
+For power comparisons matching the GUI benchmark, use only compiler-sim/compute
+workers: choose the ISA explicitly, use all logical CPUs, and disable decompression,
+RAM and I/O. On the 16-thread reference machine:
+
+```text
+ShaderStress.com --mode benchmark --power-window 23 --isa avx2 --threads 16 --no-decompress --no-ram --no-io
+```
+
+Manual measurements use `python scripts/power_measure.py --isas avx2` (Windows;
+self-elevates for sensors). It defaults to five repeats of an 8-second warm-up
+plus 15-second measurement window, using the GUI benchmark's job-size distribution.
+Each run is capped at 23 seconds; five A/B pairs take roughly four minutes.
+Planned workload time is limited to 600 seconds by default. The normal benchmark
+still runs for 180 seconds; `--power-window` produces no benchmark score/hash,
+requires benchmark mode and cannot be combined with `--duration`, wizard or
+diagnostic commands. Steady-mode readings use a different job-size distribution
+and do not establish power for the GUI benchmark workload.
+See [the power runbook](../llm-wiki/power-optimization.md) for comparisons and evidence.
 
 ### Quiet batch run
 

@@ -8,14 +8,16 @@ import json
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts import power_host  # noqa: E402
-from scripts.power_measure import (binary_sha256, format_summary, load_rows,  # noqa: E402
-                                   make_evidence_dir, parse_args, run_seconds, snapshot, summarize_runs,
+from scripts.power_measure import (binary_sha256, format_summary, load_rows, main,  # noqa: E402
+                                   make_evidence_dir, parse_args, planned_load_seconds, preheat,
+                                   run_seconds, snapshot, summarize_runs,
                                    summarize_samples, verdict, workload_args, write_rows)
 
 # Must equal the line asserted by TestPowerReaderFormat in src/app/SelfTest.cpp.
@@ -78,31 +80,65 @@ def test_samples(check):
 
 
 def test_arguments(check):
-    args = workload_args("short", 25, "avx2", 0)
-    check(args[:4] == ["--mode", "steady", "--duration", "25"] and "--threads" not in args and
+    args = workload_args("short", 23, "avx2", 0)
+    check(args[:4] == ["--mode", "steady", "--duration", "23"] and "--threads" not in args and
           all(x in args for x in ("--no-ram", "--no-io", "--no-decompress")),
           "short mode: steady all-compute on all logical CPUs (benchmark worker layout)")
-    check("--duration" not in workload_args("benchmark", 180, "avx2", 0) and
-          workload_args("short", 25, "scalar", 16)[-6:-4] == ["--threads", "16"],
-          "benchmark mode keeps its fixed 180 s; explicit thread count is passed through")
+    check("--duration" not in workload_args("benchmark", 23, "avx2", 0) and
+          workload_args("short", 23, "scalar", 16)[-6:-4] == ["--threads", "16"],
+          "benchmark power window uses dedicated limit; explicit thread count is passed through")
     d = parse_args([])
-    check((d.mode, d.warmup, d.measure, d.repeats, d.preheat) == ("short", 8, 15, 5, 30) and
-          run_seconds(d.mode, d.warmup, d.measure) == 25 and d.threads == 0 and
-          d.isas == ["scalar-sim", "scalar", "avx2"] and
+    check((d.mode, d.warmup, d.measure, d.repeats, d.preheat) == ("benchmark", 8, 15, 5, 0) and
+          run_seconds(d.mode, d.warmup, d.measure) == 23 and d.threads == 0 and
+          d.isas == ["scalar-sim"] and d.max_load_seconds == 600 and
           d.exe == [PROJECT_ROOT / "bin/x64-llvm-v3/ShaderStress.com"] and d.csv is None,
-          "defaults: 8 s warmup + 15 s window, 5 repeats, 30 s preheat, all target ISAs")
+          "defaults: benchmark job mix, compute only, 8+15 s, five scalar-sim runs, 600 s budget")
     b = parse_args(["--mode", "benchmark"])
-    check((b.warmup, b.measure, b.repeats, b.preheat) == (30, 148, 3, 0) and
-          run_seconds(b.mode, b.warmup, b.measure) == 180,
-          "benchmark mode defaults: 30 s warmup + 148 s window of the 180 s run, 3 repeats")
+    check((b.warmup, b.measure, b.repeats, b.preheat) == (8, 15, 5, 0) and
+          run_seconds(b.mode, b.warmup, b.measure) == 23,
+          "benchmark power windows stop after 8 s warmup + 15 s measurement")
+    check(workload_args(d.mode, 23, "avx2", 16) ==
+          ["--mode", "benchmark", "--power-window", "23", "--isa", "avx2", "--threads", "16",
+           "--no-ram", "--no-io", "--no-decompress", "--quiet"],
+          "default launch uses benchmark job mix and only 16 compiler-sim compute threads")
+    legacy = parse_args(["--mode", "short"])
+    check((legacy.warmup, legacy.measure, legacy.repeats, legacy.preheat) == (8, 15, 5, 0) and
+          legacy.isas == ["scalar-sim", "scalar", "avx2"],
+          "explicit legacy steady mode remains available with bounded duration and no preheat")
     check(parse_args(["--sweep"]).isas == ["scalar", "avx2"], "sweep default skips the realistic sim")
     ab = parse_args(["--exe", "audit/power-baselines/P1-base/ShaderStress.com,bin/x64-llvm-v3/ShaderStress.com"])
     check([e.parent.name for e in ab.exe] == ["P1-base", "x64-llvm-v3"] and ab.exe[0].is_absolute(),
           "A/B executables are labelled by their directory")
+    check(planned_load_seconds(d) == 115 and planned_load_seconds(ab) == 230 and
+          planned_load_seconds(parse_args(["--isas", "scalar-sim,scalar,avx2",
+                                          "--repeats", "3"])) == 207,
+          "load planning accounts for executables, ISAs, repeats and bounded duration")
+    check(planned_load_seconds(parse_args(["--sweep", "--targets", "win-v3", "--buffers", "128,512",
+                                          "--rounds", "1", "--isas", "avx2"])) == 230,
+          "sweep load planning counts each target/buffer/round candidate")
+    with mock.patch("scripts.power_measure.sys.platform", "win32"), \
+         mock.patch("scripts.power_measure.Path.exists", return_value=True), \
+         mock.patch.object(power_host, "is_admin", side_effect=AssertionError("unexpected UAC check")):
+        try:
+            main(["--exe", "audit/base/ShaderStress.com,audit/cand/ShaderStress.com",
+                  "--isas", "scalar-sim,scalar,avx2", "--repeats", "30"])
+            budget_rejected = False
+        except RuntimeError as error:
+            budget_rejected = "planned load 4140 s exceeds --max-load-seconds 600" in str(error)
+    check(budget_rejected, "hour-long comparison rejected before elevation or workloads")
+    heat = parse_args(["--preheat", "23"])
+    with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()), \
+         mock.patch("scripts.power_measure.run_workload", return_value=(0, "")) as launch:
+        preheat(d.exe[0], heat, Path(tmp))
+    check(planned_load_seconds(heat) == 138 and launch.call_args.args[1:5] ==
+          ("benchmark", 23, "scalar-sim", 0),
+          "benchmark preheat retains benchmark job mix and obeys the 23 s cap")
     with contextlib.redirect_stderr(io.StringIO()):
         for invalid in (["--duration", "60"], ["--mode", "steady"], ["--warmup", "2"],
                         ["--measure", "4"], ["--mode", "benchmark", "--measure", "150"],
+                        ["--warmup", "9"], ["--measure", "16"], ["--preheat", "24"],
                         ["--buffers", "31"], ["--rounds", "0"], ["--threads", "-1"],
+                        ["--max-load-seconds", "0"],
                         ["--sample-interval", "5"], ["--isas", "sse9"],
                         ["--exe", "a/x/ShaderStress.com,b/x/ShaderStress.com"], ["--label", "../x"]):
             try:

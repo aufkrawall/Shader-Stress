@@ -35,6 +35,7 @@ struct CliOptions {
   int mode = MODE_DYNAMIC;
   WorkloadType workload = WL_AUTO;
   uint64_t durationSeconds = 0;
+  uint64_t powerWindowSeconds = 0; // bounded benchmark job mix, not a scored benchmark
   uint64_t reproSeed = 0;
   int reproComplexity = 0;
   std::wstring verifyHash;
@@ -67,6 +68,7 @@ std::wstring GetRuntimeOsName();
 
 CliParseResult ParseCliArgs(const std::vector<std::wstring> &args);
 void ApplyCliDefaults(CliOptions &options);
+uint64_t CliRunDurationSeconds(const CliOptions &options);
 void PrintCliHelp();
 void PrintCliVersion();
 bool RunCliWizard(CliOptions &options);

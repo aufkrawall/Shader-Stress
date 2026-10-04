@@ -75,6 +75,12 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
 - `python tests/run_tests.py`: CLI contract, source invariants (incl. repo layout), build-option/MSVC command plans (mocked), power tooling (`tests/power_tool_tests.py`: log parser, A/B summary, snapshots, UAC relay helpers — no load, no elevation), kernel codegen audit of all built x64 Windows binaries, `--self-test`. Binaries run with cwd `bin/test-work/`.
 - `--stress`: bounded smoke runs (2 threads, 64 MiB RAM, 16 MiB I/O, <= 3 s) and golden checksums from `tests/golden_values.json` (x64; seed 42, complexity 1000); on AVX2 hosts also `--self-test` + golden checksums of the other built compilers (`x64-llvm-v3`, `x64-zig-v3`, `x64-msvc-v3`).
 - `--sanitize`: UBSan and ASan builds of `win-baseline` running `--self-test`, hash roundtrip and repro.
+- Manual power runs now use benchmark job sizes with `--power-window 23`, all
+  compiler-sim/compute workers and no decompression/RAM/I/O: 8 s warm-up + 15 s
+  measurement, no benchmark score/hash. Normal benchmark remains 180 s. The
+  measurement tool defaults to this bounded protocol, five repeats, no preheat,
+  and checks a 600 s planned-load budget before elevation. See the power runbook;
+  old steady-mode measurements are not current benchmark ranking evidence.
 
 ## Invariants
 

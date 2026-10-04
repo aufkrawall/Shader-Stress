@@ -1,5 +1,33 @@
 # Recent Changes Log
 
+## 2026-10-04 — Benchmark job-mix power windows; historical protocol audit
+
+- User requires compiler-sim/compute workers only, benchmark job mix, zero
+  decompression/RAM/I/O, and no workload longer than 8 s warm-up + 15 s sampling.
+  New CLI `--power-window` keeps benchmark mode/ISA and caps duration at 23 s,
+  forces auxiliary work off and emits no score/hash. Normal GUI benchmark stays
+  180 s. Measurement tool/wrappers default to benchmark job mix, five 8+15 s
+  repeats, no preheat; reject longer windows and plans above 600 s before UAC.
+- [Protocol audit](../power-ledger.md#2026-10-04-protocol-audit-compiler-sim-threads--benchmark-job-mix-only)
+  marks earlier steady-mode comparisons as historical screening, not benchmark
+  rankings. Retest promising/close variants; defer P003's large-loss variants.
+  P011's completed benchmark evidence remains valid; current all-mode bounded
+  reference and compiler rankings need remeasurement.
+- P023's completed one-pair AVX2 benchmark, before the new time cap: candidate
+  147.72 W vs P011 baseline 149.77 W (-2.05 W), clocks 4194/4196 MHz, samples
+  140/142, both errors zero. One pair is inconclusive, but does not establish
+  P023 superiority or >150 W GUI benchmark draw. No further 180 s measurements.
+- Regression coverage checks CLI duration/role/ISA preservation, original
+  benchmark contract, invalid combinations, exact measurement launch args,
+  window caps, budget/sweep/preheat accounting and refusal before elevation.
+  Diagnostics log the job mix, compute-only roles and duration. Source-pinned
+  realistic sim and synthetic algorithms/goldens unchanged. All 14 targets rebuilt,
+  13 archives, full stress/sanitizer suite 181/181. P025 runtime confirmation:
+  three valid 23 s runs, 14 samples/window, zero auxiliary work/errors/hash;
+  realistic/scalar/AVX2 109.75/133.03/147.34 W in one LLVM v3 binary. One run
+  per mode, not an established ranking or repeatability result. Current compiler
+  rechecks follow using the corrected protocol; no long measurements.
+
 ## 2026-10-04 — P023 not retained; no hour-long power tests
 
 - Wide-only divider decoupling: 50 valid short runs, five pairs per unchanged

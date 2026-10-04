@@ -1,8 +1,11 @@
 # Power Optimization Runbook ("continue power draw optimization")
 
-Last verified: 2026-10-04. User time constraint: no hour-long tests. Stale-risk: medium — P011 benchmark confirmation is
+Last verified: 2026-10-04. User constraints: benchmark job mix, compiler-sim
+threads only, 8 s warm-up + 15 s measurement per run; no hour-long tests.
+Stale-risk: medium — P011 benchmark confirmation is
 complete (three paired runs per mode, extended to ten for AVX2); unexplained
-run-to-run power variation remains. All absolute targets are still unmet.
+run-to-run power variation remains. All three targets are not yet established
+in one binary under the current bounded protocol.
 
 When the user says **"continue power draw optimization"** (or similar), follow this page.
 Results go into [power-ledger.md](power-ledger.md); kernel/flag design background is in
@@ -11,29 +14,43 @@ Results go into [power-ledger.md](power-ledger.md); kernel/flag design backgroun
 ## Summary
 
 One loop, repeated: pick **one** hypothesis from the ledger → make **exactly one** change →
-A/B-measure it against a pinned baseline snapshot, interleaved → decide with the rules
+A/B-measure the benchmark job mix against a pinned baseline, interleaved → decide with the rules
 below → record the result in the ledger (also when negative) → keep (full commit workflow)
 or revert (ledger-only commit) → the accepted build becomes the next baseline.
 
 ## Goal and scoring
 
-Scenario (the user's): **benchmark mode** (fixed 180 s), **all logical CPUs** (the thread
+Scenario (the user's): **GUI-equivalent benchmark job mix, compiler-sim/compute
+threads only, no other workloads**. Bounded power runs use **8 s warm-up + 15 s
+measurement, at most 23 s**. **All logical CPUs** (the thread
 count the default compiler-sim benchmark uses; 16 on the 5700X), compute only, one ISA per
 run. Reference system: Ryzen 7 5700X, PBO limits reported open. Rated Tjmax is 90 C;
 the configured thermal limit is unverified and P011 sensors exceeded 90 C.
 
-Two measurement modes (`scripts/power_measure.py --mode`):
+The GUI compiler-sim thread count denotes compute workers. Selecting `avx2`
+uses those workers; `scalar-sim` selects the pinned realistic algorithm. Disable
+decompression, RAM and I/O. Source anchors: `StartModeWork()` in
+`src/engine/Scheduler.cpp` sets benchmark `SetWork(cpu, 0, false, false)`;
+`ComplexityForPair()` in `src/engine/Verification.cpp` uses benchmark's variable
+job sizes, while steady/core-cycle use fixed complexity 12000. Equal worker
+count/100% CPU does not establish equal job mixes.
+
+Two tooling modes remain available, but **only benchmark job mix is valid for
+current power decisions, compiler rankings and target claims**:
 
 | Mode | Run | Use |
 |---|---|---|
-| `short` (default) | 30 s unrecorded preheat per session, then per run 8 s warmup + 15 s window (25 s run, ~30 s with checks), normally 5 interleaved repeats for one ISA (~5 min A/B) | All A/B decisions. ShaderStress `--mode steady` with every thread on compute = the benchmark's worker layout, but fixed 12k-complexity jobs instead of the benchmark's 5k-500k mix |
-| `benchmark` | the real 180 s benchmark, 30 s warmup + 148 s window; explicitly select one ISA and one paired repeat (~6-7 min A/B) | Bounded sustained-power checks, scheduling/job-size changes and absolute target evidence. One pair is descriptive, not a statistically established improvement; record run count and uncertainty |
+| `benchmark` (default) | 8 s warm-up + 15 s measurement, five repeats, no preheat; `--power-window 23` retains benchmark mode/job sizes. Default ISA `scalar-sim`, all compute workers | Current power comparisons and target evidence. Five A/B pairs for one ISA take ~4 min; report repeat count/uncertainty and short-window conditions |
+| `short` (explicit legacy mode) | Same bounded timing, but steady mode with fixed 12k jobs | Historical screening compatibility only; not valid for this goal. Do not substitute it to shorten benchmark tests |
 
-Short runs screen *relative* comparisons: readings are approximately contiguous 1 s windows
-of the energy counter (actual timestamps, coverage and gaps must be checked), pairing reduces drift,
-and the preheat keeps the cooler in a similar state for all arms. Absolute watts can differ
-by a few W from a 3 min run (cooler/coolant still warming, leakage), hence the benchmark mode
-for targets.
+Readings average approximately contiguous 1 s energy-counter windows; check actual
+timestamps, coverage and gaps. Preserve valid low runs. The older `short` mode's
+steady job mix is different; neither absolute watts nor rankings necessarily
+transfer. Bounded benchmark windows match the GUI job mix, but do not prove
+three-minute thermal steady state. Do not conflate the two protocols or promise
+an exact GUI reading. Normal GUI/CLI benchmark scoring remains 180 s; bounded
+power windows produce no score/hash. Older long measurements remain evidence,
+but no new run may exceed the user's 8+15 s limit.
 
 | Workload | `--isa` | Package power target (5700X) |
 |---|---|---|
@@ -67,20 +84,26 @@ reduces thermal/ambient drift) with a Student-t 95% CI:
 - `better (more power)`: ΔW > CI and ΔW >= 1 W. `worse (less power)`: mirror image.
 - `tie-break better/worse`: power within noise, but the effective clock differs beyond its
   CI and by >= 15 MHz (lower = better).
-- `inconclusive`: otherwise, or < 2 paired repeats. Re-measure with `--repeats 10` before
-  deciding a close call, restricted to the affected ISA and within the time
-  constraint below; never accept on an inconclusive verdict.
+- `inconclusive`: otherwise, or < 2 paired repeats. A close call can use ten
+  bounded pairs on the targeted ISA within the load budget, never ten full
+  benchmarks or a switch to steady mode. Never accept on an inconclusive verdict.
 - **Accept** a change only if it is `better` (or `tie-break better`) on the ISA(s) it targets
   **and** not `worse` on any other target ISA it can affect (when unsure, measure all three).
 
 ## Hard rules
 
-- **No hour-long tests (user instruction, 2026-10-04).** Prefer one-ISA short
+- **Compiler-sim threads / benchmark job mix only (user instruction, 2026-10-04).**
+  Use `--mode benchmark --power-window 23`, the selected ISA and all compute
+  workers, with zero decompression/RAM/I/O. Warm-up max 8 s, measurement max
+  15 s; never keep a workload running longer than their 23 s sum. No steady
+  proxy or fixed-job replacement. No extra preheat by default.
+- **No hour-long tests (user instruction, 2026-10-04).** Use bounded benchmark
   comparisons; keep a load batch around ten minutes or less. Do not launch the
-  default three-ISA, three-repeat benchmark comparison (~1 h), or automatically
+  historical three-ISA, three-repeat 180 s comparison (~1 h), or automatically
   chain batches into an hour of load. If a close call needs prolonged testing,
-  record it as inconclusive and move to another hypothesis. Short-mode readings
-  still do not prove benchmark targets. This overrides older confirmation plans.
+  record it as inconclusive and move to another hypothesis. The tool rejects
+  planned load above its default 600 s budget before UAC/workloads; do not
+  increase it for this task. This overrides older screening/confirmation plans.
 - **One change per experiment.** A candidate differs from its baseline in exactly one
   thing (one code idea, one flag, one compiler, one knob value). Never bundle "a few small
   tweaks" — effects can have opposite signs and the sum hides both. A multi-arm session
@@ -148,23 +171,23 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
 5. **Measure** (self-elevates via UAC; on the user's machine without a prompt):
 
    ```
-   python scripts/power_measure.py --isas avx2 --label P012-<slug> --exe audit/power-baselines/P012-base/ShaderStress.com,audit/power-baselines/P012-<slug>/ShaderStress.com
+   python scripts/power_measure.py --mode benchmark --isas avx2 --label P012-<slug> --exe audit/power-baselines/P012-base/ShaderStress.com,audit/power-baselines/P012-<slug>/ShaderStress.com
    ```
 
-   Select `--isas <affected-ISA>` explicitly: short-mode defaults are still all three
-   ISAs, 5 repeats, all logical CPUs (~15 min for A/B), so do not use the above
-   command without `--isas`. One ISA and five paired repeats take about five minutes.
+   Defaults are benchmark job mix, `scalar-sim`, five repeats, all logical CPUs,
+   8+15 s windows, no preheat, 600 s planned-load budget. Select the affected ISA
+   explicitly. Five bounded A/B pairs take roughly four minutes. Old snapshots
+   without CLI `--power-window` support must be rebuilt from their saved patch;
+   do not silently fall back to steady mode or a long benchmark.
    Run it as a
    background command (agent shells time out); the elevated child keeps going even if the
    parent is killed and writes everything to
-   `audit/power-measurements/<label>-<stamp>-<pid>-<nn>/`. Screen the targeted ISA
+   `audit/power-measurements/<label>-<stamp>-<pid>-<nn>/`. Measure the targeted ISA
    first; accepting a change still requires checking other ISAs it can affect.
-   For sustained evidence use a bounded real benchmark:
-   `python scripts/power_measure.py --mode benchmark --isas avx2 --repeats 1 --label P012-confirm --exe <base>,<cand>`
-   (two 180 s runs, ~6-7 min including checks). This cannot by itself resolve a
-   close A/B decision. Keep valid low runs; report the limited run count rather
-   than treating one good run as reliable target attainment. Aborted runs are
-   incomplete evidence, never silently shortened benchmark results.
+   Preserve every valid low run and report repeat count, temperatures, sampling
+   coverage and short-window conditions. Never treat one high reading as reliable
+   target attainment. An intentional power window is recorded as such; an aborted
+   full benchmark remains incomplete evidence.
 6. **Decide** from the printed `summary.md` table using the rules above.
 7. **Record** the ledger entry (template in the ledger): change, type, baseline/candidate
    labels + git state, conditions, command, summary table, verdict + reasoning, side effects
@@ -184,9 +207,19 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
   `--exe a,b,...` (repo-relative; labels = parent dir names, must differ),
   `--baseline NAME` (candidate the +/- deltas refer to; default: first `--exe`;
   unknown names fail fast), `--label`, `--mode short|benchmark`, `--warmup`,
-  `--measure`, `--repeats`, `--preheat`,
+  `--measure`, `--repeats`, `--preheat`, `--max-load-seconds` (default 600),
   `--isas`, `--threads` (0 = all), `--sweep --targets --buffers --rounds`, `--snapshot LABEL [--snapshot-source DIR]`, `--summarize CSV [--baseline NAME]`,
   `--max-background-load` (10%), `--temp-limit` (90), `--no-elevate`.
+- `workload_args()` passes `--mode benchmark --power-window <seconds>` and
+  `--no-decompress --no-ram --no-io`. `CliRunDurationSeconds()` and
+  `ApplyCliDefaults()` enforce the bounded duration and compute-only roles;
+  normal benchmark remains 180 s. Optional preheat retains the selected job
+  mix and is capped at 23 s, included in the budget. Legacy steady data are
+  explicitly warned as unsuitable for GUI benchmark claims.
+- Regression anchors: CLI/self-test coverage in `src/app/SelfTest.cpp` and
+  `tests/run_tests.py`; exact launch args, defaults, sweep/preheat accounting,
+  window caps and refusal before elevation in `tests/power_tool_tests.py`.
+  Unit tests never execute manual measurement workloads.
 - **UAC**: when not elevated, the script relaunches itself with `ShellExecuteExW("runas")`
   (`scripts/power_host.py`), relays the child's output from
   `audit/power-measurements/elevated-*.log` and returns its exit code. This machine has
@@ -228,11 +261,12 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
 
 - P011 validates scalar short screening against benchmark power, but AVX2 has
   large between-run variation even in 180 s runs. Keep every valid low run;
-  extend close comparisons rather than selecting the high cluster. Early versus
+  extend close comparisons only with bounded windows rather than selecting the high cluster. Early versus
   sustained P011 means differ by at most 2.64 W, while individual AVX2 run means
   differ by over 30 W. Warmup alone is insufficient to explain the variation.
   P013/P014 investigate input-stream and CPU-occupancy evidence; neither cause
-  is established. Confirm benchmark results whenever this variation matters.
+  is established. Use repeated bounded benchmark job-mix windows whenever this
+  variation matters; do not restore the superseded long-run procedure.
 - PowerReader competes with the workers for CPU time; reading jitter is absorbed by the
   contiguous windows, and its own small load is part of every run, equally for all arms.
 - Sensor names on Intel/other AMD generations are fallbacks (`CPU Package`, `CPU Core`,

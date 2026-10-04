@@ -23,9 +23,11 @@ understand and reproduce the change.
 - Windows Balanced plan verified by read-only query during P011.
 - Unknown, record when learned: cooler, fan profile, ambient, BIOS/AGESA.
 
-## Targets and current best (benchmark mode, all 16 threads)
+## Targets and historical confirmed baseline (180 s benchmark, all 16 threads)
 
-"Best measured" rows come from `--mode benchmark` runs only (short-mode watts are for A/B).
+These rows come from completed 180 s benchmark sessions. They remain historical
+evidence, but do not substitute for the newly requested 8+15 s benchmark-job-mix
+windows. Old `short`/steady-mode watts do not establish current A/B rankings.
 
 | Workload | `--isa` | Target | Best measured | Eff MHz | Build / commit | Experiment |
 |---|---|---|---|---|---|---|
@@ -36,6 +38,34 @@ understand and reproduce the change.
 These are best sustained means among the benchmark candidates measured here, not
 global optima. No target is established as met. AVX2 includes every low run.
 
+## 2026-10-04 protocol audit: compiler-sim threads / benchmark job mix only
+
+The user requires only the GUI benchmark's compiler-sim/compute threads, no
+decompression/RAM/I/O, now capped at 8 s warm-up + 15 s measurement per run.
+Historical `--mode short` runs used steady mode with fixed 12000-complexity
+jobs. Equal worker count/100% CPU does not establish the same workload. Original
+numbers/dispositions remain as history, but short-only compiler rankings and
+power improvements are **unverified for this goal**. Never advertise P023's
+152.8 W steady-mode result as GUI benchmark power.
+
+| Evidence / experiment | Current validity and next action |
+|---|---|
+| P011 / P000 completed 180 s benchmark sessions | Retain as actual benchmark evidence, including every low AVX2 run. Recheck the accepted binary first using bounded benchmark job-mix windows |
+| P023 wide-only divider change | One completed benchmark pair: candidate 147.72 W, baseline 149.77 W; neither the earlier +0.6 W screening gain nor a >150 W benchmark mean is established. Inconclusive; no new winner |
+| P017 Zig, P012 MSVC, P001 old compiler ranking | Recheck current compiler ranking in bounded benchmark windows. LLVM ≈ Zig > MSVC was a screening interpretation, not a benchmark-established order |
+| P008 PGO, P015 1 MiB, P016 alignment, P006 tuning | Close/inconclusive/modest short effects; candidates for selective rechecks, not benchmark-established winners or losers |
+| P007 strict aliasing / unroll / LTO, P004 FADD | Current P011 includes these settings and has benchmark evidence, but their isolated watt deltas were short-only. Contributions remain unverified for the benchmark job mix |
+| P018 universal divider change | Lower priority than wide-only retry: scalar short loss -2.3 ±1.1 W, AVX2 clock tie-break favorable; no blanket benchmark rejection inferred |
+| P003 small-buffer / extra-round variants | Defer: short losses 7-22 W make these low priority within the user's time budget. Not benchmark-tested losers; revisit only after stronger directions or a material baseline change |
+| P002 no-SLP fix | Retain verified register-width/spill and correctness/performance constraints; its negligible short watt delta is not a benchmark power claim |
+
+Rechecks use `--mode benchmark --power-window 23` through the updated tool, all
+16 compute workers, no auxiliary work, five interleaved repeats unless specified.
+The normal scored benchmark remains 180 s; no new power run may last that long.
+No default preheat or hour-long matrices. Close calls may use ten bounded pairs
+on one ISA if the complete batch stays within 600 s. Rebuild old snapshots for
+the new CLI option instead of silently falling back to steady mode.
+
 ## Hypothesis backlog
 
 Status: `open`, `running`, `accepted`, `rejected`, `inconclusive`, `retry` (worth
@@ -44,6 +74,8 @@ Baselines are experiment-specific: P001 favored MSVC for the old synthetics and
 LLVM for the realistic sim; P004 and P005 use LLVM v3. No compiler or knob set
 is established as globally optimal. P012 rechecked the one-round ranking and
 favored LLVM over MSVC for realistic/scalar; current Zig ranking remains open.
+These rankings are short-mode only; use the protocol audit above for their
+current validity. None proves the most power-hungry GUI benchmark compiler.
 LLVM v3 stays the release baseline. P009's historical mechanism note (2026-10-03, from
 `kernel_codegen.py` + `--perf-stats` on the unchanged ebc7357 builds, no load):
 all three toolchains emit 48 explicit FMAs with no wide spills in
@@ -79,12 +111,91 @@ heavier per-cycle current, matching the boost/backoff model).
 | P022 | flag | Compare `-O2` with `-O3` at unchanged strict FP settings; instruction scheduling and code size can alter power, and the nominal optimization level does not establish a watt optimum | all | open |
 | P023 | kernel | Scope P018's divider-feedback decoupling to wide x86 kernels (`SK_W > 2`) while preserving the higher-power SSE2 network; measure against the unchanged accepted baseline | avx2 | inconclusive (not retained; full benchmark cancelled at user's time limit) |
 | P024 | flag | Compare vectorizer interleave count 1 with compiler default for the pinned realistic sim; current disassembly has eight ymm input loads and a ymm stack store in its popcount loop. Confirm actual LTO codegen changes, unchanged goldens and watts rather than assuming spills reduce power | scalar-sim | open |
+| P025 | method | Validate bounded 8+15 s benchmark job-mix windows and establish a current reference, all 16 compiler-sim/compute workers with auxiliary work disabled | all | partial (runtime path verified; repeated reference/compiler ranking pending) |
 
 ## Entries
 
 Newest first. Copy the template.
 
+### P025 — Bounded benchmark job-mix measurement path (validated; reference repeats pending)
+- Date: 2026-10-04. Type: method. One conceptual correction: measure the GUI
+  benchmark job mix with compute workers only in 8+15 s windows, never a steady
+  proxy or another 180 s power run. CLI `--power-window` retains benchmark
+  mode/ISA, caps at 23 s, forces auxiliary work off and suppresses score/hash.
+  Original GUI benchmark remains 180 s. Workload kernels/pinned source/goldens
+  unchanged; binary is current LLVM v3 with only CLI/tooling changes on 579b47a.
+- Build: `python build.py` 14/14 targets and 13 archives, warning-free. Full
+  `python tests/run_tests.py --stress --sanitize` 181/181, including sanitizers,
+  cross-toolchain goldens and unchanged pinned realistic source.
+- Regression/diagnostic assessment: two new pure CLI self-test cases cover
+  duration/ISA/roles and original duration contracts; eight invalid CLI cases,
+  exact-launch/default tests, window caps, planned-budget refusal before UAC,
+  sweep/preheat accounting. Tests use mocks or existing bounded stress smoke
+  exceptions, no new full-load test. Log benchmark job mix, compute-only roles,
+  duration and absence of scoring; session metadata records load budget.
+- Manual runtime confirmation planned: one 23 s run per ISA (69 s load),
+  all 16 workers, no extra preheat, same binary; verify exact launch/logs,
+  zero auxiliary passes, sample coverage and no benchmark score/hash. This
+  initial validation is not enough repeats to establish a new power winner.
+  `python scripts/power_measure.py --mode benchmark --isas scalar-sim,scalar,avx2 --repeats 1 --label P025-window-validation`.
+- Logs: `audit/benchmark-window-build.log`, `audit/benchmark-window-tests.log`.
+- Runtime confirmation completed: all three 23 s runs valid, exact `Mode=benchmark`,
+  threads=16, warm-up=8, measure=15, no preheat; 14 samples per window. Startup
+  logs confirm benchmark job mix/23 s cap; stop logs confirm duration reached;
+  console results show zero decompression/RAM/I/O passes, errors zero and no
+  benchmark hash. No workload/measurement process remained after completion.
+
+  | ISA | W | Eff MHz | Tmax C | Background % | Runs |
+  |---|---|---|---|---|---|
+  | scalar-sim | 109.75 | 4466 | 82.5 | 6.0 | 1 |
+  | scalar | 133.03 | 4382 | 89.0 | 8.3 | 1 |
+  | avx2 | 147.34 | 4195 | 93.6 | 3.1 | 1 |
+
+- One same LLVM v3 binary (SHA-256
+  `fada24a2fede529963063a61f0157e8dba8895f496d4a87553727d9494686a9a`).
+  Candidate/source dirty on 579b47a for this method validation. New CLI code
+  changes overall machine code; do not claim whole `.text` equals the old P011
+  binary. Workload source/goldens and kernel codegen invariants remain intact.
+  These one-run values are preliminary; realistic/scalar remain below targets,
+  AVX2 clears its target in this window but repeatability is unestablished.
+  Repeated baseline and compiler-ranking checks are next, all capped at 23 s.
+  Conditions: authorized light browser activity, settings unchanged, cooler/fan/
+  ambient unknown; no readings excluded or normalized. Evidence:
+  `audit/power-measurements/P025-window-validation-20261004-110455-25952-00/`,
+  `audit/P025-window-validation-relay.log`. Wiki links/source anchors/protocol
+  consistency checked; full build/tests passed before runtime validation.
+
 ### P023 — Wide-only divider-feedback decoupling (inconclusive, restored baseline)
+- Benchmark follow-up, 2026-10-04: user observed approximately 145 W
+  with P023 in the GUI AVX2 benchmark (16 compiler-sim/compute threads, 100%
+  CPU). This is user-reported, not a captured measurement-window mean. Prior
+  152.8 W came from steady-mode short tests and must not be promised for the
+  GUI benchmark. Revalidate the unchanged saved binaries with one AVX2 pair:
+  `python scripts/power_measure.py --mode benchmark --isas avx2 --repeats 1 --label P023-benchmark-bounded --exe audit/power-baselines/P023-base/ShaderStress.com,audit/power-baselines/P023-wide-only/ShaderStress.com --baseline P023-base`.
+  Two 180 s runs, 30 s warmup/148 s measurement, all 16 compute workers,
+  zero decompression/RAM/I/O. One pair gives descriptive sustained evidence,
+  not a close-call significance verdict; no hour-long extensions. Existing
+  pinned snapshots are reused for this experiment's continuation, not as a
+  new experiment baseline. Worktree changes are documentation/tooling only.
+- Follow-up completed before the subsequent 8+15 s run limit: one valid AVX2
+  pair, same immutable executable hashes, 16 compiler-sim/compute workers,
+  no decompression/RAM/I/O, 180 s per run, 30 s warm-up/148 s window.
+
+  | Build | W | Window SD W | Samples | Eff MHz | Tmax C | Jobs/s | Background % |
+  |---|---|---|---|---|---|---|---|
+  | P023-wide-only | 147.72 | 1.30 | 140 | 4194 | 92.5 | 386.75 | 6.2 |
+  | P023-base | 149.77 | 1.39 | 142 | 4196 | 92.9 | 383.86 | 2.9 |
+
+- Candidate minus baseline -2.05 W/-2 MHz, descriptive only; one pair has no
+  paired CI. No established improvement or >150 W benchmark mean. The earlier
+  opinion favoring P023 was based on the wrong screening protocol and must not
+  override this actual benchmark evidence. Both runs verified/errors zero;
+  all readings retained, no normalization. User-authorized browser load,
+  system settings unchanged, ambient/fan/cooler unknown. After completion,
+  authoritative process check showed no measurement or ShaderStress process.
+  No further long runs permitted. Evidence:
+  `audit/power-measurements/P023-benchmark-bounded-20261004-104324-27624-00/`,
+  `audit/P023-benchmark-bounded-relay.log`.
 - Date: 2026-10-04. Type: kernel. Exactly one change: g3 XORs g4 only
   for `SK_W > 2` in `src/workloads/SynthKernel.inc`; 128-bit SSE2/NEON
   retain g7 feedback. In current sources this changes wide x86 kernels only.
