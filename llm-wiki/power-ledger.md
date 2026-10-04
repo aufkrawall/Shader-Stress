@@ -70,14 +70,101 @@ heavier per-cycle current, matching the boost/backoff model).
 | P013 | method | Add optional run-seed control so paired builds can use the same job/input stream; currently `ResetVerification()` samples the clock for each process. Investigate P011 startup variation without attributing it to seed or layout prematurely | all | open |
 | P014 | method | Record process/worker CPU occupancy during the window to distinguish compute saturation from CPU time taken by background processes; pre-run background load alone does not establish occupancy during the run | all | partial (local P008/P012 diagnostic collected; integrated tooling and old-outlier explanation open) |
 | P015 | knob | Test 1024 KiB instead of 512 KiB at one round: more L3 streaming may raise scalar synthetic power; the realistic source remains unchanged | scalar, avx2 | inconclusive (not retained; scalar -1.1 +-1.3 W, AVX2 -1.3 +-1.8 W) |
-| P016 | flag | Request 64-byte loop alignment versus compiler default (`-falign-loops=64`); preserve instructions/checksums and measure front-end effects rather than assuming a benefit | all | open |
-| P017 | compiler | Recheck Zig on the one-round kernel against current LLVM; P001's old-kernel tie cannot establish the current ranking | all | open |
+| P016 | flag | Request 64-byte loop alignment versus compiler default (`-falign-loops=64`); preserve checksums and measure front-end effects rather than assuming a benefit | all | rejected (scalar -2.0 +-1.5 W) |
+| P017 | compiler | Recheck Zig on the one-round kernel against current LLVM; P001's old-kernel tie cannot establish the current ranking | all | inconclusive (all modes +0.8 to +0.9 W, not retained) |
 | P018 | kernel | Retry P005's divider-feedback decoupling on the substantially changed one-round baseline; reducing FP work may expose the integer recurrence that was hidden at two rounds | scalar, avx2 | open |
 | P019 | kernel | SSE2-only multiply/rotate mixing of g4/g5/g6 after their additions, using existing odd constants: fill integer execution capacity while retaining the wider kernels' balance | scalar | open |
+| P020 | flag | Set LLVM's preferred innermost-loop alignment to 64 bytes through the LTO linker backend; P016 changed native kernels but did not align the realistic function's loops | scalar-sim | open |
+| P021 | method | Record synthetic buffers' page offsets once per worker, without full addresses, to investigate startup memory-placement variation; heap/cache placement is a hypothesis, not an explanation of P011 outliers | scalar, avx2 | open |
+| P022 | flag | Compare `-O2` with `-O3` at unchanged strict FP settings; instruction scheduling and code size can alter power, and the nominal optimization level does not establish a watt optimum | all | open |
 
 ## Entries
 
 Newest first. Copy the template.
+
+### P017 — Zig on the one-round kernel (inconclusive, not retained)
+- Date: 2026-10-04. Type: compiler. Exactly one change: Zig instead of LLVM
+  MinGW, same accepted 512 KiB / one-round source and existing build flags.
+- Baseline: P016-base; candidate: P017-zig. Both snapshots clean at 226c69a.
+- Hypothesis: P001's old-kernel ranking need not hold after P011; establish
+  the current three-mode ranking rather than assuming LLVM is optimal.
+- Plan: verify all existing goldens, numeric health and codegen; five paired
+  short repeats against the same LLVM baseline as P016. Each candidate is
+  compared separately to baseline. Confirm any winner in benchmark mode.
+- No workload change or additional hot-loop diagnostics.
+- Screening: Zig self-test 68/68; cross-toolchain goldens verified in P016's
+  full 163/163 suite. Perf-stats confirms unchanged checksums and health as
+  below. SSE2 remains xmm-only; AVX2 has eight FMAs, one DIV, no wide spills.
+- Result: five paired short repeats, all 16 workers, shared P016 session:
+
+  | Candidate | ISA | W (SD) | dW (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|
+  | P017-zig | scalar-sim | 113.0 (0.8) | +0.8 +-0.7 | 4486 | -6 +-6 | 81.6 | 5406 | inconclusive |
+  | P017-zig | scalar | 134.4 (0.6) | +0.9 +-0.7 | 4394 | +0 +-3 | 91.0 | 505 | inconclusive |
+  | P017-zig | avx2 | 147.8 (1.0) | +0.9 +-1.8 | 4214 | +0 +-16 | 95.0 | 447 | inconclusive |
+
+- Verdict: inconclusive in every mode; all nominal gains below the 1 W
+  threshold, effective-clock deltas below 15 MHz. Not accepted as a new
+  winner. Ten pairs are required before any close-call acceptance; prioritize
+  P018's changed integer-network hypothesis first. Zig remains a candidate
+  for rechecking on a changed kernel, not proven globally inferior.
+- Jobs/s: realistic 5406 vs LLVM 5550, scalar 505 vs 502, AVX2 447 vs 450.
+  No benchmark target or CHANGELOG claim. All checksums unchanged.
+- Conditions/evidence: same 45-run session as P016 below; temperature flags
+  on both synthetics, up to 95.0 C on Zig AVX2. Read-only occupancy trace
+  `audit/P016-occupancy.csv`; no sample excluded or normalized by occupancy.
+  Logs: `audit/P017-self-test.log`, `audit/P017-perf.log`,
+  `audit/P016-codegen.log`, `audit/P016-tests.log`.
+
+### P016 — 64-byte loop alignment (rejected)
+- Date: 2026-10-04. Type: compiler flag. Exactly one change:
+  `SHADERSTRESS_EXTRA_DEFINES=-falign-loops=64` for `python build.py win-v3`.
+  Existing tuning output directory isolates this candidate from release builds.
+- Baseline: P016-base, clean LLVM v3 at 226c69a, accepted P011 machine code.
+- Hypothesis: code placement may change front-end utilization, including the
+  pinned realistic simulation; do not infer a power benefit from alignment.
+- Plan: confirm actual code placement changes and all unchanged goldens;
+  check numeric health/codegen, then five paired short repeats in all modes.
+  Benchmark-confirm any winner before acceptance. No source changes.
+- Existing build command and perf-stats diagnostics cover flag scope and
+  live-data health. Local evidence is listed below.
+- Screening: isolated build 1/1, full `--stress --sanitize --bin
+  bin/x64-llvm-v3-tuning/ShaderStress.com` 163/163, all goldens unchanged.
+  Perf-stats: scalar/AVX2 max|x| 2.318/2.495, non-finite 0, energy drift
+  -1.00e-15/+6.69e-16 (also identical on Zig). Wide kernels retain eight FMAs,
+  one DIV and zero wide spills; SSE2 xmm-only. No compiler warnings.
+- Disassembly: SSE2 size 2706 -> 2930 bytes, seven of ten backward branch
+  targets aligned to 64 bytes versus one; AVX2 1560 -> 1640 bytes, three of
+  four versus two. Realistic size remains 4900 bytes; placement shifted,
+  only two of 25 backward targets aligned versus three. Do not claim that
+  the realistic loops all acquired the requested alignment through LTO.
+  Evidence: `audit/P016-alignment.log` and local disassemblies; backward
+  targets include non-loop control flow and are only a placement diagnostic.
+- Short command: `python scripts/power_measure.py --label P016-P017-screen --exe audit/power-baselines/P016-base/ShaderStress.com,audit/power-baselines/P016-loop64/ShaderStress.com,audit/power-baselines/P017-zig/ShaderStress.com --baseline P016-base`.
+- Result: five paired short repeats, all 16 workers:
+
+  | Candidate | ISA | W (SD) | dW (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|
+  | P016-loop64 | scalar-sim | 112.3 (1.1) | +0.1 +-1.7 | 4493 | +0 +-1 | 81.5 | 5474 | inconclusive |
+  | P016-loop64 | scalar | 131.6 (1.0) | -2.0 +-1.5 | 4405 | +11 +-1 | 90.1 | 486 | worse |
+  | P016-loop64 | avx2 | 146.0 (0.7) | -0.8 +-0.5 | 4209 | -5 +-15 | 93.9 | 444 | inconclusive |
+  | P016-base | scalar-sim | 112.2 (1.2) | - | 4493 | - | 81.6 | 5550 | baseline |
+  | P016-base | scalar | 133.5 (0.8) | - | 4394 | - | 90.9 | 502 | baseline |
+  | P016-base | avx2 | 146.8 (0.7) | - | 4214 | - | 93.8 | 450 | baseline |
+
+- Verdict: rejected due to established scalar power loss. No benefit proved
+  on the realistic simulation or AVX2. Isolated tuning output only; defaults
+  were never changed. No source patch needed; the exact flag reproduces it.
+- Conditions: 45/45 valid runs across P016/P017, 13-15 readings/window,
+  background 1.5-8.8%, authorized browser load, 30 s baseline AVX2 preheat,
+  Windows Balanced; cooler/fan/ambient unknown. Temperature flags retained.
+- Evidence: `audit/power-measurements/P016-P017-screen-20261004-083730-5364-00/`,
+  `audit/P016-P017-relay.log`, `audit/P016-build.log`, `audit/P016-tests.log`,
+  `audit/P016-perf.log`, `audit/P016-codegen.log`, `audit/P016-alignment.log`.
+- Release artifact remains byte-identical in `.text` to measured P011.
+  Full 163/163 tests passed before measurement; no source or test changes.
+  Wiki local links/current claims reviewed. Next: P018 divider-feedback retry;
+  P020 explicitly targets LTO alignment instead of assuming frontend flag scope.
 
 ### P015 — 1024 KiB streaming buffer at one round (inconclusive, reverted)
 - Date: 2026-10-04. Type: knob. Change (exactly one): `SYNTH_BUF_KIB`

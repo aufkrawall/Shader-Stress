@@ -1,5 +1,21 @@
 # Recent Changes Log
 
+## 2026-10-04 — P016 alignment rejected; P017 Zig inconclusive
+
+- 45 valid short runs, five paired repeats per mode. Alignment lost
+  2.0 ±1.5 W scalar, with no established realistic/AVX2 benefit. Zig gained
+  only 0.8-0.9 W per mode, inconclusive; no new accepted winner or target claim.
+- Both preserve all goldens and finite, bounded data. Alignment candidate
+  passed full 163/163 with sanitizers; Zig self-test 68/68 and cross-toolchain
+  goldens passed. AVX2 retains eight FMAs, one DIV and no wide spills.
+- Disassembly confirms native loop placement changes; realistic code stayed
+  the same size and did not gain aligned loop targets through LTO. P020 now
+  tracks a separate linker-backend alignment test. Background 1.5-8.8%,
+  highest temperature 95.0 C; no readings discarded or occupancy-normalized.
+- Release defaults never changed, `.text` still matches measured P011.
+  Next: P018 divider-feedback decoupling on the changed one-round baseline.
+  Detailed results/evidence in [power-ledger.md](../power-ledger.md).
+
 ## 2026-10-04 — P015 1 MiB buffer inconclusive, restored 512 KiB
 
 - Five paired short repeats on P011: scalar 134.4 vs 135.6 W (-1.1 ±1.3 W),
