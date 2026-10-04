@@ -131,7 +131,7 @@ uint64_t SynthChecksum(const double *buf, size_t n, const uint64_t g[8]) {
 }
 
 // ---------------------------------------------------------------------------
-// 128-bit kernel: SSE2 (x86, split mul/add — no FMA, so twice the FP uops),
+// 128-bit kernel: SSE2 (x86, split mul/add instead of fused operations),
 // NEON (ARM64, fused), or plain scalar doubles on other architectures.
 // ---------------------------------------------------------------------------
 NOINLINE uint64_t SynthKernel128(uint64_t seed, int complexity, KernelDiag *diag) {

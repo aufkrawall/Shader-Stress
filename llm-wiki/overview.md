@@ -1,6 +1,6 @@
 # ShaderStress Overview
 
-Last verified: 2026-10-03 (v3.6.0 working tree at 3993947; all 14 release targets built, `run_tests.py --stress --sanitize` 161/161 green on Windows x64 / Ryzen 7 5700X).
+Last verified: 2026-10-04 (v3.6.0, P011 one-round worktree; 14/14 release targets rebuilt on Windows x64 / Ryzen 7 5700X; full test results recorded in the recent log).
 
 ## Summary
 
@@ -81,13 +81,12 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
 
 ## Open questions / stale-risk
 
-- Power state after P001-P007, P004 (short-mode A/B on the 5700X): FADD pipe separation
-  accepted for wide kernels (+4.4 W AVX2); strict aliasing is the accepted
-  default (+1.9 W sim); MSVC v3 draws most on the synthetics (power baseline for kernel/knob work);
-  SLP-free kernels, `-funroll-loops`, `-flto` and 512 KiB x 2 defaults all kept.
-  Absolute benchmark-mode watts vs the targets (>= ~115 W sim, >= ~135 W scalar,
-  >= ~140-145 W AVX2) are still unmeasured — first benchmark-mode session is backlog item P000.
-  Procedure and full history: [power-ledger.md](power-ledger.md).
+- P011 power state (5700X benchmark): one round with the 512 KiB buffer is the
+  accepted default. Same LLVM v3 binary: realistic 106.8 W, scalar synthetic
+  131.3 W (+16.1 W), AVX2 139.4 W (+11.4 W). AVX2 has unexplained low runs;
+  seven of ten sustain 146.9-148.6 W. Targets remain unmet. SLP-free kernels,
+  strict aliasing, `-funroll-loops` and LTO remain. Earlier MSVC ranking applies
+  to an older kernel; P012 must recheck it. Procedure/history: [power-ledger.md](power-ledger.md).
 - AVX-512 kernel only compile-tested (no AVX-512 CPU available locally), including the MSVC build; `SYNTH_BLOCKS_AVX512` calibration is an estimate.
 - MSVC build: Windows x64 only, no ARM64/baseline/v4 variants, no sanitizer/PGO support.
 - Linux/macOS binaries are cross-compiled only; not executed in this environment.

@@ -1,0 +1,15 @@
+diff --git a/src/workloads/SynthKernel.inc b/src/workloads/SynthKernel.inc
+index 8638e89..ebd0867 100644
+--- a/src/workloads/SynthKernel.inc
++++ b/src/workloads/SynthKernel.inc
+@@ -114,7 +114,9 @@
+         g0 = Rotl64(g0 * 0x9E3779B97F4A7C15ull, 29) ^ g4;
+         g1 = Rotl64(g1 * 0xBF58476D1CE4E5B9ull, 31) ^ g5;
+         g2 = Rotl64(g2 * 0x94D049BB133111EBull, 27) ^ g6;
+-        g3 = Rotl64(g3 * 0xD6E8FEB86659FD93ull, 33) ^ g7;
++        // Keep DIV output live in g7/checksum without feeding its latency back
++        // into the next block's multiply/rotate network.
++        g3 = Rotl64(g3 * 0xD6E8FEB86659FD93ull, 33) ^ g4;
+         g4 += g1;
+         g5 += g2;
+         g6 += g3;

@@ -1,5 +1,26 @@
 # Recent Changes Log
 
+## 2026-10-04 — P011 one-round benchmark confirmation; P005 reverted
+
+- One synthetic butterfly round replaces two with the same 512 KiB buffer.
+  Ryzen 7 5700X, 16 workers, 180 s benchmarks: scalar 131.3 vs 115.1 W
+  (+16.1 ±1.9 W, three pairs); AVX2 139.4 vs 128.0 W (+11.4 ±10.2 W,
+  ten pairs). Realistic stays 106.8 W in the same LLVM v3 binary.
+- Seven AVX2 runs sustain 146.9-148.6 W; three low runs remain in the mean.
+  The old baseline also has low runs. Cause unknown; P013/P014 investigate
+  input streams and process occupancy. Early-versus-late traces do not support
+  warmup alone as an explanation. Sensors reached 93.5 C; actual BIOS thermal
+  limit remains unverified. All requested wattage targets remain unmet.
+- Deliberately updated synthetic goldens and eight-FMA codegen expectations;
+  pinned realistic checksum/source unchanged. Existing round/buffer logging
+  and numeric-health checks cover configuration and live-data diagnostics.
+  P005 divider-feedback change was inconclusive and reverted; source patch
+  retained in the ledger. Full results: [power-ledger.md](../power-ledger.md).
+- Next: P008 realistic PGO and P012 compiler ranking on the new kernel.
+- Final verification: 14/14 release targets rebuilt; `python tests/run_tests.py
+  --stress --sanitize` passed 161/161, including UBSan/ASan and cross-toolchain
+  goldens. Reviewed current wiki routing/design claims against source and results.
+
 ## 2026-10-03 — P004 Zen 3 FADD pipes active: +4.4 W AVX2 (accepted), timestamp monotonicity fix
 
 - P004 (`P004-fadd` vs `P004-base` LLVM v3, 3 ISAs x 5 interleaved repeats, 16 threads):

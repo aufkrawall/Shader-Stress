@@ -17,7 +17,7 @@
 #define SYNTH_BUF_KIB 512        // per-thread work buffer (L2/L3 traffic)
 #endif
 #ifndef SYNTH_ROUNDS
-#define SYNTH_ROUNDS 2           // in-register butterfly rounds per load/store
+#define SYNTH_ROUNDS 1           // in-register butterfly rounds per load/store
 #endif
 
 constexpr size_t SYNTH_BUF_DOUBLES = (size_t)SYNTH_BUF_KIB * 1024 / sizeof(double);
@@ -41,8 +41,8 @@ struct KernelDiag {
   bool aborted = false;     // stopped early by quit/preemption
 };
 
-// Iteration budget: radix-4 blocks per complexity unit (calibrated so one
-// complexity unit costs roughly 10k core cycles on current desktop CPUs).
+// Fixed radix-4 blocks per complexity unit. Rounds/buffer/compiler changes alter
+// time per unit and benchmark scores; report cost with --perf-stats when tuning.
 #ifndef SYNTH_BLOCKS_SSE2
 #define SYNTH_BLOCKS_SSE2 300
 #endif

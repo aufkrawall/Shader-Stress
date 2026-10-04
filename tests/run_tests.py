@@ -363,7 +363,7 @@ def test_build_comparisons(b):
 def test_kernel_codegen(b):
     """Static disassembly only. SLP used to pack the integer chains into vector
     registers, spilling ymm/zmm in the hot loop (and adding ymm integer work to
-    the 128-bit kernel); each synthetic kernel must keep 48 explicit FMAs (wide
+    the 128-bit kernel); each synthetic kernel must keep 8 explicit FMAs (wide
     kernels), its one 64-bit divide and no 256/512-bit stack traffic."""
     if not (IS_WINDOWS and arch_key() == "x64"):
         return
@@ -383,7 +383,7 @@ def test_kernel_codegen(b):
         for name, expect in widest.items():
             r = report.get(name)
             ok = (r is not None and not r["spills"] and r["div"] == 1 and r["widest"] == expect and
-                  (name == "SynthKernel128" or r["fma"] == 16))
+                  (name == "SynthKernel128" or r["fma"] == 8))
             check(ok, f"{build} {name}: explicit SIMD only, no wide spills",
                   str({k: v for k, v in (r or {}).items() if k != "spills"}) +
                   (" " + "; ".join(r["spills"][:3]) if r else ""))

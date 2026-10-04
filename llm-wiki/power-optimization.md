@@ -1,9 +1,8 @@
 # Power Optimization Runbook ("continue power draw optimization")
 
-Last verified: 2026-10-03. Stale-risk: medium — tooling verified by unit tests plus
-seven full-load short sessions (P001-P003, P006-P007 incl. flag-trio arms) and one
-readable-evidence check; no benchmark-mode (180 s) session has been run with it yet
-(backlog P000).
+Last verified: 2026-10-04. Stale-risk: medium — P011 benchmark confirmation is
+complete (three paired runs per mode, extended to ten for AVX2); unexplained
+run-to-run power variation remains. All absolute targets are still unmet.
 
 When the user says **"continue power draw optimization"** (or similar), follow this page.
 Results go into [power-ledger.md](power-ledger.md); kernel/flag design background is in
@@ -20,7 +19,8 @@ or revert (ledger-only commit) → the accepted build becomes the next baseline.
 
 Scenario (the user's): **benchmark mode** (fixed 180 s), **all logical CPUs** (the thread
 count the default compiler-sim benchmark uses; 16 on the 5700X), compute only, one ISA per
-run. Reference system: Ryzen 7 5700X, PBO limits open, <= 90 C.
+run. Reference system: Ryzen 7 5700X, PBO limits reported open. Rated Tjmax is 90 C;
+the configured thermal limit is unverified and P011 sensors exceeded 90 C.
 
 Two measurement modes (`scripts/power_measure.py --mode`):
 
@@ -29,8 +29,8 @@ Two measurement modes (`scripts/power_measure.py --mode`):
 | `short` (default) | 30 s unrecorded preheat per session, then per run 8 s warmup + 15 s window (25 s run, ~30 s with checks), 5 interleaved repeats | All A/B decisions. ShaderStress `--mode steady` with every thread on compute = the benchmark's worker layout, but fixed 12k-complexity jobs instead of the benchmark's 5k-500k mix |
 | `benchmark` | the real 180 s benchmark, 30 s warmup + 148 s window, 3 repeats | Absolute numbers vs the targets, "current best" rows, CHANGELOG claims, and A/B of scheduling/job-size changes (where the job mix matters) |
 
-Short runs are solid for *relative* comparisons: readings are contiguous 1 s windows of the
-energy counter (15 readings = the exact 15 s average), drift cancels in the paired deltas,
+Short runs screen *relative* comparisons: readings are approximately contiguous 1 s windows
+of the energy counter (actual timestamps, coverage and gaps must be checked), pairing reduces drift,
 and the preheat keeps the cooler in a similar state for all arms. Absolute watts can differ
 by a few W from a 3 min run (cooler/coolant still warming, leakage), hence the benchmark mode
 for targets.
@@ -41,6 +41,11 @@ for targets.
 | Scalar synthetic (128-bit SSE2 kernel) | `scalar` | >= ~135 W |
 | AVX2 synthetic | `avx2` | >= ~140-145 W |
 
+The user prefers all three targets in **one binary** (reaffirmed 2026-10-03).
+Report its three-mode result together; selecting a different compiler for each row
+does not establish that goal. "Best" means best among measured candidates under
+recorded conditions, never a proof that untested settings cannot draw more power.
+
 - **Primary metric: package power** (higher = better), post-warmup mean per run.
 - **Secondary: average effective clock** (lower = better at the same power: a heavier load
   per cycle drives more current, so the boost algorithm backs off). Only meaningful while all
@@ -49,12 +54,14 @@ for targets.
 - Not criteria: throughput (jobs/s), single-thread `--perf-stats` (a proxy for screening
   only). Report jobs/s changes anyway: they shift benchmark scores (user-visible).
 - Temperature is a guard: runs within 1 C of `--temp-limit` (90) are flagged
-  "thermal limit" — power is then capped by cooling; say so in the ledger.
+  "thermal limit" — a conservative indicator of possible cooling constraints, not
+  proof of throttling by itself. Record it, and benchmark-retest a flagged winner
+  before accepting a power improvement (P006 precedent; P004 confirmation pending).
 
 ### Decision rules (implemented in `scripts/power_measure.py` `verdict()`)
 
 Deltas are **paired per repeat** (candidate minus baseline in the same shuffled round, which
-cancels thermal/ambient drift) with a Student-t 95% CI:
+reduces thermal/ambient drift) with a Student-t 95% CI:
 
 - `better (more power)`: ΔW > CI and ΔW >= 1 W. `worse (less power)`: mirror image.
 - `tie-break better/worse`: power within noise, but the effective clock differs beyond its
@@ -86,9 +93,13 @@ cancels thermal/ambient drift) with a Student-t 95% CI:
 - `RunRealisticCompilerSim_V3` is **user-pinned** (source-hash test): power levers for
   `scalar-sim` are compiler/flags/codegen/scheduling only, and its golden checksum must stay
   identical. Changing the sim itself needs the user's explicit approval.
+- Intentional synthetic algorithm changes may change synthetic golden values: record
+  them deliberately, then verify identical new results across toolchains. Compiler/flag
+  experiments must preserve all existing golden values. The realistic sim remains pinned.
 - Full load only via `scripts/power_measure.py`, only when the user asked for power work,
-  and only on an otherwise idle system (the script refuses > 10% background CPU). If the user
-  said the system is busy, do not measure — prepare changes and ask. Tests never run load.
+  with the background-load guard intact (the script refuses > 10% background CPU).
+  User-authorized light browser activity is allowed and recorded; sustained heavy background
+  work invalidates a comparison. Tests use only their existing bounded smoke exceptions.
 - Do not change system settings (UAC, power plan, BIOS/PBO, fan curves); record them.
 
 ## Experiment types
@@ -202,12 +213,13 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
 
 ## Open questions / stale-risk
 
-- First full-load short sessions with this tooling have run (P001-P003, P006-P007
-  incl. flag-trio arms). Observed short-mode noise floor at 5 repeats: paired
-  power CI95 ~1.3-2.5 W (runbook thresholds: 1 W power, 15 MHz clock). Ledger item P000
-  still validates the short protocol against the benchmark (per-second power trace:
-  is 8 s warmup past the boost/temperature transient? do short and benchmark A/B
-  deltas agree?).
+- P011 validates scalar short screening against benchmark power, but AVX2 has
+  large between-run variation even in 180 s runs. Keep every valid low run;
+  extend close comparisons rather than selecting the high cluster. Early versus
+  sustained P011 means differ by at most 2.64 W, while individual AVX2 run means
+  differ by over 30 W. Warmup alone is insufficient to explain the variation.
+  P013/P014 investigate input-stream and CPU-occupancy evidence; neither cause
+  is established. Confirm benchmark results whenever this variation matters.
 - PowerReader competes with the workers for CPU time; reading jitter is absorbed by the
   contiguous windows, and its own small load is part of every run, equally for all arms.
 - Sensor names on Intel/other AMD generations are fallbacks (`CPU Package`, `CPU Core`,

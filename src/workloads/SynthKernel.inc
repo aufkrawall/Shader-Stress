@@ -34,9 +34,9 @@
   const SK_VEC wi = SK_SET1(SYNTH_TW_IM);
   const SK_VEC kk = SK_SET1(SYNTH_SCALE);
 
-  // Integer side: 8 bijective multiply/rotate/xor chains + one 64-bit divide
-  // per block. Independent of the FP data, so a fault in either cluster
-  // changes the checksum.
+  // Integer side: eight live states; four multiply/rotate/xor chains, three
+  // additions and one 64-bit divide per block. Independent of the FP data, so
+  // a fault in either cluster changes the checksum.
   uint64_t g0 = Mix64(seed ^ 0x01), g1 = Mix64(seed ^ 0x02);
   uint64_t g2 = Mix64(seed ^ 0x03), g3 = Mix64(seed ^ 0x04);
   uint64_t g4 = Mix64(seed ^ 0x05), g5 = Mix64(seed ^ 0x06);

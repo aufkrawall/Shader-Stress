@@ -1,6 +1,6 @@
 # Power / Heat Design ("opt-audit")
 
-Last verified: 2026-10-03. Stale-risk: medium (short-mode A/B measured P001-P007 on the 5700X — see [power-ledger.md](power-ledger.md); absolute benchmark-mode watts still open; codegen verified by disassembly).
+Last verified: 2026-10-04. Stale-risk: medium (P011 benchmark confirmed on the 5700X — see [power-ledger.md](power-ledger.md); targets remain unmet and AVX2 run variability is unresolved; codegen verified by disassembly).
 History before 3.6.0: [log/archive/opt-audit-2026-05-to-06.md](log/archive/opt-audit-2026-05-to-06.md) — its power comparisons are confounded (kernels ran on `inf`).
 
 ## Summary
@@ -21,20 +21,22 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
 
 - Buffer `SYNTH_BUF_KIB` (512) per thread, AoSoA complex vectors (re[W], im[W]).
 - Pass = radix-4 blocks {j, j+s, j+2s, j+3s}, stride s cycles 1/4/16/64. Each block:
-  8 loads, `SYNTH_ROUNDS` (2) x 4 butterflies (10 FP ops each: 4 MUL + 2 FMA on
-  FP0/FP1 pipes, plus 2 ADD + 2 SUB on dedicated FP2/FP3 pipes; 80 FP ops total
+  8 loads, `SYNTH_ROUNDS` (1) x 4 butterflies (10 FP ops each: 4 MUL + 2 FMA on
+  FP0/FP1 pipes, plus 2 ADD + 2 SUB on dedicated FP2/FP3 pipes; 40 FP ops total
   per block), 8 stores, plus 4 IMUL/rotate/xor chains, 3 adds and one 64-bit DIV.
 - Butterfly (x, y) -> (k x + w y, w y - k x), w = e^i/sqrt2, conj(w) in stage 2.
   `k x` is multiplied once on FP0/FP1 and combined with `w y` via explicit `SK_ADD`/`SK_SUB`
-  on dedicated FADD pipes (FP2/FP3 on Zen 3), activating all 4 FP execution pipes
-  simultaneously. Package power effect: +4.4 W AVX2 on Ryzen 7 5700X (P004).
+  on dedicated FADD pipes (FP2/FP3 on Zen 3). This enables both pipe groups;
+  instruction counts alone do not establish their utilization. Package power
+  effect on the previous two-round kernel: +4.4 W AVX2 on Ryzen 7 5700X (P004).
 - Budget: `complexity * SYNTH_BLOCKS_<ISA>` blocks, rounded up to whole passes.
-- SSE2 path uses separate mul/add (no FMA; twice the FP uops); NEON/AVX2/AVX-512 use
+- SSE2 path uses separate mul/add (no FMA; 48 FP instructions per round versus
+  40 with FMA); NEON/AVX2/AVX-512 use
   explicit SIMD with separated ADD/SUB and FMA/MUL.
-- Measured single-thread (Ryzen 7 5700X, `--perf-stats`, TSC 3.4 GHz vs ~4.6 GHz core):
-  AVX2 ~28.4 TSC cycles/block = ~1.67 FMA-pipe ops per core cycle;
-  SSE2 ~29 TSC cycles/block = ~2.4 FP ops per core cycle (of 4 pipes). AVX2 now
-  exercises both FMA units and FADD units concurrently without register spills.
+- P011 single-thread screening (`--perf-stats`, Ryzen 7 5700X): scalar 4760 and
+  AVX2 4603 TSC cycles/complexity; finite, bounded, energy drift < 1e-14.
+  Benchmark package power: scalar 131.3 W, AVX2 139.4 W, realistic 106.8 W
+  in the same LLVM v3 binary. See the ledger for paired deltas and variability.
 
 ## Other workloads
 
@@ -68,7 +70,7 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
   LLVM's SLP vectorizer packed the integer mul/rotate/xor chains into ymm/zmm registers,
   so the AVX2 loop spilled/reloaded three ymm registers per block and the 128-bit
   "SSE2" kernel ran ymm integer code on v3 builds. LTO re-runs SLP at link time, hence
-  native objects. Now: 0 ymm/zmm stack ops, 16 explicit FMAs + 32 MUL + 16 ADD + 16 SUB
+  native objects. Now: 0 ymm/zmm stack ops, 8 explicit FMAs + 16 MUL + 8 ADD + 8 SUB
   per wide kernel, one DIV per block in every x64 build (`tests/run_tests.py`
   `test_kernel_codegen`); the `win-v3-slp` variant reproduces the spills. Zig v3 (Clang 20)
   showed no ymm spills before the change. Package-power effect: +4.4 W AVX2 on 5700X
@@ -118,9 +120,8 @@ load); never part of tests. Essentials:
 
 ## Open questions
 
-- Absolute benchmark-mode watts vs the targets (5700X: scalar-sim >= ~115 W,
-  scalar >= ~135 W, AVX2 >= ~140-145 W) are still unmeasured; the ordered backlog
-  (P000 benchmark validation, P004 idle FADD pipes, P005 integer network, P008 PGO,
-  P009 scalar integer scheduling, P003b/P010 retries) lives in [power-ledger.md](power-ledger.md).
+- P011 benchmark watts are below all targets (106.8 / 131.3 / 139.4 W).
+  AVX2 variability, current toolchain ranking and realistic codegen need further
+  experiments; the backlog lives in [power-ledger.md](power-ledger.md).
 - Raptor Lake and Zen 4/5 AVX-512 systems need their own measurements; consider
   per-CPU-family defaults if the optimum differs strongly.

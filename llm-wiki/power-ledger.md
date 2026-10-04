@@ -1,7 +1,7 @@
 # Power Experiment Ledger
 
-Last verified: 2026-10-03. Stale-risk: low — P001-P007 measured short-mode
-(benchmark-mode numbers still open: P000).
+Last verified: 2026-10-04. Stale-risk: medium — P011 benchmark confirmed;
+AVX2 has unexplained low-power runs and the targets remain unmet.
 
 Durable record of every power experiment (procedure and decision rules:
 [power-optimization.md](power-optimization.md)). Rules: one entry per experiment ID, one
@@ -12,11 +12,16 @@ understand and reproduce the change.
 
 ## Reference system
 
-- Ryzen 7 5700X (Zen 3, 8C/16T), PBO limits open, max 90 C (Tjmax), Windows 11.
+- Ryzen 7 5700X (Zen 3, 8C/16T), PBO limits reported open by the user, Windows 11.
+  [AMD's rated Tjmax is 90 C](https://www.amd.com/en/support/downloads/drivers.html/processors/ryzen/ryzen-5000-series/amd-ryzen-7-5700x.html)
+  (verified 2026-10-03); the configured BIOS/PBO thermal limit is unverified.
+  P011 sensors reported up to 93.5 C during measurement windows, so the earlier
+  "max 90 C" reference must not be read as an observed/enforced system limit.
 - Sensors (LHM 0.9.6, verified idle 2026-10-03): `Package` power, `Cores (Average
   Effective)` clock, `Core (Tctl/Tdie)`, `Core (SVI2 TFN)` voltage.
 - UAC: `ConsentPromptBehaviorAdmin=0` → elevation is granted silently.
-- Unknown, record when learned: cooler, fan profile, ambient, Windows power plan, BIOS/AGESA.
+- Windows Balanced plan verified by read-only query during P011.
+- Unknown, record when learned: cooler, fan profile, ambient, BIOS/AGESA.
 
 ## Targets and current best (benchmark mode, all 16 threads)
 
@@ -24,16 +29,21 @@ understand and reproduce the change.
 
 | Workload | `--isa` | Target | Best measured | Eff MHz | Build / commit | Experiment |
 |---|---|---|---|---|---|---|
-| Realistic compiler sim | `scalar-sim` | >= ~115 W | not measured | - | - | - |
-| Scalar synthetic (SSE2) | `scalar` | >= ~135 W | not measured | - | - | - |
-| AVX2 synthetic | `avx2` | >= ~140-145 W | not measured (user: ~122 W before the 2026-10-03 SLP fix; build and tool unrecorded) | - | - | - |
+| Realistic compiler sim | `scalar-sim` | >= ~115 W | 106.8 W (3 runs; tied with baseline) | 4449 | P011-one-round, LLVM v3 on daa176f | P011 |
+| Scalar synthetic (SSE2) | `scalar` | >= ~135 W | 131.3 W (3 runs) | 4338 | same binary | P011 |
+| AVX2 synthetic | `avx2` | >= ~140-145 W | 139.4 W (10 runs; seven at 146.9-148.6 W) | 4316 | same binary | P011 |
+
+These are best sustained means among the benchmark candidates measured here, not
+global optima. No target is established as met. AVX2 includes every low run.
 
 ## Hypothesis backlog
 
 Status: `open`, `running`, `accepted`, `rejected`, `inconclusive`, `retry` (worth
 re-testing after a baseline change). Take the next free ID for new ideas.
-Baselines: kernel/knob work now runs on the MSVC v3 toolchain (P001 winner);
-LLVM v3 stays the release baseline. P009's mechanism note (2026-10-03, from
+Baselines are experiment-specific: P001 favored MSVC for the old synthetics and
+LLVM for the realistic sim; P004 and P005 use LLVM v3. No compiler or knob set
+is established as globally optimal, and P012 must recheck the post-P004 ranking.
+LLVM v3 stays the release baseline. P009's historical mechanism note (2026-10-03, from
 `kernel_codegen.py` + `--perf-stats` on the unchanged ebc7357 builds, no load):
 all three toolchains emit 48 explicit FMAs with no wide spills in
 `SynthKernelAVX2`; the scalar kernels differ — LLVM 651 insns at 9285
@@ -42,22 +52,129 @@ heavier per-cycle current, matching the boost/backoff model).
 
 | ID | Type | Hypothesis (one change) | ISAs | Status |
 |---|---|---|---|---|
-| P000 | method | Validate the short protocol once: one `--mode benchmark` session of the current build, then inspect the per-second `Power sample` trace (transient after start: is 8 s warmup enough?) and compare the 9-23 s mean with the benchmark window; later check that short and benchmark A/B deltas agree for the first accepted change | all | open |
+| P000 | method | Validate short vs benchmark windows and A/B deltas together with P011 confirmation; inspect early 9-23 s versus sustained 31-178 s power and sampling coverage | all | completed for P011; short screening needs benchmark confirmation when variability changes ranking |
 | P001 | compiler | Establish the first measured baseline and the best toolchain: `x64-llvm-v3` (baseline) vs `x64-zig-v3` vs `x64-msvc-v3`, same commit | all | accepted (MSVC power baseline; short-mode only, needs benchmark confirm) |
 | P002 | flag | Quantify the SLP fix: `x64-llvm-v3-slp` (old kernel codegen, ymm spills) vs `x64-llvm-v3` | scalar, avx2 | inconclusive on power (+-0.2 W); fix kept for throughput (+15-18% score per watt) |
 | P003 | knob | Smaller buffer / more rounds: two SMT threads x 512 KiB overflow the 512 KiB L2; start with 128 KiB x 4 rounds (`--sweep`) | scalar, avx2 | accepted (keep 512x2 default: all alternatives lose 7-22 W) |
 | P004 | kernel | Zen 3 FADD pipes idle in the AVX2 kernel: butterflies issue only MUL/FMA (FP0/FP1), so FP2/FP3 sit idle; add independent norm-preserving add/sub work on live data (verify pipe mapping first) | avx2 (scalar shares the body) | accepted (+4.4 W avx2, -14 MHz eff clock, +26 jobs/s; keeps Zen 3 FADD pipes active) |
-| P005 | kernel | Integer network: the g0..g7 chains are serial across blocks (multiply+rotate latency, one 64-bit DIV); restructure for more independent GPR work, keep DIV + verification | scalar, avx2 | open |
+| P005 | kernel | Remove the divider-result feedback into the multiply network: g3 XORs g4 instead of g7; retain the per-block DIV and all eight checksum states | scalar, avx2 | inconclusive (not retained; scalar -0.1 +-2.2 W, AVX2 +0.8 +-2.2 W) |
 | P006 | flag | `-mtune=znver3` (`win-v3-znver3`) — mostly codegen of the realistic sim | all | rejected (+1.7 W avx2 at 91 C thermal cap — untrustworthy; sim/scalar within noise) |
 | P007 | flag | `-funroll-loops` / LTO / strict aliasing one at a time (`win-v3-nounroll`, `-nolto`, `-strictalias`) for the realistic sim | scalar-sim | done: nounroll + nolto rejected (noise); strictalias accepted (+1.9 W sim, no thermal cap) |
 | P008 | flag | PGO (`build.py --pgo-gen/--pgo-use`) for the realistic sim; needs a bounded profiling run design (no long full-load profiling) | scalar-sim | open |
 | P009 | kernel | Scalar integer network on MSVC: LLVM's scalar loop is 15% faster per block at 6 W less power — likely tighter GPR scheduling; try 2 independent DIV chains or unserializing g4..g7 on the LLVM baseline first (MSVC codegen may already do this) | scalar | open |
 | P010 | method | P002 follow-up: SLP spills cost no package power but +15-22% cycles — is the spill traffic L1-contained (no package-power effect expected)? Retry the SLP pair in benchmark mode if a future kernel change moves spill traffic off-chip | scalar, avx2 | open |
 | P003b | knob | Retry only if the kernel bottleneck moves: 256 KiB x 2 rounds (between L2-fit and the winning 512x2 default) | scalar, avx2 | open |
+| P011 | knob | Test the missing direction from P003: one butterfly round instead of two, with the 512 KiB buffer unchanged; more streaming/integer work per FP operation may raise package power | scalar, avx2 | accepted (+16.1 +-1.9 W scalar; +11.4 +-10.2 W AVX2 benchmark) |
+| P012 | compiler | Recheck current LLVM vs MSVC after P004; the pre-FADD toolchain ranking is conditional on the old kernel, and all three modes must be assessed in each binary | all | open |
+| P013 | method | Add optional run-seed control so paired builds can use the same job/input stream; currently `ResetVerification()` samples the clock for each process. Investigate P011 startup variation without attributing it to seed or layout prematurely | all | open |
+| P014 | method | Record process/worker CPU occupancy during the window to distinguish compute saturation from CPU time taken by background processes; pre-run background load alone does not establish occupancy during the run | all | open |
 
 ## Entries
 
 Newest first. Copy the template.
+
+### P011 — one butterfly round with the unchanged 512 KiB buffer (accepted)
+- Date: 2026-10-03. Type: knob.
+- Change (exactly one): `SYNTH_ROUNDS` 2 -> 1 in `Workloads.h`.
+- Baseline: P005-base (GitHead daa176f, clean LLVM v3), on top of P004/P007c;
+  P005 was not retained. Hypothesis: more memory/integer activity per FP operation.
+- Plan: rebuild all targets, deliberate synthetic golden update, toolchain
+  reproducibility/codegen checks, five paired short repeats, benchmark confirmation.
+- Short screening (not final acceptance):
+  | Candidate | ISA | Runs | W (SD) | dW (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Jobs/s |
+  |---|---|---|---|---|---|---|---|---|
+  | P011-one-round | scalar | 5 | 131.9 (1.5) | +14.7 +-2.5 | 4391 | -19 +-33 | 90.0 | 473 |
+  | P011-one-round | avx2 | 5 | 145.6 (5.2) | +14.5 +-6.5 | 4297 | +30 +-69 | 91.6 | 427 |
+  | P005-base | scalar | 5 | 117.2 (0.9) | - | 4410 | - | 88.0 | 270 |
+  | P005-base | avx2 | 5 | 131.1 (0.2) | - | 4267 | - | 91.9 | 290 |
+- Short conditions: 16 workers, five paired repeats, background 2.5-6.2%,
+  30 s baseline AVX2 preheat; possible thermal constraints (both target ISAs).
+  Keep all outliers: candidate AVX2 repeat 3 was 136.54 W / 4397 MHz / 88.6 C,
+  while its other repeats were 146.44-149.64 W. Correct AVX2 selection, one-round
+  config, 16 workers and clean health verified in that run's log. Cause unverified.
+- Short command: `python scripts/power_measure.py --label P011-one-round --exe audit/power-baselines/P005-base/ShaderStress.com,audit/power-baselines/P011-one-round/ShaderStress.com --baseline P005-base --isas scalar,avx2`
+- Short evidence: `audit/power-measurements/P011-one-round-20261003-210211-16004-00/`.
+- Screening: 14/14 build targets, 149/149 tests including cross-toolchain golden
+  checks. Synthetic scalar/AVX2 goldens deliberately become `0x4c16d08e29ebed5f` /
+  `0xd728a7ec6cf2a7e5`; realistic stays `0x58b1a15ca01f7216`. Audit: one DIV,
+  eight FMAs per wide loop body, zero wide spills on all six x64 builds. Updated
+  codegen/golden expectations protect this configuration and result contract.
+  `--perf-stats`: scalar 4760 and AVX2 4603 TSC cycles/complexity; finite, bounded,
+  energy drift < 1e-14. Existing kernel-config header, numeric-health diagnostics,
+  sample stream and per-run binary SHA suffice; no production hot-loop logging.
+- Full pre-commit suite: `python tests/run_tests.py --stress --sanitize`, 161/161
+  passed (ASan and UBSan); evidence `audit/P011-full-tests.log`.
+- Initial benchmark confirmation (three paired repeats, 30 s warmup + 148 s
+  window per 180 s run, all modes):
+  | Candidate | ISA | Runs | W (SD) | dW (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Jobs/s |
+  |---|---|---|---|---|---|---|---|---|
+  | P011-one-round | scalar-sim | 3 | 106.8 (0.9) | -0.0 +-1.7 | 4449 | +3 +-11 | 82.3 | 4633 |
+  | P011-one-round | scalar | 3 | 131.3 (0.7) | +16.1 +-1.9 | 4338 | -55 +-17 | 89.9 | 430 |
+  | P011-one-round | avx2 | 3 | 139.4 (15.8) | +7.5 +-39.8 | 4331 | +57 +-306 | 92.6 | 327 |
+  | P005-base | scalar-sim | 3 | 106.8 (0.5) | - | 4446 | - | 82.8 | 4728 |
+  | P005-base | scalar | 3 | 115.1 (0.1) | - | 4393 | - | 88.8 | 233 |
+  | P005-base | avx2 | 3 | 132.0 (0.3) | - | 4274 | - | 91.6 | 250 |
+- Conditions: background 2.3-6.0%, Windows Balanced plan (read-only query);
+  cooler/fans/ambient still unknown. All runs clean; 143-147 sensor readings.
+- Initial benchmark evidence: `audit/power-measurements/P011-confirm-20261003-211529-6120-00/`.
+- Extension: seven additional AVX2-only paired benchmark repeats, same pinned
+  binaries, 180 s/run, 30 s warmup, 148 s window, all 16 workers. Combined ten-pair
+  result (extension repeats offset by three; executable SHA-256 matches):
+  | Candidate | ISA | Runs | W (SD) | dW (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Jobs/s |
+  |---|---|---|---|---|---|---|---|---|
+  | P011-one-round | avx2 | 10 | 139.4 (14.1) | +11.4 +-10.2 | 4316 | +18 +-78 | 93.5 | 332 |
+  | P005-base | avx2 | 10 | 128.0 (7.7) | - | 4299 | - | 92.8 | 227 |
+- Verdict: accepted. Scalar and AVX2 exceed their paired power CIs and 1 W;
+  realistic is tied. Temperature flags require caution but the full benchmark
+  confirmation is complete. AVX2 certainty remains weak: three candidate runs
+  average 121.19, 111.45 and 126.19 W; seven average 146.92-148.64 W. Baseline
+  also has low runs (121.54, 107.92 W). Do not discard them or claim their cause.
+- Extension evidence: `audit/power-measurements/P011-confirm-avx2-extra-20261003-221222-24284-00/`;
+  combined evidence: `audit/power-measurements/P011-combined-20261003/`.
+- P000 observation: in the initial 18 benchmark runs, early 9-23 s means differ
+  from sustained 31-178 s by -2.64 to +2.18 W. Initial low AVX2 was already low
+  early (120.86 vs 121.19 W), so a longer warmup alone cannot explain it.
+  Short scalar delta +14.7 W agrees with benchmark +16.1 W; AVX2 short +14.5 W
+  versus benchmark +11.4 W has broad overlapping uncertainty. Do not infer
+  absolute targets from short runs. P013/P014 investigate repeatability.
+- Regression/diagnostics assessment: existing numeric-health, seed/complexity,
+  energy, golden and all-compiler checks cover the changed knob; codegen/golden
+  expectations updated. Existing startup round/buffer logging identifies the
+  configuration, so extra hot-loop logging would add overhead without benefit.
+- Follow-ups: realistic compiler tuning (P008), current compiler ranking (P012),
+  synthetic streaming/integer balance and repeatability (P013/P014).
+
+### P005 — decouple the divider from the multiply recurrence (inconclusive, not retained)
+- Date: 2026-10-03. Type: kernel.
+- Change (exactly one): `SynthKernel.inc` uses `g4` instead of `g7` as the XOR
+  input of `g3`. The quotient still accumulates into `g7` and contributes to
+  verification, but no longer gates the next block's multiply network.
+- Baseline: P005-base (GitHead daa176f, clean LLVM v3); P005-msvc-base is a
+  same-commit native compiler comparison. Measured on top of P004/P007c.
+- Conditions: user authorizes light browser load; retain the 10% background guard.
+- Candidate: P005-div-independent, dirty snapshot (one kernel edit and ledger).
+- Command: `python scripts/power_measure.py --label P005-div-independent --exe audit/power-baselines/P005-base/ShaderStress.com,audit/power-baselines/P005-div-independent/ShaderStress.com --baseline P005-base --isas scalar,avx2`
+- Conditions: 16 workers, five short paired repeats, background 2.2-5.6%; light browser
+  use. AVX2 temperature flag on both arms (up to 92.1 C).
+- Result:
+  | Candidate | ISA | Runs | W (SD) | dW (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Jobs/s |
+  |---|---|---|---|---|---|---|---|---|
+  | P005-div-independent | scalar | 5 | 117.7 (1.7) | -0.1 +-2.2 | 4412 | -7 +-15 | 87.4 | 272 |
+  | P005-div-independent | avx2 | 5 | 132.0 (0.8) | +0.8 +-2.2 | 4282 | -22 +-64 | 91.4 | 293 |
+  | P005-base | scalar | 5 | 117.8 (0.7) | - | 4419 | - | 87.3 | 266 |
+  | P005-base | avx2 | 5 | 131.2 (2.2) | - | 4304 | - | 92.1 | 276 |
+- Verdict: inconclusive, reverted; no power improvement established. A ten-repeat
+  or benchmark retest is required before reconsidering acceptance. Prioritize the
+  untested P011 direction rather than declaring this change better or worse.
+- Side effects: 149/149 screening tests passed, including cross-toolchain golden
+  checks. Realistic checksum unchanged; temporary scalar/AVX2 values were
+  `0xf98b34867e40591a` / `0xce2f0721f88fc76e` (reverted). Numeric health unchanged;
+  one divide, 16 wide FMAs, no wide spills across the six audited toolchains.
+  Single-thread perf screening (unpaired, not a power verdict): scalar 8959 -> 9435,
+  AVX2 8073 -> 8839 TSC cycles/complexity. Existing perf/health diagnostics suffice;
+  no new production logging for a reverted experiment.
+- Evidence: `audit/power-measurements/P005-div-independent-20261003-204705-25196-00/`.
+  Source patch: [power-patches/P005-div-independent.patch](power-patches/P005-div-independent.patch).
 
 ### P004 — Zen 3 dedicated FADD pipes active: +4.4 W avx2, -14 MHz eff clock (accepted)
 - Date: 2026-10-03. Type: kernel.
@@ -301,7 +418,7 @@ Newest first. Copy the template.
 - Follow-ups: P003 buffer/rounds sweep next (sweep covers win-v3/zig-v3/msvc).
 ```
 
-### P001 — toolchain baseline: MSVC fastest, LLVM/Zig tied on synthetics (accepted as baseline choice)
+### P001 — toolchain baseline: MSVC draws most, LLVM/Zig tied on synthetics (accepted as baseline choice)
 - Date: 2026-10-03. Type: compiler.
 - Change (exactly one): none — three same-commit (ebc7357) toolchain builds compared:
   `x64-llvm-v3` (P001-base), `x64-zig-v3` (P001-zig), `x64-msvc-v3` (P001-msvc).
