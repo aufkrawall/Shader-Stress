@@ -69,13 +69,63 @@ heavier per-cycle current, matching the boost/backoff model).
 | P012 | compiler | Recheck current LLVM vs MSVC after P011; the old toolchain ranking is conditional on the old kernel, and all three modes must be assessed in each binary | all | rejected (MSVC -3.6 W realistic, -1.9 W scalar; old ranking reversed) |
 | P013 | method | Add optional run-seed control so paired builds can use the same job/input stream; currently `ResetVerification()` samples the clock for each process. Investigate P011 startup variation without attributing it to seed or layout prematurely | all | open |
 | P014 | method | Record process/worker CPU occupancy during the window to distinguish compute saturation from CPU time taken by background processes; pre-run background load alone does not establish occupancy during the run | all | partial (local P008/P012 diagnostic collected; integrated tooling and old-outlier explanation open) |
-| P015 | knob | Test 1024 KiB instead of 512 KiB at one round: more L3 streaming may raise scalar synthetic power; the realistic source remains unchanged | scalar, avx2 | open |
+| P015 | knob | Test 1024 KiB instead of 512 KiB at one round: more L3 streaming may raise scalar synthetic power; the realistic source remains unchanged | scalar, avx2 | inconclusive (not retained; scalar -1.1 +-1.3 W, AVX2 -1.3 +-1.8 W) |
 | P016 | flag | Request 64-byte loop alignment versus compiler default (`-falign-loops=64`); preserve instructions/checksums and measure front-end effects rather than assuming a benefit | all | open |
 | P017 | compiler | Recheck Zig on the one-round kernel against current LLVM; P001's old-kernel tie cannot establish the current ranking | all | open |
+| P018 | kernel | Retry P005's divider-feedback decoupling on the substantially changed one-round baseline; reducing FP work may expose the integer recurrence that was hidden at two rounds | scalar, avx2 | open |
+| P019 | kernel | SSE2-only multiply/rotate mixing of g4/g5/g6 after their additions, using existing odd constants: fill integer execution capacity while retaining the wider kernels' balance | scalar | open |
 
 ## Entries
 
 Newest first. Copy the template.
+
+### P015 — 1024 KiB streaming buffer at one round (inconclusive, reverted)
+- Date: 2026-10-04. Type: knob. Change (exactly one): `SYNTH_BUF_KIB`
+  512 -> 1024 in `src/workloads/Workloads.h`; one round and all block budgets
+  unchanged. Experimental default and golden values were reverted after screening.
+- Baseline: P015-base, clean LLVM v3 at dcc26b0, accepted P011 machine code.
+- Hypothesis: P003 smaller buffers lost power, and P011 less register work
+  increased it; test the unmeasured larger-buffer direction for more L3 traffic.
+- Plan: rebuild all targets, deliberately record new synthetic golden values,
+  verify pinned realistic value/source unchanged and cross-toolchain results,
+  check live-data health/codegen, then five paired short repeats of scalar/AVX2.
+  Confirm a winner with all three modes in the real benchmark before acceptance.
+- Existing buffer and round diagnostics identify the knob; no new hot-loop
+  logging. Completed local evidence is listed below.
+- Screening complete: 14/14 builds, no warnings; deliberate golden recording
+  136/136, full `python tests/run_tests.py --stress --sanitize` 163/163,
+  including cross-toolchain values and pinned realistic source. Scalar/AVX2
+  goldens become `0x6431b790116a2acf` / `0x11e1778a123043ba`; realistic remains
+  `0x58b1a15ca01f7216`. Codegen remains eight wide FMAs, one DIV, no wide spills.
+- `--perf-stats` health: scalar/AVX2 max|x| 2.469/2.545, non-finite 0,
+  energy drift -7.34e-15/-1.33e-14. Unpaired timing during screening is not a
+  power verdict. Logs: `audit/P015-build.log`, `audit/P015-record-golden.log`,
+  `audit/P015-full-tests.log`, `audit/P015-perf.log`.
+- Short command: `python scripts/power_measure.py --label P015-1024 --exe audit/power-baselines/P015-base/ShaderStress.com,audit/power-baselines/P015-1024/ShaderStress.com --baseline P015-base --isas scalar,avx2`.
+- Result: five paired short repeats, all 16 workers:
+  | Candidate | ISA | W (SD) | dW (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|
+  | P015-1024 | scalar | 134.4 (1.1) | -1.1 +-1.3 | 4400 | -1 +-7 | 90.3 | 504 | inconclusive |
+  | P015-1024 | avx2 | 147.5 (0.9) | -1.3 +-1.8 | 4213 | -9 +-8 | 93.4 | 447 | inconclusive |
+  | P015-base | scalar | 135.6 (0.5) | - | 4401 | - | 90.4 | 507 | baseline |
+  | P015-base | avx2 | 148.8 (0.6) | - | 4222 | - | 93.5 | 447 | baseline |
+- Verdict: inconclusive, not retained; neither ISA establishes an improvement.
+  Nominal deltas are negative, with effective-clock changes below the 15 MHz
+  threshold. A ten-pair retest would be needed before reconsidering a close
+  decision. Prioritize untested compiler/integer hypotheses; no global buffer
+  optimum claimed. No benchmark acceptance or CHANGELOG power claim.
+- Conditions: 20/20 valid runs, 13-14 readings/window, background 1.7-7.1%,
+  30 s baseline preheat, Windows Balanced, cooler/fan/ambient unknown,
+  conservative temperature flags on both synthetics. Authorized browser load.
+- Evidence: `audit/power-measurements/P015-1024-20261004-081322-19672-00/`.
+  Partial read-only occupancy trace: `audit/P015-occupancy.csv` (started after
+  first scalar window; not used to remove or normalize any power reading).
+- Restoration: 512 KiB and P011 synthetic goldens restored; 14/14 release targets,
+  13 archives, full `--stress --sanitize` 163/163 passed (`audit/P015-restored-build.log`,
+  `audit/P015-restored-tests.log`). LLVM v3 `.text` is byte-identical to measured
+  P011; local wiki links and current/historical claims reviewed. No source patch
+  retained for this one-line knob; the exact override and temporary goldens above
+  reproduce the experiment.
 
 ### P012 — native MSVC versus LLVM on the one-round kernel (rejected)
 - Date: 2026-10-04. Type: compiler.

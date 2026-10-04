@@ -1,5 +1,19 @@
 # Recent Changes Log
 
+## 2026-10-04 — P015 1 MiB buffer inconclusive, restored 512 KiB
+
+- Five paired short repeats on P011: scalar 134.4 vs 135.6 W (-1.1 ±1.3 W),
+  AVX2 147.5 vs 148.8 W (-1.3 ±1.8 W). No established improvement; restore
+  the 512 KiB default and prior goldens. P011 remains the measured winner.
+- 1 MiB screening built all 14 targets and passed 163/163 with sanitizers,
+  cross-toolchain goldens and unchanged pinned realistic source/checksum.
+  Finite bounded data and energy preserved; one DIV/eight wide FMAs/no wide
+  spills. Restoration rebuilt 14/14 targets and passed 163/163 with sanitizers;
+  restored LLVM v3 machine code matches measured P011. Details in
+  [power-ledger.md](../power-ledger.md).
+- Next: P016 loop alignment for realistic codegen, P017 current Zig ranking,
+  P018 divider retry after one-round change, P019 SSE2 integer mixing.
+
 ## 2026-10-04 — P008 PGO inconclusive; P012 compiler ranking reversed; PGO scope fixed
 
 - P008/P012: 45 short runs (five paired repeats, three modes, three builds) on
