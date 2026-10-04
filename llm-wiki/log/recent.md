@@ -1,5 +1,25 @@
 # Recent Changes Log
 
+## 2026-10-04 — P023 not retained; no hour-long power tests
+
+- Wide-only divider decoupling: 50 valid short runs, five pairs per unchanged
+  workload and 15 AVX2 pairs. Combined AVX2 151.8 vs 150.4 W (+1.4 ±1.5 W),
+  effective clock -22 ±20 MHz; fresh ten-pair AVX2 session alone inconclusive
+  (+0.6 ±1.5 W, -11 ±4 MHz). No established watt improvement.
+- User stopped the hour-long benchmark plan. Measurement and occupancy helper
+  stopped; partial first run retained, no completed benchmark result. Revert
+  candidate source/goldens; retain its patch and complete short evidence in the
+  [ledger](../power-ledger.md). P011 remains the accepted build.
+- [Runbook](../power-optimization.md) now requires short, bounded load batches
+  around ten minutes or less. One-ISA screens first; sustained checks select
+  an ISA and repeat count explicitly. Do not chain batches into an hour of load
+  or turn inconclusive evidence into a target claim.
+- Candidate screening: 14/14 builds, 163/163 stress/sanitizer tests, unchanged
+  realistic source/checksum and scalar golden; strict FP/numeric health intact.
+  Restoration rebuilt 14/14 targets and passed 163/163 stress/sanitizer tests;
+  LLVM v3 machine code equals measured P011. Patch application and wiki links
+  checked; detailed verification/evidence in the ledger.
+
 ## 2026-10-04 — P018 divider change rejected globally; wide-only retry next
 
 - 30 valid short runs, five paired repeats across all modes. Scalar loses

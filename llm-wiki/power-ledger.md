@@ -77,11 +77,130 @@ heavier per-cycle current, matching the boost/backoff model).
 | P020 | flag | Set LLVM's preferred innermost-loop alignment to 64 bytes through the LTO linker backend; P016 changed native kernels but did not align the realistic function's loops | scalar-sim | open |
 | P021 | method | Record synthetic buffers' page offsets once per worker, without full addresses, to investigate startup memory-placement variation; heap/cache placement is a hypothesis, not an explanation of P011 outliers | scalar, avx2 | open |
 | P022 | flag | Compare `-O2` with `-O3` at unchanged strict FP settings; instruction scheduling and code size can alter power, and the nominal optimization level does not establish a watt optimum | all | open |
-| P023 | kernel | Scope P018's divider-feedback decoupling to wide x86 kernels (`SK_W > 2`) while preserving the higher-power SSE2 network; measure against the unchanged accepted baseline | avx2 | open (P018 AVX2 -46 +-5 MHz at unchanged power) |
+| P023 | kernel | Scope P018's divider-feedback decoupling to wide x86 kernels (`SK_W > 2`) while preserving the higher-power SSE2 network; measure against the unchanged accepted baseline | avx2 | inconclusive (not retained; full benchmark cancelled at user's time limit) |
+| P024 | flag | Compare vectorizer interleave count 1 with compiler default for the pinned realistic sim; current disassembly has eight ymm input loads and a ymm stack store in its popcount loop. Confirm actual LTO codegen changes, unchanged goldens and watts rather than assuming spills reduce power | scalar-sim | open |
 
 ## Entries
 
 Newest first. Copy the template.
+
+### P023 — Wide-only divider-feedback decoupling (inconclusive, restored baseline)
+- Date: 2026-10-04. Type: kernel. Exactly one change: g3 XORs g4 only
+  for `SK_W > 2` in `src/workloads/SynthKernel.inc`; 128-bit SSE2/NEON
+  retain g7 feedback. In current sources this changes wide x86 kernels only.
+  DIV quotient stays live in g7/checksum, all FP operations unchanged.
+- Baseline: P023-base, clean LLVM v3 at 1e7b9ba, accepted P011 machine code.
+- Hypothesis: retain P018's AVX2 clock tie-break benefit while avoiding its
+  scalar loss. No package-power gain or temperature mechanism assumed.
+- Expected goldens: scalar `0x4c16d08e29ebed5f`, realistic
+  `0x58b1a15ca01f7216` unchanged; AVX2 deliberately set to P018's
+  `0x734f7eb1831d28cb`. Verify all three across toolchains, not just LLVM.
+- Plan: all-target rebuild, full `--stress --sanitize`, numeric health and
+  codegen. Five paired short repeats in all three modes (including possible
+  code-placement effects on unchanged modes); benchmark-confirm a winner.
+- Regression assessment: adjusted AVX2 golden case exercises new output;
+  existing scalar golden enforces unchanged 128-bit semantics. Cross-toolchain,
+  seed/complexity/energy and codegen units cover strict FP/live DIV/no spills.
+  Perf-stats plus snapshot hashes/checksums supply diagnostics without hot-loop
+  logging. Source comments explain why the ISA networks intentionally differ.
+- Screening and measurement evidence: local `audit/P023-*` files listed below.
+- Screening: 14/14 release targets and 13 archives, no warnings; full
+  `--stress --sanitize` 163/163 including all three compiler goldens and
+  pinned realistic source. LLVM SSE2 codegen report equals baseline:
+  586 instructions, xmm only, one DIV, zero wide spills. Wide kernels retain
+  eight FMAs, one DIV, zero wide spills across audited LLVM/Zig/MSVC builds.
+- Perf-stats confirms expected checksums and unchanged numeric health:
+  scalar/AVX2 max|x| 2.318/2.495, non-finite 0, energy drift
+  -1.00e-15/+6.69e-16. Logs: `audit/P023-build.log`, `audit/P023-tests.log`,
+  `audit/P023-codegen.log`, `audit/P023-perf.log`. Candidate P023-wide-only
+  is dirty on the baseline commit; snapshot records exact executable hash.
+- Short command: `python scripts/power_measure.py --label P023-wide-only --exe audit/power-baselines/P023-base/ShaderStress.com,audit/power-baselines/P023-wide-only/ShaderStress.com --baseline P023-base`.
+- Initial five paired short repeats, all 16 workers:
+
+  | Candidate | ISA | W (SD) | dW (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|
+  | P023-wide-only | scalar-sim | 112.6 (2.3) | +0.3 +-2.2 | 4505 | -3 +-18 | 82.4 | 5572 | inconclusive |
+  | P023-wide-only | scalar | 134.8 (2.0) | +0.9 +-2.1 | 4405 | -6 +-21 | 91.4 | 513 | inconclusive |
+  | P023-wide-only | avx2 | 149.7 (2.0) | +2.9 +-3.9 | 4210 | -43 +-70 | 95.4 | 471 | inconclusive |
+  | P023-base | scalar-sim | 112.3 (1.5) | - | 4508 | - | 80.9 | 5430 | baseline |
+  | P023-base | scalar | 133.9 (1.4) | - | 4411 | - | 91.3 | 493 | baseline |
+  | P023-base | avx2 | 146.8 (2.5) | - | 4253 | - | 93.0 | 433 | baseline |
+
+- Initial verdict: inconclusive; AVX2 is promising but its gain/clock CI
+  straddles zero. All five AVX2 candidate windows 146.54/149.75/151.61/
+  151.33/149.38 W retained; baseline also varies and its final window is
+  higher than candidate. The initial plan was to extend with ten fresh AVX2
+  pairs on the same snapshots, retaining original evidence, then benchmark-confirm
+  any temperature-flagged winner. The final disposition below supersedes that
+  plan after the user's time constraint.
+- Initial conditions/evidence: 30/30 valid runs, 13-14 readings/window,
+  background 1.2-9.5%, authorized browser load, 30 s baseline AVX2 preheat;
+  unchanged system settings, cooler/fan/ambient unknown. Temperature flags
+  on synthetics. Session:
+  `audit/power-measurements/P023-wide-only-20261004-093058-8088-00/`,
+  `audit/P023-short-relay.log`.
+- Occupancy candidate/baseline means: realistic 96.54/96.57%, scalar
+  96.79/96.32%, AVX2 96.72/95.93% of total CPU capacity. Baseline AVX2's
+  third lower window (143.4 W, 4351 MHz, 86.5 C) had 93.55% occupancy;
+  startup/memory placement is not established as its cause. No readings
+  excluded or occupancy-normalized. Local evidence: `audit/P023-occupancy.csv`,
+  `audit/P023-correlated.csv`, `audit/P023-summary.py`.
+- Extended command: `python scripts/power_measure.py --label P023-avx2-extra --exe audit/power-baselines/P023-base/ShaderStress.com,audit/power-baselines/P023-wide-only/ShaderStress.com --baseline P023-base --isas avx2 --repeats 10`.
+- Extended ten-pair result, continuous AVX2-only short session:
+
+  | Candidate | ISA | W (SD) | dW (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|
+  | P023-wide-only | avx2 | 152.8 (2.0) | +0.6 +-1.5 | 4232 | -11 +-4 | 92.9 | 470 | inconclusive |
+  | P023-base | avx2 | 152.3 (1.0) | - | 4244 | - | 93.0 | 453 | baseline |
+
+- Extension conditions: 20/20 valid, 13-14 readings/window, background
+  1.4-5.1%, same snapshots and 30 s baseline preheat; continuous AVX2 phases
+  differ from the first session's three-mode sequence. CPU occupancy candidate/
+  baseline 96.19/96.29%, no readings excluded or normalized. Temperature flags
+  retained; Windows Balanced reverified read-only. Cooler/fan/ambient unknown.
+- Extension evidence:
+  `audit/power-measurements/P023-avx2-extra-20261004-094805-23364-00/`,
+  `audit/P023-extra-relay.log`, `audit/P023-extra-occupancy.csv`,
+  `audit/P023-extra-correlated.csv`, `audit/P023-extra-summary.py`.
+- All 15 AVX2 pairs combined, unchanged per-build hashes verified, no pair
+  removed (other modes retain their initial five pairs):
+
+  | Candidate | ISA | W (SD) | dW (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|
+  | P023-wide-only | avx2 | 151.8 (2.5) | +1.4 +-1.5 | 4225 | -22 +-20 | 95.4 | 470 | tie-break better |
+  | P023-base | avx2 | 150.4 (3.1) | - | 4247 | - | 93.0 | 446 | baseline |
+
+- Interpretation: combined clock tie-break is narrowly eligible; no proved
+  package-power gain. The fresh continuous session alone is inconclusive and
+  below the 15 MHz clock threshold. Record both protocols instead of hiding
+  that distinction. Other modes have no established loss. At that stage,
+  benchmark confirmation of all three workloads was planned before a default
+  change, target claim or CHANGELOG power entry; final disposition is below.
+- Combined evidence: `audit/power-measurements/P023-combined-20261004/`,
+  aggregator `audit/P023-aggregate.py` checks 15 complete AVX2 pairs, five
+  other-mode pairs, identical timing/thread settings and stable binary hashes.
+- Benchmark command: `python scripts/power_measure.py --mode benchmark --label P023-confirm --exe audit/power-baselines/P023-base/ShaderStress.com,audit/power-baselines/P023-wide-only/ShaderStress.com --baseline P023-base`.
+- Final disposition: the user prohibited hour-long tests while this ~1 h
+  confirmation was starting. Cancelled the measurement and occupancy helper;
+  verified no ShaderStress workload or measurement child remained. The first
+  realistic run ended before 180 s, with no completed results CSV; retain its
+  partial logs without scoring it as a benchmark or a target result. Evidence:
+  `audit/power-measurements/P023-confirm-20261004-100056-25096-00/`.
+- The combined short clock tie-break is protocol-sensitive and narrowly clears
+  its CI; the fresh ten-pair session alone is inconclusive. No established watt
+  improvement, no new accepted winner. Revert source/goldens and preserve the
+  reproducible [wide-only patch](power-patches/P023-wide-only.patch); candidate
+  snapshot remains local. Further power work uses bounded comparisons in the
+  updated runbook, not hour-long confirmation runs. No CHANGELOG power claim.
+- Restoration: `python build.py` rebuilt 14/14 release targets and 13 archives;
+  `python tests/run_tests.py --stress --sanitize` passed 163/163. Rebuilt LLVM v3
+  `.text` equals the measured P011 snapshot (SHA-256
+  `4f3379c024730714d467cac3f74d9fea4f5835962be0c3cf1a7ff3e47518b2df`).
+  Existing regression cases cover restored goldens and the pinned realistic
+  source; no runtime change remains to add another test or diagnostic for.
+  Logs: `audit/P023-restored-build.log`, `audit/P023-restored-tests.log`.
+  Patch applies cleanly; wiki links, current/historical claims and runbook
+  time-limit consistency checked. No new release capability to changelog.
 
 ### P018 — Independent divider feedback at one round (rejected globally)
 - Date: 2026-10-04. Type: kernel. Exactly one change: g3 XORs g4 instead

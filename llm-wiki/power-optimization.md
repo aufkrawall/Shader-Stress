@@ -1,6 +1,6 @@
 # Power Optimization Runbook ("continue power draw optimization")
 
-Last verified: 2026-10-04. Stale-risk: medium — P011 benchmark confirmation is
+Last verified: 2026-10-04. User time constraint: no hour-long tests. Stale-risk: medium — P011 benchmark confirmation is
 complete (three paired runs per mode, extended to ten for AVX2); unexplained
 run-to-run power variation remains. All absolute targets are still unmet.
 
@@ -26,8 +26,8 @@ Two measurement modes (`scripts/power_measure.py --mode`):
 
 | Mode | Run | Use |
 |---|---|---|
-| `short` (default) | 30 s unrecorded preheat per session, then per run 8 s warmup + 15 s window (25 s run, ~30 s with checks), 5 interleaved repeats | All A/B decisions. ShaderStress `--mode steady` with every thread on compute = the benchmark's worker layout, but fixed 12k-complexity jobs instead of the benchmark's 5k-500k mix |
-| `benchmark` | the real 180 s benchmark, 30 s warmup + 148 s window, 3 repeats | Absolute numbers vs the targets, "current best" rows, CHANGELOG claims, and A/B of scheduling/job-size changes (where the job mix matters) |
+| `short` (default) | 30 s unrecorded preheat per session, then per run 8 s warmup + 15 s window (25 s run, ~30 s with checks), normally 5 interleaved repeats for one ISA (~5 min A/B) | All A/B decisions. ShaderStress `--mode steady` with every thread on compute = the benchmark's worker layout, but fixed 12k-complexity jobs instead of the benchmark's 5k-500k mix |
+| `benchmark` | the real 180 s benchmark, 30 s warmup + 148 s window; explicitly select one ISA and one paired repeat (~6-7 min A/B) | Bounded sustained-power checks, scheduling/job-size changes and absolute target evidence. One pair is descriptive, not a statistically established improvement; record run count and uncertainty |
 
 Short runs screen *relative* comparisons: readings are approximately contiguous 1 s windows
 of the energy counter (actual timestamps, coverage and gaps must be checked), pairing reduces drift,
@@ -55,8 +55,9 @@ recorded conditions, never a proof that untested settings cannot draw more power
   only). Report jobs/s changes anyway: they shift benchmark scores (user-visible).
 - Temperature is a guard: runs within 1 C of `--temp-limit` (90) are flagged
   "thermal limit" — a conservative indicator of possible cooling constraints, not
-  proof of throttling by itself. Record it, and benchmark-retest a flagged winner
-  before accepting a power improvement (P006 precedent; P004 confirmation pending).
+  proof of throttling by itself. Record it, and use a bounded benchmark check
+  before accepting a flagged winner. If the check cannot resolve the comparison
+  within the user's time constraint, retain an inconclusive result.
 
 ### Decision rules (implemented in `scripts/power_measure.py` `verdict()`)
 
@@ -67,12 +68,19 @@ reduces thermal/ambient drift) with a Student-t 95% CI:
 - `tie-break better/worse`: power within noise, but the effective clock differs beyond its
   CI and by >= 15 MHz (lower = better).
 - `inconclusive`: otherwise, or < 2 paired repeats. Re-measure with `--repeats 10` before
-  deciding a close call; never accept on an inconclusive verdict.
+  deciding a close call, restricted to the affected ISA and within the time
+  constraint below; never accept on an inconclusive verdict.
 - **Accept** a change only if it is `better` (or `tie-break better`) on the ISA(s) it targets
   **and** not `worse` on any other target ISA it can affect (when unsure, measure all three).
 
 ## Hard rules
 
+- **No hour-long tests (user instruction, 2026-10-04).** Prefer one-ISA short
+  comparisons; keep a load batch around ten minutes or less. Do not launch the
+  default three-ISA, three-repeat benchmark comparison (~1 h), or automatically
+  chain batches into an hour of load. If a close call needs prolonged testing,
+  record it as inconclusive and move to another hypothesis. Short-mode readings
+  still do not prove benchmark targets. This overrides older confirmation plans.
 - **One change per experiment.** A candidate differs from its baseline in exactly one
   thing (one code idea, one flag, one compiler, one knob value). Never bundle "a few small
   tweaks" — effects can have opposite signs and the sum hides both. A multi-arm session
@@ -140,18 +148,23 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
 5. **Measure** (self-elevates via UAC; on the user's machine without a prompt):
 
    ```
-   python scripts/power_measure.py --label P012-<slug> --exe audit/power-baselines/P012-base/ShaderStress.com,audit/power-baselines/P012-<slug>/ShaderStress.com
+   python scripts/power_measure.py --isas avx2 --label P012-<slug> --exe audit/power-baselines/P012-base/ShaderStress.com,audit/power-baselines/P012-<slug>/ShaderStress.com
    ```
 
-   Defaults (short mode): all three ISAs, 5 repeats, all logical CPUs. Duration ~ 30 s
-   preheat + arms x ISAs x repeats x ~30 s (2 x 3 x 5 = 30 runs ~ 15 min). Run it as a
+   Select `--isas <affected-ISA>` explicitly: short-mode defaults are still all three
+   ISAs, 5 repeats, all logical CPUs (~15 min for A/B), so do not use the above
+   command without `--isas`. One ISA and five paired repeats take about five minutes.
+   Run it as a
    background command (agent shells time out); the elevated child keeps going even if the
    parent is killed and writes everything to
-   `audit/power-measurements/<label>-<stamp>-<pid>-<nn>/`. Restrict `--isas` only when the
-   change provably cannot affect the others.
-   After accepting a change (or before claiming a target), confirm in the real benchmark:
-   `python scripts/power_measure.py --mode benchmark --label P012-confirm --exe <base>,<cand>`
-   (2 x 3 x 3 runs x ~3.3 min ~ 1 h).
+   `audit/power-measurements/<label>-<stamp>-<pid>-<nn>/`. Screen the targeted ISA
+   first; accepting a change still requires checking other ISAs it can affect.
+   For sustained evidence use a bounded real benchmark:
+   `python scripts/power_measure.py --mode benchmark --isas avx2 --repeats 1 --label P012-confirm --exe <base>,<cand>`
+   (two 180 s runs, ~6-7 min including checks). This cannot by itself resolve a
+   close A/B decision. Keep valid low runs; report the limited run count rather
+   than treating one good run as reliable target attainment. Aborted runs are
+   incomplete evidence, never silently shortened benchmark results.
 6. **Decide** from the printed `summary.md` table using the rules above.
 7. **Record** the ledger entry (template in the ledger): change, type, baseline/candidate
    labels + git state, conditions, command, summary table, verdict + reasoning, side effects
