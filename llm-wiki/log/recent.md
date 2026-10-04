@@ -1,5 +1,31 @@
 # Recent Changes Log
 
+## 2026-10-04 — General no-LTO/dispatch and intermediate-buffer power checks
+
+- P036 no-LTO on current Zig changes realistic machine code, preserves all
+  goldens, but yields +0.0 ±2.0 W (five pairs): inconclusive. P037
+  no-jump-tables changes code with identical goldens but loses 2.9 ±1.9 W:
+  rejected. Neither flag retained.
+- P038 tests the previously unmeasured 768 KiB one-round buffer: scalar
+  −0.8 ±1.2 W, AVX2 −0.9 ±1.4 W (five pairs each), both inconclusive.
+  Numeric health/self-tests pass; realistic checksum unchanged, synthetic
+  checksums intentionally differ only in the isolated tuning snapshot.
+  No production source/default/golden changes or added tests/logging needed.
+- Same clean ae4b755 Zig v3 baseline: **111.6 / 134.6 / 148.0 W**
+  realistic/scalar/AVX2 (five runs each). Only AVX2 reaches its requested
+  band in these windows; no global-optimum claim. Corrected P026's historical
+  "below all three" interpretation: its 147.1 W AVX2 mean was already in band.
+- 35 valid runs, two batches (345/460 s planned load), every run 8+15 s,
+  all 16 compiler-sim/compute workers, zero decompression/RAM/I/O/errors.
+  Background 1.3–7.1% with authorized light browser use. No exclusions;
+  synthetic Tmax 93.6 C flagged, without claiming proven throttling.
+- Evidence and repeat tables in [power ledger](../power-ledger.md).
+  Fixed stale opt-audit advice about CPU-family defaults to match the user's
+  general-tuning constraint. No changelog entry for rejected experiments.
+- Final rebuild 14/14 (13 archives), full stress/sanitizer suite 181/181;
+  restored Zig v3 `.text` byte-identical to measured baseline. Wiki semantic
+  review and 40 relative-link checks passed; no new orphan pages.
+
 ## 2026-10-04 — General power tuning only; current user target ranges
 
 - User requires **no architecture-specific optimizations/builds**. No CPU-family

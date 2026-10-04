@@ -1,7 +1,7 @@
 # Power Experiment Ledger
 
-Last verified: 2026-10-04. Stale-risk: medium — P029–P035 general flag
-checks recorded; no new accepted improvement, current target ranges unestablished.
+Last verified: 2026-10-04. Stale-risk: medium — P036–P038 general flag/buffer
+checks recorded; no new accepted improvement, three-mode goal still unmet.
 
 Durable record of every power experiment (procedure and decision rules:
 [power-optimization.md](power-optimization.md)). Rules: one entry per experiment ID, one
@@ -31,6 +31,12 @@ browser activity is authorized; retain the existing background-load guard.
 Historical targets and measurements below are evidence, not proof that these
 new ranges are reached reliably. A measured candidate is a provisional best
 among tested builds, never a global optimum.
+
+Interpretation correction (2026-10-04, P036–P038 review): P026's **147.1 W
+AVX2 mean is inside the requested 145–155 W band**, so its historical wording
+"below all three targets" was inaccurate. Its valid 144.0 W low run and
+thermal flags remain relevant; a mean inside the band does not guarantee
+every run reaches 145 W. The three-mode goal together remains unmet.
 
 ## Historical targets and confirmed baseline (180 s benchmark, all 16 threads)
 
@@ -132,8 +138,41 @@ heavier per-cycle current, matching the boost/backoff model).
 | P033 | flag | Remove explicit loop-unrolling flag on the current Zig baseline; recheck historical P007 in benchmark job mix | all | codegen gate stopped; workload instructions unchanged |
 | P034 | flag | Request 64-byte non-fallthrough basic-block alignment through LTO backend (general compiler setting) | scalar-sim (others guard) | unsupported by Zig linker; no measurement |
 | P035 | flag | Same general LTO block-alignment setting on LLVM MinGW with compiler-matched baseline | scalar-sim (others guard) | inconclusive (+0.8 ±2.4 W); not retained |
+| P036 | flag | Disable LTO on the current Zig baseline; recheck whole-program codegen in benchmark job mix | scalar-sim (others guard) | inconclusive (+0.0 ±2.0 W); not retained |
+| P037 | flag | Disable jump tables on the current Zig baseline; test branch dispatch with unchanged realistic source/results | scalar-sim (others guard) | rejected (−2.9 ±1.9 W); not retained |
+| P038 | knob | 768 KiB synthetic buffer at one round on current Zig; test the unmeasured interval between 512 KiB and 1 MiB in benchmark mode | scalar, avx2 | inconclusive (−0.8 ±1.2 / −0.9 ±1.4 W); not retained |
 
-## Current disposition after P029–P035
+## Current disposition after P036–P038
+
+No production code, flags, algorithm or golden values changed. Five paired
+repeats per experiment found no new improvement: Zig no-LTO was inconclusive,
+no-jump-tables was worse, and 768 KiB at one round was inconclusive with lower
+means on both synthetic modes. No architecture-specific tuning was used.
+
+The **same P036-zigbase binary** (clean ae4b755) measured **111.6 W realistic,
+134.6 W scalar synthetic, 148.0 W AVX2** (five valid runs each, all 16 compute
+workers). AVX2's mean and all five run means (146.76–148.73 W) are inside the
+requested band in these bounded windows; realistic/scalar are still short.
+Synthetic temperatures triggered the diagnostic thermal flag (up to 93.6 C);
+these are short-window observations, not three-minute steady-state guarantees.
+Zig remains a provisional best among measured binaries, not a global optimum.
+
+This session used **805 s planned manual load in two separate batches of
+345 s and 460 s**, every run bounded to 8+15 s with no preheat, decompression,
+RAM or I/O. No long or steady-mode proxy runs. All 35 runs were valid;
+no low run was discarded. Existing bounded test-smoke runs are separate.
+No changelog entry is warranted: only experiment evidence and wiki corrections
+are retained, with no released behavior or measured power improvement.
+
+Final verification: `python build.py` passed 14/14 targets and produced 13
+archives; `python tests/run_tests.py --stress --sanitize` passed 181/181,
+including UBSan/ASan and cross-toolchain goldens. Rebuilt Zig v3 `.text` is
+byte-identical to P036-zigbase. Wiki semantic review checked current versus
+historical claims, constraints, source anchors, duplicate/orphan candidates
+and all 40 relative file links in the four changed pages (none missing).
+Evidence: `audit/P036-P038-{final-build,final-tests,integrity}.log`.
+
+## Previous disposition after P029–P035
 
 No source, algorithm, golden value or production flag changed. P026 Zig remains
 only a provisional best among measured single binaries; these flag experiments
@@ -159,6 +198,92 @@ CPU/steady-only rankings as proof of a global optimum.
 ## Entries
 
 Newest first. Copy the template.
+
+### P038 — Intermediate 768 KiB synthetic buffer (inconclusive)
+
+- Date: 2026-10-04. Type: knob.
+- One change: `SHADERSTRESS_EXTRA_DEFINES=-DSYNTH_BUF_KIB=768`, Zig v3,
+  current one-round kernel. Baseline: P036-zigbase. No CPU-family special case.
+- Hypothesis: the old two-round small-buffer sweep and short-only 1 MiB
+  comparison do not establish the current benchmark optimum; measure the
+  untested intermediate size. Intentional synthetic results change; realistic
+  source/golden must remain identical, numeric health and self-tests must pass.
+- Candidate: P038-buf768, ae4b755 with dirty experiment docs only; baseline
+  snapshot clean at the same commit. Five pairs per ISA, 460 s planned load,
+  all 16 compute workers, 8+15 s benchmark windows, no auxiliary work/preheat.
+- Results (paired Student-t 95% CI; preserve every valid run):
+
+  | Build | ISA | Runs | W (SD) | Delta W (CI95) | Eff MHz | Delta MHz (CI95) | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|---|
+  | P038-buf768 | scalar | 5 | 133.7 (1.0) | −0.8 ±1.2 | 4396 | +3 ±5 | 90.9 | 433 | inconclusive |
+  | P036-zigbase | scalar | 5 | 134.6 (1.6) | — | 4393 | — | 90.6 | 445 | baseline |
+  | P038-buf768 | avx2 | 5 | 147.1 (1.6) | −0.9 ±1.4 | 4195 | −11 ±13 | 93.3 | 385 | inconclusive |
+  | P036-zigbase | avx2 | 5 | 148.0 (0.8) | — | 4206 | — | 93.6 | 387 | baseline |
+
+- Neither power nor clock establishes a gain; keep 512 KiB. Both builds
+  cross the diagnostic thermal threshold, which is not proof of throttling.
+  No realistic acceptance run needed for a non-winning synthetic candidate.
+- Conditions: 20 valid runs, background 1.3–7.1% (light browser activity
+  authorized), 13–14 samples per window, first 9000–9938 ms, last
+  21953–23000 ms. Every runtime log confirms zero errors and zero
+  decompression/RAM/I/O work. No failed/missing/excluded runs.
+- Gates: self-tests pass, realistic golden unchanged (`58b1a15ca01f7216`),
+  intentional tuning-only synthetic checksums `711ede71445c3115` (scalar),
+  `bb13ed64804e24f9` (AVX2). Numeric health finite, max magnitude 2.546/2.675,
+  energy drift magnitude <3e-15. Codegen: 549/334/321 instructions,
+  0/8/8 FMAs, one DIV each, no wide spills. No new synthetic goldens installed;
+  cross-toolchain validation of this non-retained tuning configuration not claimed.
+- Command: `python scripts/power_measure.py --mode benchmark --isas scalar,avx2 --label P038-buf768 --exe audit/power-baselines/P036-zigbase/ShaderStress.com,audit/power-baselines/P038-buf768/ShaderStress.com --baseline P036-zigbase`.
+- Evidence: `audit/power-measurements/P038-buf768-20261004-130054-26836-00/`,
+  `audit/P038-{buf768-build,gate,relay}.log`, candidate snapshot under
+  `audit/power-baselines/P038-buf768/`.
+- Existing self-tests, numeric diagnostics and run-health logs cover this
+  non-retained knob experiment; no new regression test or runtime logging
+  needed without a production change. Buffer optimum remains unproved.
+
+### P037 — General branch dispatch instead of jump tables (rejected)
+
+- Date: 2026-10-04. Type: flag.
+- One change: `SHADERSTRESS_EXTRA_DEFINES=-fno-jump-tables`, Zig v3.
+- Baseline: P036-zigbase, clean ae4b755; candidate P037-nojump at the same
+  source commit, dirty experiment docs only. Built separately from P036.
+- Realistic code changes from 4754 bytes / 1071 instructions to 4852 / 1093.
+  All three existing goldens and self-tests pass; synthetic codegen counts
+  unchanged, 0/8/8 FMAs, one DIV each, no wide spills, finite numeric health.
+- Five paired repeats: 108.7 W (SD 0.9) vs 111.6 W (SD 1.4),
+  **−2.9 ±1.9 W**, 4469 vs 4464 effective MHz (+5 ±3 MHz),
+  4464 vs 4641 jobs/s. Rejected; no default or source change.
+- Conditions/evidence and command shared with P036 below. No extra regression
+  units or diagnostics: no behavior retained; existing goldens, self-tests,
+  codegen/perf diagnostics and runtime health establish the experimental gate.
+
+### P036 — Zig without link-time optimization (inconclusive)
+
+- Date: 2026-10-04. Type: flag.
+- One change: `SHADERSTRESS_EXTRA_DEFINES=-fno-lto`, Zig v3.
+- Baseline: P036-zigbase, clean ae4b755; candidate P036-nolto, same sources
+  with dirty experiment docs only. Historical no-LTO
+  screening on LLVM does not establish this compiler's benchmark ranking.
+- Realistic code changes from 4754 bytes / 1071 instructions to 2972 / 655;
+  smaller function is not proof of a watt improvement. All three goldens,
+  self-tests and finite numeric health pass. Native synthetic counts unchanged
+  (538/334/321 instructions, 0/8/8 FMAs, one DIV each, no wide spills).
+- Five paired repeats: 111.7 W (SD 0.5) vs 111.6 W (SD 1.4),
+  **+0.0 ±2.0 W**, 4463 vs 4464 effective MHz (−1 ±2 MHz),
+  4573 vs 4641 jobs/s. Inconclusive; flag not retained. No other-ISA
+  acceptance testing: the targeted realistic mode did not improve.
+- Conditions for P036/P037: 15 valid runs, all 16 compute workers,
+  benchmark job mix, 8+15 s each, 345 s planned load. No preheat.
+  Background 1.7–5.7% (light browser activity authorized); 14 readings each,
+  first sample 9343–9844 ms, last 22500–22906 ms, Tmax 83.9 C.
+  Every runtime log confirms zero errors/decompression/RAM/I/O work.
+- Command: `python scripts/power_measure.py --mode benchmark --isas scalar-sim --label P036-P037-dispatch --exe audit/power-baselines/P036-zigbase/ShaderStress.com,audit/power-baselines/P036-nolto/ShaderStress.com,audit/power-baselines/P037-nojump/ShaderStress.com --baseline P036-zigbase`.
+- Evidence: `audit/power-measurements/P036-P037-dispatch-20261004-125158-28260-00/`,
+  `audit/P036-{preflight-build,preflight-tests,nolto-build,gate}.log`,
+  `audit/P037-{nojump-build,gate}.log`, snapshots and realistic disassembly
+  under `audit/`. Preflight: 14/14 release builds, 13 archives, 141/141 tests.
+- No added tests/logging for a non-retained flag: the existing validation and
+  diagnostics above cover its correctness and observed behavior.
 
 ### P035 — LTO backend block alignment on current LLVM MinGW (inconclusive)
 - Date: 2026-10-04. Type: flag. One change:

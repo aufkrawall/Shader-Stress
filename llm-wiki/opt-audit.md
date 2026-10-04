@@ -126,6 +126,13 @@ load); never part of tests. Essentials:
 - Current Zig general-flag checks P029–P033: O2 and default unrolling emitted
   identical realistic instructions; loop-vectorizer-off was inconclusive, SLP-off
   lowered realistic benchmark-window power. No default changes retained.
+- P036–P038: current Zig no-LTO remains inconclusive (+0.0 ±2.0 W
+  realistic); no-jump-tables lowers realistic power (−2.9 ±1.9 W).
+  A 768 KiB one-round buffer does not establish a gain over 512 KiB
+  (scalar −0.8 ±1.2 W, AVX2 −0.9 ±1.4 W). Five paired benchmark-window
+  repeats each, all 16 compute workers; none retained. The same baseline
+  measures 111.6/134.6/148.0 W this round; only AVX2 is in the requested
+  band. This does not prove that the default buffer/compiler is globally best.
 
 ## Rejected / superseded
 
@@ -142,5 +149,6 @@ load); never part of tests. Essentials:
 - P011 benchmark watts are below all targets (106.8 / 131.3 / 139.4 W).
   AVX2 variability, current toolchain ranking and realistic codegen need further
   experiments; the backlog lives in [power-ledger.md](power-ledger.md).
-- Raptor Lake and Zen 4/5 AVX-512 systems need their own measurements; consider
-  per-CPU-family defaults if the optimum differs strongly.
+- Other CPUs and AVX-512 systems need their own measurements of the general
+  builds. CPU-family-specific defaults/builds are excluded by the current user
+  constraint; selectable ISA compatibility tiers remain supported.
