@@ -1,7 +1,7 @@
 # Power Optimization Runbook ("continue power draw optimization")
 
-Last verified: 2026-10-04. User constraints: benchmark job mix, compiler-sim
-threads only, 8 s warm-up + 15 s measurement per run; no hour-long tests.
+Last verified: 2026-10-05. User constraints: benchmark job mix, compiler-sim
+threads only, 6 s warm-up + 15 s measurement per run (capped at 21 s); no hour-long tests.
 Stale-risk: medium — P011 benchmark confirmation is
 complete (three paired runs per mode, extended to ten for AVX2); unexplained
 run-to-run power variation remains. All three targets are not yet established
@@ -21,8 +21,8 @@ or revert (ledger-only commit) → the accepted build becomes the next baseline.
 ## Goal and scoring
 
 Scenario (the user's): **GUI-equivalent benchmark job mix, compiler-sim/compute
-threads only, no other workloads**. Bounded power runs use **8 s warm-up + 15 s
-measurement, at most 23 s**. **All logical CPUs** (the thread
+threads only, no other workloads**. Bounded power runs use **6 s warm-up + 15 s
+measurement, at most 21 s**. **All logical CPUs** (the thread
 count the default compiler-sim benchmark uses; 16 on the 5700X), compute only, one ISA per
 run. Reference system: Ryzen 7 5700X, PBO limits reported open. Rated Tjmax is 90 C;
 the configured thermal limit is unverified and P011 sensors exceeded 90 C.
@@ -40,7 +40,7 @@ current power decisions, compiler rankings and target claims**:
 
 | Mode | Run | Use |
 |---|---|---|
-| `benchmark` (default) | 8 s warm-up + 15 s measurement, five repeats, no preheat; `--power-window 23` retains benchmark mode/job sizes. Default ISA `scalar-sim`, all compute workers | Current power comparisons and target evidence. Five A/B pairs for one ISA take ~4 min; report repeat count/uncertainty and short-window conditions |
+| `benchmark` (default) | 6 s warm-up + 15 s measurement, five repeats, no preheat; `--power-window 21` retains benchmark mode/job sizes. Default ISA `scalar-sim`, all compute workers | Current power comparisons and target evidence. Five A/B pairs for one ISA take ~4 min; report repeat count/uncertainty and short-window conditions |
 | `short` (explicit legacy mode) | Same bounded timing, but steady mode with fixed 12k jobs | Historical screening compatibility only; not valid for this goal. Do not substitute it to shorten benchmark tests |
 
 Readings average approximately contiguous 1 s energy-counter windows; check actual
@@ -50,7 +50,7 @@ transfer. Bounded benchmark windows match the GUI job mix, but do not prove
 three-minute thermal steady state. Do not conflate the two protocols or promise
 an exact GUI reading. Normal GUI/CLI benchmark scoring remains 180 s; bounded
 power windows produce no score/hash. Older long measurements remain evidence,
-but no new run may exceed the user's 8+15 s limit.
+but no new run may exceed the user's 6+15 s limit.
 
 | Workload | `--isa` | Package power target (5700X) |
 |---|---|---|
@@ -102,9 +102,9 @@ reduces thermal/ambient drift) with a Student-t 95% CI:
   This preference applies to future sessions, not just the current experiment.
 
 - **Compiler-sim threads / benchmark job mix only (user instruction, 2026-10-04).**
-  Use `--mode benchmark --power-window 23`, the selected ISA and all compute
-  workers, with zero decompression/RAM/I/O. Warm-up max 8 s, measurement max
-  15 s; never keep a workload running longer than their 23 s sum. No steady
+  Use `--mode benchmark --power-window 21`, the selected ISA and all compute
+  workers, with zero decompression/RAM/I/O. Warm-up max 6 s, measurement max
+  15 s; never keep a workload running longer than their 21 s sum. No steady
   proxy or fixed-job replacement. No extra preheat by default.
 - **No hour-long tests (user instruction, 2026-10-04).** Use bounded benchmark
   comparisons; keep a load batch around ten minutes or less. Do not launch the
@@ -184,7 +184,7 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
    ```
 
    Defaults are benchmark job mix, `scalar-sim`, five repeats, all logical CPUs,
-   8+15 s windows, no preheat, 600 s planned-load budget. Select the affected ISA
+   6+15 s windows, no preheat, 600 s planned-load budget. Select the affected ISA
    explicitly. Five bounded A/B pairs take roughly four minutes. Old snapshots
    without CLI `--power-window` support must be rebuilt from their saved patch;
    do not silently fall back to steady mode or a long benchmark.
@@ -223,7 +223,7 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
   `--no-decompress --no-ram --no-io`. `CliRunDurationSeconds()` and
   `ApplyCliDefaults()` enforce the bounded duration and compute-only roles;
   normal benchmark remains 180 s. Optional preheat retains the selected job
-  mix and is capped at 23 s, included in the budget. Legacy steady data are
+  mix and is capped at 21 s, included in the budget. Legacy steady data are
   explicitly warned as unsuitable for GUI benchmark claims.
 - Regression anchors: CLI/self-test coverage in `src/app/SelfTest.cpp` and
   `tests/run_tests.py`; exact launch args, defaults, sweep/preheat accounting,

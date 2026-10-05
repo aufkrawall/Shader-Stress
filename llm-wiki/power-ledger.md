@@ -141,8 +141,25 @@ heavier per-cycle current, matching the boost/backoff model).
 | P036 | flag | Disable LTO on the current Zig baseline; recheck whole-program codegen in benchmark job mix | scalar-sim (others guard) | inconclusive (+0.0 ±2.0 W); not retained |
 | P037 | flag | Disable jump tables on the current Zig baseline; test branch dispatch with unchanged realistic source/results | scalar-sim (others guard) | rejected (−2.9 ±1.9 W); not retained |
 | P038 | knob | 768 KiB synthetic buffer at one round on current Zig; test the unmeasured interval between 512 KiB and 1 MiB in benchmark mode | scalar, avx2 | inconclusive (−0.8 ±1.2 / −0.9 ±1.4 W); not retained |
+| P039 | method | Verify pair execution placement (same-core vs cross-core) and initial flag probes | scalar-sim | completed (placement diagnostics added; ~93% cross-core) |
+| P040 | flag | Function alignment 32 and 64 bytes (`-falign-functions=32/64`) on Zig v3 | scalar-sim | inconclusive (+0.3 ±2.0 / −0.2 ±1.0 W); not retained |
+| P041 | compiler | Comprehensive 3-toolchain audit at 6+15 s benchmark job mix (MSVC, LLVM, Zig v3) | all | completed (Zig v3 best single binary: AVX2 151.5 W, scalar 136.3 W, sim 110.9–112.2 W) |
+| P042 | scheduling | Fast lock-free role check in `WaitForRole` (`src/engine/Scheduler.cpp`) | scalar-sim | inconclusive on power (-0.1 ±0.6 W); retained for throughput (+68 jobs/s) |
+| P043 | compiler | x86-64 baseline (`bin/x64-llvm`, `bin/x64-zig`) vs x86-64-v3 on scalar-sim | scalar-sim | inconclusive (+0.0 ±5.2 / −1.1 ±1.6 W); v3 retained |
 
-## Current disposition after P036–P038
+## Current disposition after P039–P043
+
+Protocol updated per user instruction to **6 s warm-up + 15 s measurement** (capped at 21 s, `--power-window 21`).
+Empirical baseline audit (P041) under this protocol established:
+- **AVX2:** Zig v3 **151.5 W** (SD 1.0) -> **IN BAND (145–155 W)**.
+- **Scalar Synthetic:** Zig v3 **136.3 W** (SD 0.8) -> **IN BAND (135–140 W)**.
+- **Scalar Realistic (`scalar-sim`):** Zig v3 **110.9–112.2 W** (SD 0.5–1.2) -> 3–4 W short of target (115–120 W).
+
+Zig v3 remains the best single binary across all three workloads (LLVM: 150.5 W AVX2 / 135.0 W scalar / 110.3 W sim; MSVC: 150.7 W AVX2 / 133.4 W scalar / 107.8 W sim).
+Diagnostics added: `CoreOfLp()`, `CountPairPlacement()` and atomic counters `s_pairsSameCore`/`s_pairsCrossCore` confirm ~93% pairs execute cross-core and 7% on SMT siblings, with zero unpaired jobs.
+Scheduler fast role check in `WaitForRole` added to reduce contention (+68 jobs/s).
+
+## Previous disposition after P036–P038
 
 No production code, flags, algorithm or golden values changed. Five paired
 repeats per experiment found no new improvement: Zig no-LTO was inconclusive,
@@ -198,6 +215,80 @@ CPU/steady-only rankings as proof of a global optimum.
 ## Entries
 
 Newest first. Copy the template.
+
+### P043 — x86-64 baseline vs x86-64-v3 on scalar-sim (inconclusive)
+
+- Date: 2026-10-05. Type: compiler.
+- One change: compare `bin/x64-llvm` (LLVM baseline) and `bin/x64-zig` (Zig baseline) against `bin/x64-zig-v3`.
+- Baseline: P041-zig-v3. Bounded 6+15 s benchmark windows (`--power-window 21`).
+- Results (paired Student-t 95% CI):
+
+  | Candidate | ISA | Runs | W (SD) | dW vs base (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Vcore | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | P043-llvm-base | scalar-sim | 3 | 111.2 (0.5) | +0.0 +-5.2 | 4480 | +13 +-9 | 82.3 | 1.232 | 3983 | inconclusive (within noise) |
+  | P043-zig-base | scalar-sim | 3 | 110.0 (1.3) | -1.1 +-1.6 | 4476 | +8 +-15 | 82.3 | 1.230 | 4019 | inconclusive (within noise) |
+  | P041-zig-v3 | scalar-sim | 3 | 111.1 (1.6) | - | 4468 | - | 82.9 | 1.227 | 4465 | baseline |
+
+- Evidence: `audit/power-measurements/P043-baseline-vs-v3-sim-20261005-104613-31608-00/`.
+
+### P042 — Fast lock-free role check in WaitForRole (throughput gain, power neutral)
+
+- Date: 2026-10-05. Type: scheduling.
+- One change: non-blocking `RoleOf` check in `WaitForRole` (`src/engine/Scheduler.cpp`) before acquiring `s_workMtx`.
+- Baseline: P041-zig-v3. Bounded 6+15 s benchmark windows (`--power-window 21`).
+- Results (5 paired repeats, 95% CI):
+
+  | Candidate | ISA | Runs | W (SD) | dW vs base (CI95) | Eff MHz | dMHz (CI95) | Tmax C | Vcore | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | P042-fast-role | scalar-sim | 5 | 112.1 (0.7) | -0.1 +-0.6 | 4472 | +0 +-5 | 82.5 | 1.231 | 4613 | inconclusive (within noise) |
+  | P041-zig-v3 | scalar-sim | 5 | 112.2 (0.5) | - | 4472 | - | 82.3 | 1.228 | 4545 | baseline |
+
+- Verdict: Inconclusive on power, but retained for +68 jobs/s throughput improvement and eliminated mutex contention during steady assignments.
+- Evidence: `audit/power-measurements/P042-fast-role-sim-20261005-104036-25472-00/`.
+
+### P041 — 3-toolchain baseline audit at 6+15 s (Zig v3 established as best single binary)
+
+- Date: 2026-10-05. Type: compiler.
+- Protocol: 6 s warmup + 15 s measurement (`--power-window 21`), all 16 compute workers, benchmark job mix, 3 paired repeats per workload.
+- Candidates: `P041-zig-v3` (baseline), `P041-llvm-v3`, `P041-msvc-v3`.
+- Results:
+  - **AVX2:**
+    | Candidate | Runs | W (SD) | dW vs base (CI95) | Eff MHz | Tmax C | Jobs/s | Verdict |
+    |---|---|---|---|---|---|---|---|
+    | P041-msvc-v3 | 3 | 150.7 (1.8) | -0.8 +-2.1 | 4266 | 89.8 | 332 | tie-break worse |
+    | P041-llvm-v3 | 3 | 150.5 (0.5) | -1.0 +-2.9 | 4231 | 90.8 | 376 | inconclusive |
+    | P041-zig-v3 | 3 | 151.5 (1.0) | - | 4229 | 90.8 | 387 | baseline (IN BAND 145-155 W) |
+  - **Scalar Synthetic:**
+    | Candidate | Runs | W (SD) | dW vs base (CI95) | Eff MHz | Tmax C | Jobs/s | Verdict |
+    |---|---|---|---|---|---|---|---|
+    | P041-msvc-v3 | 3 | 133.4 (0.3) | -2.9 +-2.2 | 4416 | 86.8 | 358 | worse |
+    | P041-llvm-v3 | 3 | 135.0 (0.5) | -1.3 +-3.2 | 4409 | 88.1 | 443 | inconclusive |
+    | P041-zig-v3 | 3 | 136.3 (0.8) | - | 4404 | 88.0 | 451 | baseline (IN BAND 135-140 W) |
+  - **Scalar Realistic (`scalar-sim`):**
+    | Candidate | Runs | W (SD) | dW vs base (CI95) | Eff MHz | Tmax C | Jobs/s | Verdict |
+    |---|---|---|---|---|---|---|---|
+    | P041-msvc-v3 | 3 | 107.8 (1.1) | -3.0 +-2.6 | 4478 | 81.9 | 3467 | worse |
+    | P041-llvm-v3 | 3 | 110.3 (1.1) | -0.6 +-0.8 | 4486 | 82.1 | 4668 | inconclusive |
+    | P041-zig-v3 | 3 | 110.9 (1.2) | - | 4478 | 82.4 | 4483 | baseline (target 115-120 W) |
+- Evidence: `audit/power-measurements/P041-compilers-{sim,scalar,avx2}-20261005-*/`.
+
+### P040 — Function alignment 32 and 64 bytes on Zig v3 (inconclusive)
+
+- Date: 2026-10-05. Type: flag.
+- One change: `-falign-functions=32` and `-falign-functions=64` on Zig v3.
+- Results (5 paired repeats):
+  | Candidate | Runs | W (SD) | dW vs base (CI95) | Eff MHz | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|
+  | P040-alignfn32 | 5 | 112.8 (1.0) | +0.3 +-2.0 | 4479 | 82.1 | 4554 | inconclusive |
+  | P040-alignfn64 | 5 | 112.2 (1.3) | -0.2 +-1.0 | 4479 | 82.0 | 4646 | inconclusive |
+  | P039-control | 5 | 112.5 (1.4) | - | 4477 | 81.8 | 4513 | baseline |
+- Evidence: `audit/power-measurements/P040-align-20261005-101019-6564-00/`.
+
+### P039 — Pair placement probe and initial compiler flags check (completed)
+
+- Date: 2026-10-05. Type: method.
+- Verified pair execution placement: ~93% pairs cross-core, 7% on SMT siblings, 0 unpaired. Diagnostics added to `Topology`, `Verification`, and `Watchdog`.
+- Evidence: `audit/power-measurements/P039-placement-probe-20261004-132531-13272-00/`.
 
 ### P038 — Intermediate 768 KiB synthetic buffer (inconclusive)
 

@@ -8,6 +8,7 @@ std::atomic<uint64_t> s_jobSeq{0};
 std::atomic<uint64_t> s_runSeed{GOLDEN_RATIO};
 
 std::atomic<uint64_t> s_goldenChecks{0}, s_goldenFailures{0};
+std::atomic<uint64_t> s_pairsSameCore{0}, s_pairsCrossCore{0};
 std::atomic<uint64_t> s_decompPasses{0}, s_decompFailures{0};
 std::atomic<uint64_t> s_cpuErrors{0}, s_ramErrors{0}, s_ioErrors{0};
 std::atomic<uint64_t> s_ramBytes{0}, s_ioBytes{0};
@@ -95,6 +96,13 @@ PairTable &GlobalPairTable() {
   return table;
 }
 
+void CountPairPlacement(int lpA, int lpB) {
+  const int coreA = CoreOfLp(lpA), coreB = CoreOfLp(lpB);
+  if (coreA < 0 || coreB < 0) return; // unknown placement (no pinning)
+  (coreA == coreB ? s_pairsSameCore : s_pairsCrossCore)
+      .fetch_add(1, std::memory_order_relaxed);
+}
+
 void ResetVerification() {
   s_jobSeq = 0;
   uint64_t t = (uint64_t)std::chrono::steady_clock::now().time_since_epoch().count();
@@ -102,6 +110,8 @@ void ResetVerification() {
   s_runSeed = seed ? seed : GOLDEN_RATIO;
   GlobalPairTable().Reset();
   s_goldenChecks = 0;
+  s_pairsSameCore = 0;
+  s_pairsCrossCore = 0;
   s_goldenFailures = 0;
   s_decompPasses = 0;
   s_decompFailures = 0;
@@ -149,6 +159,8 @@ VerifyStats GetVerifyStats() {
   v.pairsMatched = t.Matched();
   v.pairsMismatched = t.Mismatched();
   v.unpaired = t.Unpaired();
+  v.pairsSameCore = s_pairsSameCore.load(std::memory_order_relaxed);
+  v.pairsCrossCore = s_pairsCrossCore.load(std::memory_order_relaxed);
   v.goldenChecks = s_goldenChecks.load(std::memory_order_relaxed);
   v.goldenFailures = s_goldenFailures.load(std::memory_order_relaxed);
   v.decompPasses = s_decompPasses.load(std::memory_order_relaxed);

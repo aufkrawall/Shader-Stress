@@ -56,6 +56,10 @@ private:
 
 PairTable &GlobalPairTable();
 
+// Records where the two executions of a compared pair ran: on the same physical
+// core (SMT siblings) or on different cores. Diagnostic only.
+void CountPairPlacement(int lpA, int lpB);
+
 // Resets the job stream, pair table and per-CPU error counters (run start).
 void ResetVerification();
 
@@ -70,6 +74,8 @@ struct VerifyStats {
   uint64_t pairsMatched = 0;
   uint64_t pairsMismatched = 0;
   uint64_t unpaired = 0;
+  uint64_t pairsSameCore = 0;   // compared pairs whose runs shared a physical core
+  uint64_t pairsCrossCore = 0;  // compared pairs run on two different cores
   uint64_t goldenChecks = 0;
   uint64_t goldenFailures = 0;
   uint64_t decompPasses = 0;

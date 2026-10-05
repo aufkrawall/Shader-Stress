@@ -5,7 +5,7 @@ via UAC when needed (PawnIO sensors). Workflow and decision rules:
 llm-wiki/power-optimization.md; results ledger: llm-wiki/power-ledger.md.
 
     # GUI-equivalent A/B: 16/all compiler-sim compute threads, no auxiliary work.
-    # Default: benchmark job mix, 8 s warmup + 15 s window, five paired repeats.
+    # Default: benchmark job mix, 6 s warmup + 15 s window, five paired repeats.
     python scripts/power_measure.py --snapshot P001-base
     python scripts/power_measure.py --isas avx2 --label P001-my-change \\
         --exe audit/power-baselines/P001-base/ShaderStress.com,bin/x64-llvm-v3/ShaderStress.com
@@ -56,9 +56,9 @@ MIN_CLOCK_DELTA_MHZ = 15.0   # smaller clock deltas never decide a tie
 # Per mode: ShaderStress run, warmup, measurement window, repeats, preheat.
 # "benchmark" uses the GUI's job mix, bounded by the CLI power-window option.
 # "short" retains the legacy steady job mix, never evidence for this goal.
-MODE_DEFAULTS = {"short": {"warmup": 8, "measure": 15, "repeats": 5, "preheat": 0},
-                 "benchmark": {"warmup": 8, "measure": 15, "repeats": 5, "preheat": 0}}
-MAX_POWER_WINDOW_SECONDS = 23
+MODE_DEFAULTS = {"short": {"warmup": 6, "measure": 15, "repeats": 5, "preheat": 0},
+                 "benchmark": {"warmup": 6, "measure": 15, "repeats": 5, "preheat": 0}}
+MAX_POWER_WINDOW_SECONDS = 21
 NUMERIC = {"BufKiB": int, "Rounds": int, "Repeat": int, "Threads": int, "Samples": int,
            "Watts": float, "StdDevW": float, "MinW": float, "MaxW": float,
            "JobsPerSecond": float, "EffMHz": float, "TempMeanC": float, "TempMaxC": float,
@@ -381,15 +381,15 @@ def parse_args(argv=None):
                              "baseline, runs are interleaved in shuffled order")
     parser.add_argument("--label", default="adhoc", help="experiment id, e.g. P003-fadd-lane")
     parser.add_argument("--mode", choices=tuple(MODE_DEFAULTS), default="benchmark",
-                        help="benchmark (default): GUI benchmark job mix in a <=23 s compute-only window; "
+                        help="benchmark (default): GUI benchmark job mix in a <=21 s compute-only window; "
                              "short: legacy steady-mode screening, not benchmark evidence")
-    parser.add_argument("--warmup", type=float, help="seconds before the window (default/max 8)")
+    parser.add_argument("--warmup", type=float, help="seconds before the window (default/max 6)")
     parser.add_argument("--measure", type=float, help="window length in seconds (default/max 15)")
     parser.add_argument("--repeats", type=int, help="interleaved rounds (default 5)")
     parser.add_argument("--max-load-seconds", type=int, default=600,
                         help="planned workload-time budget (default 600 s); checked before UAC")
     parser.add_argument("--preheat", type=int, help="optional unrecorded load before round 1 "
-                        "(default 0; max 23 s, same selected job mix)")
+                        "(default 0; max 21 s, same selected job mix)")
     parser.add_argument("--threads", type=int, default=0, help="0 = all logical CPUs")
     parser.add_argument("--sample-interval", type=float, default=1.0,
                         help="PowerReader window in seconds (binaries before streaming: 6.5)")
@@ -424,8 +424,8 @@ def parse_args(argv=None):
             setattr(args, key, value)
     if args.warmup < 3 or args.measure < 5:
         parser.error("warmup must be >= 3 s and the measurement window >= 5 s")
-    if args.warmup > 8 or args.measure > 15 or args.preheat > MAX_POWER_WINDOW_SECONDS:
-        parser.error("power runs are bounded: warmup <= 8 s, measurement <= 15 s, preheat <= 23 s")
+    if args.warmup > 6 or args.measure > 15 or args.preheat > MAX_POWER_WINDOW_SECONDS:
+        parser.error("power runs are bounded: warmup <= 6 s, measurement <= 15 s, preheat <= 21 s")
     if args.threads < 0 or args.repeats < 1 or args.preheat < 0:
         parser.error("threads must be >= 0 (0 = all), repeats positive, preheat >= 0")
     if args.max_load_seconds < 1:

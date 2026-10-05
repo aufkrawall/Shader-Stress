@@ -34,6 +34,8 @@ const CpuTopology &GetTopology();
 // Pins the calling thread to the CPU assigned to worker slot `workerIdx`.
 // Returns the logical processor number or -1 if pinning is unsupported.
 int PinThreadToWorkerSlot(int workerIdx);
+// Dense physical core index of logical processor `lp`, or -1 when unknown.
+int CoreOfLp(int lp);
 // Human-readable description, e.g. "CPU 6 (core 3, SMT 0)".
 std::wstring DescribeLp(int lp);
 // One-line topology summary for logs/UI.

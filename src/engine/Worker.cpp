@@ -72,8 +72,11 @@ void RunComputeJob(int idx, Worker &w, int lp) {
   const uint64_t count = w.localShaders.fetch_add(1, std::memory_order_relaxed) + 1;
 
   PairPeer peer;
-  if (GlobalPairTable().Submit((uint32_t)type, spec, result, idx, lp, &peer) ==
-      PairOutcome::Mismatch)
+  const PairOutcome outcome =
+      GlobalPairTable().Submit((uint32_t)type, spec, result, idx, lp, &peer);
+  if (outcome != PairOutcome::Stored)
+    CountPairPlacement(lp, peer.lp);
+  if (outcome == PairOutcome::Mismatch)
     ResolveMismatch(type, spec, result, lp, peer);
 
   // Periodic golden-value check: catches faults that hit every core the same

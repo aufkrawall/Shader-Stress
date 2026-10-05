@@ -6,7 +6,7 @@ Target version: 3.6.0 (`VERSION`).
 
 ### Fixed
 
-- **Power measurement workflow:** use the GUI benchmark job mix with only compiler-sim compute workers in bounded windows (8-second warm-up plus 15-second measurement), with no decompression, RAM or I/O. The new CLI `--power-window` stops after at most 23 seconds without producing a benchmark score/hash; the normal GUI benchmark remains 180 seconds. Reject plans exceeding the default ten-minute load budget before elevation; explicitly requested legacy steady-mode measurements are labeled as unsuitable for GUI benchmark claims.
+- **Power measurement workflow:** use the GUI benchmark job mix with only compiler-sim compute workers in bounded windows (6-second warm-up plus 15-second measurement), with no decompression, RAM or I/O. The new CLI `--power-window` stops after at most 21 seconds without producing a benchmark score/hash; the normal GUI benchmark remains 180 seconds. Reject plans exceeding the default ten-minute load budget before elevation; explicitly requested legacy steady-mode measurements are labeled as unsuitable for GUI benchmark claims.
 - **Profile-guided builds:** keep native synthetic ISA kernels independent of host-specific profiles. Training on an AVX2 host no longer marks the unsupported AVX-512 kernel cold against its explicit hot annotation; the main program and realistic workload retain profiling.
 - **Synthetic AVX2/AVX-512/SSE2 kernels no longer run on infinity.** Their values overflowed to `inf` within the first ~0.05-0.16% of every job, so the FMA units spent >99.8% of the run on constant data (minimal switching) and computation errors were absorbed instead of detected. The scalar kernel's integer chains also collapsed to zero. The new kernels stay bounded with full-entropy mantissas (verified by `--self-test` and `--perf-stats`).
 - **Most work was never checked for errors.** Only ~1% of compute jobs were compared against golden values; decompression, RAM and I/O results were not checked at all.
@@ -54,6 +54,8 @@ Target version: 3.6.0 (`VERSION`).
 - **Logging**: topology and worker-to-CPU order, golden values, phase changes, a health/verification summary every minute, and RAM/I/O tester throughput.
 - **Power readout** no longer blocks the watchdog at startup and cannot hang on a stuck helper process. The log now records every fresh sensor reading with one decimal, its time since run start and the job count; readings older than 15 s are no longer displayed.
 - **Log header** names the compiler and build directory (e.g. `Compiler: MSVC ...`, `Build: x64-zig-v3`).
+- **Pair placement diagnostic logging**: record whether compared job pairs ran across different physical cores or on SMT siblings on the same core, reported in the watchdog's periodic verification summary.
+- **Scheduler role dispatch**: non-blocking fast check before mutex acquisition in `WaitForRole`, avoiding lock contention across worker threads while workload assignments remain stable.
 
 ### Changed
 

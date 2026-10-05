@@ -27,11 +27,14 @@ WorkerRole RoleOf(int workerIdx, const WorkAssignment &a) {
 }
 
 WorkerRole WaitForRole(int workerIdx, const Worker &w) {
+  if (w.terminate.load(std::memory_order_relaxed)) return WorkerRole::Idle;
+  WorkerRole role = RoleOf(workerIdx, WorkAssignment::Unpack(g_App.assignment.load(std::memory_order_acquire)));
+  if (role != WorkerRole::Idle) return role;
+
   std::unique_lock<std::mutex> lk(s_workMtx);
-  WorkerRole role = WorkerRole::Idle;
   s_workCv.wait(lk, [&] {
     if (w.terminate.load(std::memory_order_relaxed)) return true;
-    role = RoleOf(workerIdx, WorkAssignment::Unpack(g_App.assignment.load()));
+    role = RoleOf(workerIdx, WorkAssignment::Unpack(g_App.assignment.load(std::memory_order_acquire)));
     return role != WorkerRole::Idle;
   });
   return w.terminate.load() ? WorkerRole::Idle : role;

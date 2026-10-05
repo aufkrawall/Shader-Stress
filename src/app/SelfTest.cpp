@@ -382,10 +382,10 @@ void TestFormatting() {
         "formatting helpers");
   TestPowerReaderFormat();
   auto window = ParseCliArgs({L"ShaderStress", L"--mode", L"benchmark", L"--isa", L"avx2",
-                             L"--power-window", L"23", L"--threads", L"2"});
+                             L"--power-window", L"21", L"--threads", L"2"});
   ApplyCliDefaults(window.options);
   Check(window.errors.empty() && window.options.mode == MODE_BENCHMARK &&
-            window.options.workload == WL_AVX2 && CliRunDurationSeconds(window.options) == 23 &&
+            window.options.workload == WL_AVX2 && CliRunDurationSeconds(window.options) == 21 &&
             window.options.run.threadLimit == 2 && window.options.run.noDecomp &&
             window.options.run.noRam && window.options.run.noIo,
         "power window retains benchmark mode and ISA, caps duration and disables auxiliary work");

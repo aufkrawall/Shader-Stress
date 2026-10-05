@@ -1,5 +1,25 @@
 # Recent Changes Log
 
+## 2026-10-05 — 6+15 s protocol enforcement, pair placement diagnostics, and P040–P043 audit
+
+- Enforced user-specified 6 s warmup + 15 s measurement limit (`--power-window 21`, total 21 s max)
+  across CLI (`CliArgs.cpp`), self-test suite (`SelfTest.cpp`), measurement scripts
+  (`power_measure.py`, `measure.ps1`, `sweep_power.ps1`), and regression test suite
+  (`power_tool_tests.py`, `run_tests.py`).
+- Added pair placement diagnostics: `CoreOfLp()` in `Topology.h/.cpp`, `CountPairPlacement()`
+  and atomic counters `s_pairsSameCore`/`s_pairsCrossCore` in `Verification.h/.cpp`, and
+  periodic watchdog reporting in `Watchdog.cpp`. Probe runs confirm ~93% pairs execute cross-core
+  and 7% on SMT siblings, with zero unpaired jobs.
+- Added non-blocking fast role check in `Scheduler.cpp` `WaitForRole` before mutex acquisition,
+  increasing scalar-sim throughput by +68 jobs/s (4545 to 4613) while keeping power draw neutral.
+- P041 empirical baseline audit across all three toolchains at 6+15 s benchmark job mix:
+  - AVX2: Zig v3 **151.5 W** (SD 1.0) -> IN TARGET BAND (145–155 W). (MSVC 150.7 W, LLVM 150.5 W).
+  - Scalar Synthetic: Zig v3 **136.3 W** (SD 0.8) -> IN TARGET BAND (135–140 W). (LLVM 135.0 W, MSVC 133.4 W).
+  - Scalar Realistic (`scalar-sim`): Zig v3 **110.9–112.2 W** (SD 0.5–1.2) -> 3–4 W short of target band (115–120 W). (LLVM 110.3 W, MSVC 107.8 W).
+- Experiments P040 (function alignment 32/64 bytes), P042 (scheduler fast role check), and
+  P043 (x86-64 baseline vs x86-64-v3) recorded; Zig v3 remains the best single binary.
+- Rebuild 14/14 targets, 13 archives, full test suite 181/181 passed (sanitizers, ASan/UBSan, stress smoke runs, and invariant checks).
+
 ## 2026-10-04 — General no-LTO/dispatch and intermediate-buffer power checks
 
 - P036 no-LTO on current Zig changes realistic machine code, preserves all

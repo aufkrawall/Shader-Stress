@@ -287,6 +287,13 @@ int PinThreadToWorkerSlot(int workerIdx) {
 #endif
 }
 
+int CoreOfLp(int lp) {
+  if (lp < 0) return -1;
+  for (const auto &c : GetTopology().cpus)
+    if (c.lp == lp) return c.core;
+  return -1;
+}
+
 std::wstring DescribeLp(int lp) {
   if (lp < 0) return L"CPU ?";
   const CpuTopology &t = GetTopology();

@@ -12,7 +12,9 @@ static void LogVerifySummary() {
                    L", I/O " + std::to_wstring(v.ioErrors) + L") | pairs ok " +
                    std::to_wstring(v.pairsMatched) + L", mismatched " +
                    std::to_wstring(v.pairsMismatched) + L", unpaired " +
-                   std::to_wstring(v.unpaired) + L" | golden " +
+                   std::to_wstring(v.unpaired) + L" | pair placement same-core " +
+                   std::to_wstring(v.pairsSameCore) + L", cross-core " +
+                   std::to_wstring(v.pairsCrossCore) + L" | golden " +
                    std::to_wstring(v.goldenChecks) + L" | decomp passes " +
                    std::to_wstring(v.decompPasses) + L" | RAM verified " +
                    FmtBytes(v.ramBytesVerified) + L" (" + std::to_wstring(a.ramPasses) +

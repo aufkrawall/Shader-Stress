@@ -88,33 +88,33 @@ def test_arguments(check):
           workload_args("short", 23, "scalar", 16)[-6:-4] == ["--threads", "16"],
           "benchmark power window uses dedicated limit; explicit thread count is passed through")
     d = parse_args([])
-    check((d.mode, d.warmup, d.measure, d.repeats, d.preheat) == ("benchmark", 8, 15, 5, 0) and
-          run_seconds(d.mode, d.warmup, d.measure) == 23 and d.threads == 0 and
+    check((d.mode, d.warmup, d.measure, d.repeats, d.preheat) == ("benchmark", 6, 15, 5, 0) and
+          run_seconds(d.mode, d.warmup, d.measure) == 21 and d.threads == 0 and
           d.isas == ["scalar-sim"] and d.max_load_seconds == 600 and
           d.exe == [PROJECT_ROOT / "bin/x64-llvm-v3/ShaderStress.com"] and d.csv is None,
-          "defaults: benchmark job mix, compute only, 8+15 s, five scalar-sim runs, 600 s budget")
+          "defaults: benchmark job mix, compute only, 6+15 s, five scalar-sim runs, 600 s budget")
     b = parse_args(["--mode", "benchmark"])
-    check((b.warmup, b.measure, b.repeats, b.preheat) == (8, 15, 5, 0) and
-          run_seconds(b.mode, b.warmup, b.measure) == 23,
-          "benchmark power windows stop after 8 s warmup + 15 s measurement")
-    check(workload_args(d.mode, 23, "avx2", 16) ==
-          ["--mode", "benchmark", "--power-window", "23", "--isa", "avx2", "--threads", "16",
+    check((b.warmup, b.measure, b.repeats, b.preheat) == (6, 15, 5, 0) and
+          run_seconds(b.mode, b.warmup, b.measure) == 21,
+          "benchmark power windows stop after 6 s warmup + 15 s measurement")
+    check(workload_args(d.mode, 21, "avx2", 16) ==
+          ["--mode", "benchmark", "--power-window", "21", "--isa", "avx2", "--threads", "16",
            "--no-ram", "--no-io", "--no-decompress", "--quiet"],
           "default launch uses benchmark job mix and only 16 compiler-sim compute threads")
     legacy = parse_args(["--mode", "short"])
-    check((legacy.warmup, legacy.measure, legacy.repeats, legacy.preheat) == (8, 15, 5, 0) and
+    check((legacy.warmup, legacy.measure, legacy.repeats, legacy.preheat) == (6, 15, 5, 0) and
           legacy.isas == ["scalar-sim", "scalar", "avx2"],
           "explicit legacy steady mode remains available with bounded duration and no preheat")
     check(parse_args(["--sweep"]).isas == ["scalar", "avx2"], "sweep default skips the realistic sim")
     ab = parse_args(["--exe", "audit/power-baselines/P1-base/ShaderStress.com,bin/x64-llvm-v3/ShaderStress.com"])
     check([e.parent.name for e in ab.exe] == ["P1-base", "x64-llvm-v3"] and ab.exe[0].is_absolute(),
           "A/B executables are labelled by their directory")
-    check(planned_load_seconds(d) == 115 and planned_load_seconds(ab) == 230 and
+    check(planned_load_seconds(d) == 105 and planned_load_seconds(ab) == 210 and
           planned_load_seconds(parse_args(["--isas", "scalar-sim,scalar,avx2",
-                                          "--repeats", "3"])) == 207,
+                                          "--repeats", "3"])) == 189,
           "load planning accounts for executables, ISAs, repeats and bounded duration")
     check(planned_load_seconds(parse_args(["--sweep", "--targets", "win-v3", "--buffers", "128,512",
-                                          "--rounds", "1", "--isas", "avx2"])) == 230,
+                                          "--rounds", "1", "--isas", "avx2"])) == 210,
           "sweep load planning counts each target/buffer/round candidate")
     with mock.patch("scripts.power_measure.sys.platform", "win32"), \
          mock.patch("scripts.power_measure.Path.exists", return_value=True), \
@@ -124,19 +124,19 @@ def test_arguments(check):
                   "--isas", "scalar-sim,scalar,avx2", "--repeats", "30"])
             budget_rejected = False
         except RuntimeError as error:
-            budget_rejected = "planned load 4140 s exceeds --max-load-seconds 600" in str(error)
+            budget_rejected = "planned load 3780 s exceeds --max-load-seconds 600" in str(error)
     check(budget_rejected, "hour-long comparison rejected before elevation or workloads")
-    heat = parse_args(["--preheat", "23"])
+    heat = parse_args(["--preheat", "21"])
     with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()), \
          mock.patch("scripts.power_measure.run_workload", return_value=(0, "")) as launch:
         preheat(d.exe[0], heat, Path(tmp))
-    check(planned_load_seconds(heat) == 138 and launch.call_args.args[1:5] ==
-          ("benchmark", 23, "scalar-sim", 0),
-          "benchmark preheat retains benchmark job mix and obeys the 23 s cap")
+    check(planned_load_seconds(heat) == 126 and launch.call_args.args[1:5] ==
+          ("benchmark", 21, "scalar-sim", 0),
+          "benchmark preheat retains benchmark job mix and obeys the 21 s cap")
     with contextlib.redirect_stderr(io.StringIO()):
         for invalid in (["--duration", "60"], ["--mode", "steady"], ["--warmup", "2"],
                         ["--measure", "4"], ["--mode", "benchmark", "--measure", "150"],
-                        ["--warmup", "9"], ["--measure", "16"], ["--preheat", "24"],
+                        ["--warmup", "7"], ["--measure", "16"], ["--preheat", "22"],
                         ["--buffers", "31"], ["--rounds", "0"], ["--threads", "-1"],
                         ["--max-load-seconds", "0"],
                         ["--sample-interval", "5"], ["--isas", "sse9"],
