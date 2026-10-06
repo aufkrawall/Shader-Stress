@@ -1,6 +1,6 @@
 # Power / Heat Design ("opt-audit")
 
-Last verified: 2026-10-04. Stale-risk: medium (P011 benchmark confirmed on the 5700X — see [power-ledger.md](power-ledger.md); targets remain unmet and AVX2 run variability is unresolved; codegen verified by disassembly).
+Last verified: 2026-10-06. Stale-risk: medium (P045 far-swap streaming adopted — see [power-ledger.md](power-ledger.md); scalar/avx2 targets in band, realistic target unmet inside the pinned sim source; AVX2 run variability unresolved; codegen verified by disassembly).
 History before 3.6.0: [log/archive/opt-audit-2026-05-to-06.md](log/archive/opt-audit-2026-05-to-06.md) — its power comparisons are confounded (kernels ran on `inf`).
 
 2026-10-04 protocol correction: older short/steady-mode power deltas and compiler
@@ -23,6 +23,13 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
    multiply/rotate/divide network on the GPR side (free on Zen: separate schedulers).
 3. **No serializing bottlenecks** (long dependent IDIV chains, latency-bound GPR chains).
 4. **Sharp transients** in dynamic mode (instant start/stop, preemption, 1 ms timer).
+5. **Maximize the cache-traffic rate.** Calibrated 2026-10-06 (5700X, benchmark
+   windows): package power moves ~0.5 W per 1% change in the kernel's streaming
+   bytes/s; adding execution-pipe work at constant bytes/block *loses* (P044
+   -5.1 W scalar, P046 -4.2 W), while bytes/block up ~50% at ~6% more
+   instructions wins (P045 +3.2 W avx2). Throughput-preserving work-fill (P004)
+   is the secondary pattern. The realistic sim is latency-bound and does not
+   respond to the analogous codegen changes (P048/P050: +-2 W).
 
 ## Synthetic kernel (src/workloads/SynthKernel.inc)
 
@@ -31,6 +38,13 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
   8 loads, `SYNTH_ROUNDS` (1) x 4 butterflies (10 FP ops each: 4 MUL + 2 FMA on
   FP0/FP1 pipes, plus 2 ADD + 2 SUB on dedicated FP2/FP3 pipes; 40 FP ops total
   per block), 8 stores, plus 4 IMUL/rotate/xor chains, 3 adds and one 64-bit DIV.
+- **Far-swap streaming fill (P045, 2026-10-06):** each block also swaps the
+  real/imag halves of two vectors half a buffer away (`j ^ (kVecs/2)`) — a
+  second data cursor streaming through the L2/L3 side at zero ALU cost.
+  +50% bytes/block for +6% instructions: +3.2 +-1.6 W avx2 and +1.0 +-0.7 W
+  scalar on the 5700X (5 paired 8+15 s benchmark windows). Side effect: the
+  benchmark score drops ~25% (the block streams more data per job unit).
+  Swaps are deterministic and entropy-preserving; goldens changed deliberately.
 - Butterfly (x, y) -> (k x + w y, w y - k x), w = e^i/sqrt2, conj(w) in stage 2.
   `k x` is multiplied once on FP0/FP1 and combined with `w y` via explicit `SK_ADD`/`SK_SUB`
   on dedicated FADD pipes (FP2/FP3 on Zen 3). This enables both pipe groups;
@@ -143,12 +157,22 @@ load); never part of tests. Essentials:
 | Pure reg-reg FMA (2026-05-14), L1-only sparse stores (2026-06-07) | Measured with `inf` data; superseded, could be re-evaluated via knobs |
 | Thread/process priority boost | Rejected: can starve the OS |
 | Full-memory minidumps | Rejected: would include multi-GiB RAM test buffer |
+| Extra scaled-Hadamard FP-pipe fill per block (P044) | Rejected 2026-10-06: -5.1 +-1.6 W scalar at constant bytes/block (traffic-rate loss outweighs the activity gain) |
+| Deeper divider-feedback chains / block interleave (P046) | Rejected 2026-10-06: -4.2 +-0.9 W scalar (added GPR work raises instruction cost more than the interleave saves) |
+| Far-pair rotation streaming (P047, P044+P045 synthesis) | Deprioritized 2026-10-06 at gate: rotation chains delay store data, -15% traffic rate vs P045 |
+| `-funroll-all-loops` (P049) | No-op 2026-10-06: identical workload instructions to the default |
 
 ## Open questions
 
-- P011 benchmark watts are below all targets (106.8 / 131.3 / 139.4 W).
-  AVX2 variability, current toolchain ranking and realistic codegen need further
-  experiments; the backlog lives in [power-ledger.md](power-ledger.md).
+- Open gap (2026-10-06): **realistic sim 111.5 W** versus the 115–120 W target.
+  Compiler/flag/codegen/scheduling levers inside the pinned source are
+  exhausted at +-2 W (P048 interleave retest +0.0 +-0.8 W at ten pairs, P050
+  strict-aliasing recheck -2.1 +-0.8 W confirming P007c). The sim is
+  latency-bound scalar code; closing the gap needs a workload change, which the
+  source pin forbids without explicit user approval. Synthetic modes are in
+  band after P045 (avx2 148.7->151.9 W, scalar 135.3->136.3 W in session
+  frame). AVX2 run-to-run variability and thermal flags remain open; the
+  backlog lives in [power-ledger.md](power-ledger.md).
 - Other CPUs and AVX-512 systems need their own measurements of the general
   builds. CPU-family-specific defaults/builds are excluded by the current user
   constraint; selectable ISA compatibility tiers remain supported.

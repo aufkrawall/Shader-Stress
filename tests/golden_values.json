@@ -3,9 +3,9 @@
   "complexity": 1000,
   "checksums": {
     "x64": {
-      "scalar": "0x4c16d08e29ebed5f",
+      "scalar": "0x1e986aef8e5e656e",
       "scalar-sim": "0x58b1a15ca01f7216",
-      "avx2": "0xd728a7ec6cf2a7e5"
+      "avx2": "0x658323a86c4d6bbd"
     }
   }
 }

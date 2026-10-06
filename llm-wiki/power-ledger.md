@@ -1,7 +1,8 @@
 # Power Experiment Ledger
 
-Last verified: 2026-10-04. Stale-risk: medium — P036–P038 general flag/buffer
-checks recorded; no new accepted improvement, three-mode goal still unmet.
+Last verified: 2026-10-06. Stale-risk: medium — P044–P050 recorded; P045
+(far-swap streaming) accepted and adopted; realistic target still unmet inside
+the pinned sim source.
 
 Durable record of every power experiment (procedure and decision rules:
 [power-optimization.md](power-optimization.md)). Rules: one entry per experiment ID, one
@@ -31,6 +32,11 @@ browser activity is authorized; retain the existing background-load guard.
 Historical targets and measurements below are evidence, not proof that these
 new ranges are reached reliably. A measured candidate is a provisional best
 among tested builds, never a global optimum.
+
+Status 2026-10-06 (post-P045, session frame with baseline 135.3/148.7/111.5 W):
+scalar synthetic 136.3 W and avx2 151.9 W are in band from one binary; realistic
+111.5 W is 3.5–8.5 W short of its band and the pinned-source lever space is
+exhausted at ±2 W (see the P044–P050 disposition).
 
 Interpretation correction (2026-10-04, P036–P038 review): P026's **147.1 W
 AVX2 mean is inside the requested 145–155 W band**, so its historical wording
@@ -147,6 +153,42 @@ heavier per-cycle current, matching the boost/backoff model).
 | P041 | compiler | Comprehensive 3-toolchain audit at 6+15 s benchmark job mix (MSVC, LLVM, Zig v3) | all | completed (Zig v3 best single binary: AVX2 151.5 W, scalar 136.3 W, sim 110.9–112.2 W) |
 | P042 | scheduling | Fast lock-free role check in `WaitForRole` (`src/engine/Scheduler.cpp`) | scalar-sim | inconclusive on power (-0.1 ±0.6 W); retained for throughput (+68 jobs/s) |
 | P043 | compiler | x86-64 baseline (`bin/x64-llvm`, `bin/x64-zig`) vs x86-64-v3 on scalar-sim | scalar-sim | inconclusive (+0.0 ±5.2 / −1.1 ±1.6 W); v3 retained |
+| P044 | kernel | Scaled Hadamard (kk-rotated add/sub pairs) per block on idle FP pipes, two vector pairs | scalar, avx2 | rejected (scalar −5.1 ±1.6 W; avx2 −8.2 ±12.3 W one low outlier run kept) |
+| P045 | kernel | Far-vector re/im swap streaming (second data cursor half a buffer away, zero ALU) per block | scalar, avx2 | accepted (+3.2 ±1.6 W avx2, +1.0 ±0.7 W scalar; not worse anywhere) |
+| P046 | kernel | Two extra mixing states deepening the divider feedback window (interleave more blocks on the divide latency) | scalar, avx2 | rejected (scalar −4.2 ±0.9 W, avx2 −2.6 ±2.5 W) |
+| P047 | kernel | P045 streaming + P044 rotation on the far pairs (traffic + FP fill synthesis) | scalar, avx2 | deprioritized at gate (−15% traffic rate on scalar vs P045: rotation chains delay store data; unmeasured) |
+| P048 | flag | Retest `-mllvm -force-vector-interleave=1` (P028 point estimate +0.6 W) with ten bounded pairs | scalar-sim | see P048 entry |
+| P049 | flag | `-funroll-all-loops` on the current Zig baseline | all | codegen gate stopped (realistic sim and kernels emit identical instructions to the default) |
+| P050 | flag | Recheck `-fno-strict-aliasing` in benchmark windows (P007c's +1.9 W claim is short-mode-only/unverified) | scalar-sim (others guard) | see P050 entry |
+
+## Current disposition after P044–P050 (2026-10-06)
+
+- **Accepted and adopted: P045 far-swap streaming fill** (`SynthKernel.inc`):
+  +3.2 ±1.6 W avx2 (151.9 W session frame) and +1.0 ±0.7 W scalar (136.3 W),
+  five paired 8+15 s benchmark windows; never worse in any pair. Side effect
+  reported per policy: benchmark scores drop ~25% (jobs/s 378->284 avx2,
+  430->323 scalar). Deliberate goldens `0x1e986aef8e5e656e` / `0x658323a86c4d6bbd`
+  recorded via `--stress --record-golden` and identical across all toolchains;
+  181/181 tests. Sim golden `0x58b1a15ca01f7216` untouched.
+- Rejected with evidence: P044 Hadamard fill (−5.1 ±1.6 W scalar), P046 deep
+  divider chains (−4.2 ±0.9 W scalar), P050 strict-aliasing off (−2.1 ±0.8 W
+  sim, confirming P007c). Deprioritized at gate (unmeasured): P047. Codegen
+  gate stopped: P049. Ten-pair flat: P048.
+- **Power model calibrated** on the synthetic kernels: package power ≈ 0.5 W
+  per % cache-traffic-rate change; execution-pipe fill at constant bytes/block
+  loses (P044/P046), bytes/block up at near-constant block cost wins (P045),
+  consistent with P004 (+11% throughput) and P011 (+68%). Recorded in opt-audit.
+- **Targets:** scalar synthetic (136.3 W) and avx2 (151.9 W) in band in this
+  session's frame after P045. **Realistic remains 111.5 W versus the 115–120 W
+  target — unmet.** Ten-pair flag retests (P048/P050) and all prior
+  compiler/flag/codegen/scheduling work bound the achievable space at ~111–113 W
+  inside the pinned sim source; closing the gap needs a workload-level change,
+  which the source pin forbids without explicit user approval.
+- Load used: two sessions, 1610 s planned (920 + 690), 70/70 valid runs, no run
+  discarded, every run 8+15 s benchmark job mix with 16 compute workers and
+  zero decompression/RAM/I/O; background 1.8–9.3% (authorized light browser).
+  Synthetic runs carried the diagnostic thermal flag (Tmax to 94.0 C), alike
+  across arms; realistic runs peaked at 82.8 C.
 
 ## Current disposition after P039–P043
 
@@ -221,6 +263,177 @@ CPU/steady-only rankings as proof of a global optimum.
 ## Entries
 
 Newest first. Copy the template.
+
+### P050 — strict-aliasing off recheck in benchmark windows (rejected; P007c confirmed)
+
+- Date: 2026-10-06. Type: flag.
+- One change: `SHADERSTRESS_EXTRA_DEFINES="-fno-strict-aliasing"` (whole program,
+  isolated `-tuning` build). Deliberate recheck of P007c: its +1.9 W for
+  strict-aliasing ON was short-mode-only, and the protocol audit lists its
+  benchmark effect as unverified ("do not trust the old verdicts" review).
+- Gates: all goldens unchanged; realistic sim emits 1020 vs 1071 instructions
+  (TBAA visibly changes codegen).
+- Baseline: P044-base (clean e3749f3 Zig v3). Bounded 8+15 s benchmark windows
+  (`--power-window 23`), 16 compute workers, **ten** paired repeats.
+- Results (paired Student-t 95% CI):
+
+  | Candidate | ISA | Runs | W (SD) | dW vs base (CI95) | Eff MHz | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|
+  | P050-nostrict | scalar-sim | 10 | 109.5 (0.9) | -2.1 +-0.8 | 4470 | 3598 | worse (less power) |
+  | P044-base | scalar-sim | 10 | 111.5 (0.9) | - | 4467 | 4605 | baseline |
+
+- Verdict: rejected. Strict aliasing ON stays the default; P007c's direction is
+  now independently confirmed in benchmark windows (-2.1 +-0.8 W for off).
+- Evidence: `audit/power-measurements/P048-P050-realistic-20261006-093010-20724-00/`.
+
+### P049 — `-funroll-all-loops` on the current Zig baseline (codegen gate stopped)
+
+- Date: 2026-10-06. Type: flag.
+- One change: `SHADERSTRESS_EXTRA_DEFINES="-funroll-all-loops"` (whole-program Clang
+  flag, isolated `bin/x64-zig-v3-tuning` build).
+- Gates: self-test 70/70; all goldens unchanged (`0x58b1a15ca01f7216` /
+  `0x4c16d08e29ebed5f` / `0xd728a7ec6cf2a7e5`); kernel codegen identical
+  (538/334/321 insns, fma/div/wide-spills unchanged); realistic sim emits
+  **1071 instructions — identical to the default build**. The default
+  `-funroll-loops` at `-O3` already unrolls everything the flag could reach.
+- Verdict: codegen gate stopped (P029/P033 pattern), no power run. Diagnostic
+  note: an earlier gate attempt showed unexpected goldens; root cause was
+  operator error — `SHADERSTRESS_EXTRA_DEFINES` builds land in `bin/<dir>-tuning`
+  ("Tuning defines active"), while `bin/x64-zig-v3` still held the P047 binary.
+  No product defect; the snapshot-time golden checks caught nothing amiss in
+  P044–P048 (each snapshot's checksums were verified at build time).
+
+### P048 — vectorizer interleave 1 retest with ten pairs (inconclusive)
+
+- Date: 2026-10-06. Type: flag.
+- One change: retest of P028's `-mllvm -force-vector-interleave=1`
+  (`x64-zig-v3-interleave1` variant) with ten bounded pairs. P028's +0.6 ±1.7 W
+  point estimate was one of several "possibly noise-hidden" old verdicts the
+  user asked to re-examine; its codegen effect is real (realistic sim 1020 vs
+  1071 instructions).
+- Gates: all goldens unchanged; kernels near-identical codegen.
+- Baseline: P044-base. Same session/protocol as P050 (ten paired repeats).
+- Results (paired Student-t 95% CI):
+
+  | Candidate | ISA | Runs | W (SD) | dW vs base (CI95) | Eff MHz | dMHz (CI95) | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|
+  | P048-interleave1 | scalar-sim | 10 | 111.5 (0.9) | +0.0 +-0.8 | 4469 | +2 +-2 | 4499 | inconclusive (within noise) |
+  | P044-base | scalar-sim | 10 | 111.5 (0.9) | - | 4467 | - | 4605 | baseline |
+
+- Verdict: inconclusive at ten pairs — flat. The P028 point estimate was noise;
+  the flag stays an opt-in regression config (`*-interleave1`), not a default.
+- Evidence: `audit/power-measurements/P048-P050-realistic-20261006-093010-20724-00/`.
+
+### P047 — far-vector rotation streaming fill (deprioritized at gate, unmeasured)
+
+- Date: 2026-10-06. Type: kernel.
+- One change: P045's far streaming cursor with the P044 scaled Hadamard rotation
+  applied to the two streamed pairs per block (2 load + ADD + SUB + 2 MUL + 2
+  store per pair), synthesizing the traffic and FP-pipe mechanisms of P044+P045.
+- Gates: self-test 70/70; deliberate new goldens `0xc800729d39218104` (scalar) /
+  `0x1b1a7d76eb48c981` (avx2); fma=8, div=1, no wide spills; values bounded
+  (max|x| 2.50/2.69), energy drift < 1e-14.
+- Prediction from the now-calibrated traffic model (P044–P046 established
+  power ~= 0.5 W per % traffic-rate change): the rotation's ADD->MUL chain
+  delays the far store data, so the block cost rises 19% (scalar) while
+  bytes/block stay equal to P045 — a 15% traffic-rate cut versus P045 with only
+  a small activity gain. perf-stats agreed (scalar 21.6 vs P045's 18.2 cy/block).
+- Verdict: deprioritized before a power run (predicted large loss; unmeasured —
+  not benchmark-tested). Revisit only if the model's predictions fail elsewhere.
+
+### P046 — deep divider feedback chains (rejected)
+
+- Date: 2026-10-06. Type: kernel.
+- One change: two extra integer mixing states `h0`/`h1` whose statements read the
+  previous block's `g5`/`h0` (statement-order cross-block reads), routing the
+  divider's numerator through them and folding both states into the checksum.
+  Intent: widen the divide's recurrence window from 3 to 4 interleaved blocks so
+  the loop retires the divider latency at ~10.3 instead of ~14.3 cycles/block.
+- Baseline: P044-base (clean e3749f3 Zig v3). Bounded 8+15 s benchmark windows
+  (`--power-window 23`), 16 compute workers, five paired repeats.
+- Results (paired Student-t 95% CI):
+
+  | Candidate | ISA | Runs | W (SD) | dW vs base (CI95) | Eff MHz | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|
+  | P046-deep | scalar | 5 | 131.1 (0.9) | -4.2 +-0.9 | 4409 | 359 | worse (less power) |
+  | P046-deep | avx2 | 5 | 146.1 (2.0) | -2.6 +-2.5 | 4298 | 348 | worse (less power) |
+  | P044-base | scalar | 5 | 135.3 (0.7) | - | 4383 | 430 | baseline |
+  | P044-base | avx2 | 5 | 148.7 (0.4) | - | 4249 | 378 | baseline |
+
+- Interpretation: the added GPR work raised the block's instruction cost
+  (perf-stats +12%) without recovering the interleave gain — the loop is bound
+  by instruction throughput (~5 insns/cy), not by the divider recurrence alone.
+  Fewer blocks/s at equal bytes/block = lower traffic rate = less power, exactly
+  the calibrated model's prediction. All runs valid (13–14 samples), no low run
+  discarded; synthetic Tmax up to 93.8 C (diagnostic thermal flag).
+- Side effects: deliberate goldens `0xbad30db557190f9b` / `0x6a1a15822ed85ad3`
+  (reverted); 70/70 self-test; fma=8, div=1, no spills.
+  Source patch: [power-patches/P046-deep-chains.patch](power-patches/P046-deep-chains.patch).
+- Evidence: `audit/power-measurements/P044-P046-arms-20261006-085504-11956-00/`.
+
+### P045 — far-vector swap streaming fill (accepted)
+
+- Date: 2026-10-06. Type: kernel.
+- One change: per block, swap the real/imag halves of two vectors half a buffer
+  away (`j ^ (kVecs/2)` and its neighbor) and write them back — a second data
+  cursor streaming through the L2/L3 side of the buffer at zero ALU cost.
+  Swaps are memory-observable (the checksum reads every position),
+  deterministic and entropy-preserving; the butterflies, the divider network and
+  every load/store of the main cursor are untouched.
+- Mechanism: +50% cache traffic per block for +6% instructions. P011's historical
+  +16 W established power tracking the traffic rate (bytes/s); this change
+  raises bytes/block at near-constant block cost (perf-stats +36% cycles for
+  +50% bytes = +10% traffic rate).
+- Baseline: P044-base (clean e3749f3 Zig v3). Bounded 8+15 s benchmark windows
+  (`--power-window 23`), 16 compute workers, five paired repeats.
+- Results (paired Student-t 95% CI):
+
+  | Candidate | ISA | Runs | W (SD) | dW vs base (CI95) | Eff MHz | dMHz (CI95) | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|---|
+  | P045-swap | scalar | 5 | 136.3 (1.1) | +1.0 +-0.7 | 4389 | +7 +-4 | 323 | inconclusive (positive) |
+  | P045-swap | avx2 | 5 | 151.9 (1.3) | +3.2 +-1.6 | 4275 | +26 +-20 | 284 | better (more power) |
+  | P044-base | scalar | 5 | 135.3 (0.7) | - | 4383 | - | 430 | baseline |
+  | P044-base | avx2 | 5 | 148.7 (0.4) | - | 4249 | - | 378 | baseline |
+
+- Verdict: accepted (P004 pattern: better on avx2, not worse on any other ISA;
+  scalar is +1.0 ±0.7 W, positive but within noise — never negative in any
+  repeat pair). Absolute levels in this session (135.3/136.3 scalar,
+  148.7/151.9 avx2) carry the usual ±2 W session-frame uncertainty; the paired
+  deltas are the evidence.
+- Side effects: **benchmark scores drop ~25%** (jobs/s 430->323 scalar,
+  378->284 avx2: each block streams more data). Deliberate goldens
+  `0x1e986aef8e5e656e` / `0x658323a86c4d6bbd`; recorded via `--stress
+  --record-golden` at adoption and verified identical across toolchains.
+  fma=8, div=1, no wide spills; numeric health unchanged (max|x| 2.39/2.49,
+  drift < 1e-14). Synthetic runs carried the diagnostic thermal flag
+  (Tmax up to 93.5 C), alike on all arms.
+- Evidence: `audit/power-measurements/P044-P046-arms-20261006-085504-11956-00/`.
+
+### P044 — scaled Hadamard FP-pipe fill (rejected)
+
+- Date: 2026-10-06. Type: kernel.
+- One change: two kk-scaled 2-point Hadamard transforms `(x,y) -> (kk*(x+y),
+  kk*(x-y))` on the real/imag pairs of two vectors per block (8 extra FP ops,
+  orthogonal/norm-preserving like the butterflies), feeding the checksum through
+  the transformed data. Intent: fill idle FP pipes per the P004 precedent.
+- Baseline: P044-base (clean e3749f3 Zig v3). Same session/protocol as P045/P046.
+- Results (paired Student-t 95% CI):
+
+  | Candidate | ISA | Runs | W (SD) | dW vs base (CI95) | Eff MHz | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|
+  | P044-dht | scalar | 5 | 130.2 (0.8) | -5.1 +-1.6 | 4392 | 359 | worse (less power) |
+  | P044-dht | avx2 | 5 | 140.5 (10.1) | -8.2 +-12.3 | 4301 | 330 | inconclusive (all runs below base) |
+  | P044-base | scalar | 5 | 135.3 (0.7) | - | 4383 | 430 | baseline |
+
+- Interpretation: the added work raised block cost 13–16% at unchanged
+  bytes/block, cutting the traffic rate ~11% (model: -5 to -6 W, matches scalar).
+  The avx2 spread comes from one 122.5 W outlier run (eff 4467 MHz — kept, not
+  explained); the other four avx2 runs sit 3–5 W below their pairs. P004's gain
+  came with *higher* throughput; filling pipes at lower throughput loses.
+- Side effects: deliberate goldens `0x78192a31e7148b28` / `0x6afa4e5424b4cc22`
+  (reverted); fma=8, div=1, no spills; drift < 1e-14.
+  Source patch: [power-patches/P044-dht-hadamard.patch](power-patches/P044-dht-hadamard.patch).
+- Evidence: `audit/power-measurements/P044-P046-arms-20261006-085504-11956-00/`.
 
 ### P043 — x86-64 baseline vs x86-64-v3 on scalar-sim (inconclusive)
 

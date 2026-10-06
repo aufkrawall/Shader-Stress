@@ -1,5 +1,37 @@
 # Recent Changes Log
 
+## 2026-10-06 — P045 far-swap streaming adopted (+3.2 W avx2); traffic-rate model; P044–P050
+
+- **Accepted/adopted: P045 far-vector swap streaming fill** in `SynthKernel.inc`
+  (second data cursor half a buffer away, re/im swaps at zero ALU cost):
+  **+3.2 ±1.6 W avx2 (151.9 W) and +1.0 ±0.7 W scalar (136.3 W)** on the 5700X,
+  five paired 8+15 s benchmark windows; reported side effect: benchmark scores
+  drop ~25% (more data streamed per block). Goldens `0x1e986aef8e5e656e` /
+  `0x658323a86c4d6bbd` recorded and cross-toolchain identical; realistic golden
+  untouched; 181/181 tests.
+- **Power model calibrated** (P044/P045/P046 + P004/P011 history): package
+  power ≈ 0.5 W per % cache-traffic-rate change. Execution-pipe fill at
+  constant bytes/block loses (P044 Hadamard fill −5.1 ±1.6 W scalar, P046 deep
+  divider chains −4.2 ±0.9 W scalar); bytes/block up at near-constant block
+  cost wins (P045). P047 (P044+P045 synthesis) deprioritized at its codegen
+  gate (rotation chains cut the traffic rate 15% below P045). Model recorded
+  in `opt-audit.md`.
+- **"Don't trust the old verdicts" retests:** P050 strict-aliasing off is
+  **−2.1 ±0.8 W** at ten pairs → P007c's direction confirmed in benchmark
+  windows (keeps the default). P048 interleave-1 retest is **+0.0 ±0.8 W** at
+  ten pairs → P028's +0.6 W point estimate was noise. P049 `-funroll-all-loops`
+  emits identical workload instructions (codegen gate stopped).
+- **Realistic target still unmet: 111.5 W vs 115–120 W.** The pinned sim's
+  compiler/flag/codegen/scheduling space is now bounded at ±2 W (P028/P029/
+  P031–P037/P040/P048/P050 + this round); closing the gap needs a
+  workload-level change forbidden by the source pin without explicit user
+  approval. Decision pending with the user.
+- Evidence: `audit/power-measurements/P044-P046-arms-20261006-085504-11956-00/`
+  (40 runs) and `P048-P050-realistic-20261006-093010-20724-00/` (30 runs);
+  all 70 valid, 8+15 s each, 16 compute workers, background 1.8–9.3%.
+  Rejected patches: [P044-dht-hadamard.patch](../power-patches/P044-dht-hadamard.patch),
+  [P046-deep-chains.patch](../power-patches/P046-deep-chains.patch).
+
 ## 2026-10-06 — Measurement protocol simplified: 8+15 s per run, no batch budget
 
 - User instruction: "always only 8s warm up and 15s actual test run, anything

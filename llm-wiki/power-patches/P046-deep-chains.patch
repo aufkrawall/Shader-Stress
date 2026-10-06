@@ -1,0 +1,53 @@
+diff --git a/src/workloads/SynthKernel.inc b/src/workloads/SynthKernel.inc
+index dcea762..a4acd14 100644
+--- a/src/workloads/SynthKernel.inc
++++ b/src/workloads/SynthKernel.inc
+@@ -34,13 +34,14 @@
+   const SK_VEC wi = SK_SET1(SYNTH_TW_IM);
+   const SK_VEC kk = SK_SET1(SYNTH_SCALE);
+ 
+-  // Integer side: eight live states; four multiply/rotate/xor chains, three
+-  // additions and one 64-bit divide per block. Independent of the FP data, so
+-  // a fault in either cluster changes the checksum.
++  // Integer side: ten live states; multiply/rotate/xor chains, additions and
++  // one 64-bit divide per block. Independent of the FP data, so a fault in
++  // either cluster changes the checksum.
+   uint64_t g0 = Mix64(seed ^ 0x01), g1 = Mix64(seed ^ 0x02);
+   uint64_t g2 = Mix64(seed ^ 0x03), g3 = Mix64(seed ^ 0x04);
+   uint64_t g4 = Mix64(seed ^ 0x05), g5 = Mix64(seed ^ 0x06);
+   uint64_t g6 = Mix64(seed ^ 0x07), g7 = Mix64(seed ^ 0x08);
++  uint64_t h0 = Mix64(seed ^ 0x09), h1 = Mix64(seed ^ 0x0A);
+ 
+   // Butterfly with twiddle w:      (x, y) -> (k*x + w*y,  w*y - k*x)
+   // Butterfly with twiddle conj(w):(x, y) -> (k*x + w'*y, w'*y - k*x)
+@@ -111,6 +112,12 @@
+         SK_STORE(pc, cr); SK_STORE(pc + SK_W, ci);
+         SK_STORE(pd, dr); SK_STORE(pd + SK_W, di);
+ 
++        // P046: two extra mixing links around the divider feedback. Statement
++        // order matters: h1 reads the previous block's h0, h0 the previous
++        // block's g5, deepening the divide's recurrence window so more blocks
++        // interleave on the divider latency (fewer stall cycles per block).
++        h1 = Rotl64(h1 * 0xA24BAED4963EE407ull, 37) ^ h0;
++        h0 = Rotl64(h0 * 0x8FE9B05B9D6E2C1Dull, 51) ^ g5;
+         g0 = Rotl64(g0 * 0x9E3779B97F4A7C15ull, 29) ^ g4;
+         g1 = Rotl64(g1 * 0xBF58476D1CE4E5B9ull, 31) ^ g5;
+         g2 = Rotl64(g2 * 0x94D049BB133111EBull, 27) ^ g6;
+@@ -118,7 +125,7 @@
+         g4 += g1;
+         g5 += g2;
+         g6 += g3;
+-        g7 ^= g5 / ((g0 >> 31) | 0x100000001ull);
++        g7 ^= h1 / ((g0 >> 31) | 0x100000001ull);
+       }
+     }
+     blocks += kVecs / 4;
+@@ -126,7 +133,7 @@
+ #undef SK_BFLY
+ #undef SK_BFLY_CONJ
+ 
+-  const uint64_t g[8] = {g0, g1, g2, g3, g4, g5, g6, g7};
++  const uint64_t g[8] = {g0 ^ h0, g1 ^ h1, g2, g3, g4, g5, g6, g7};
+   if (diag) {
+     diag->blocks = blocks;
+     diag->aborted = aborted;

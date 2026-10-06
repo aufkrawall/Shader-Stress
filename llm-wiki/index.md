@@ -4,9 +4,9 @@
 |------|---------|---------------|------------|
 | [overview.md](overview.md) | Architecture, source map, modes, build, tests, invariants | 2026-10-04 | Low |
 | [verification.md](verification.md) | Error detection: paired jobs, golden values, RAM/IO/decompress checks, attribution | 2026-10-03 | Low |
-| [opt-audit.md](opt-audit.md) | Power/heat design: kernel structure, build flags, rejected approaches | 2026-10-04 | Medium (three-mode goal unmet; general tuning only) |
-| [power-optimization.md](power-optimization.md) | Current targets, no architecture-specific tuning/builds, compiler-sim-only benchmark windows and A/B rules | 2026-10-04 | Medium (historical rankings provisional; P036–P038 checks) |
-| [power-ledger.md](power-ledger.md) | Power experiments, provisional rankings, current targets and general tuning rechecks | 2026-10-04 | Medium (P036–P038; AVX2 in band, realistic/scalar short) |
+| [opt-audit.md](opt-audit.md) | Power/heat design: kernel structure, build flags, traffic-rate model, rejected approaches | 2026-10-06 | Medium (realistic target unmet inside pin; general tuning only) |
+| [power-optimization.md](power-optimization.md) | Current targets, no architecture-specific tuning/builds, compiler-sim-only benchmark windows and A/B rules | 2026-10-06 | Low |
+| [power-ledger.md](power-ledger.md) | Power experiments, provisional rankings, current targets and general tuning rechecks | 2026-10-06 | Medium (P044–P050; realistic 3.5–8.5 W short of band) |
 | [debug-tools.md](debug-tools.md) | Debuggers, symbols, crash reports, sanitizer builds, known-good commands | 2026-10-03 | Medium (toolchain paths) |
 | [debug-tools-security-audit.md](debug-tools-security-audit.md) | Security/binary-analysis tool inventory + project risk notes | 2026-10-03 | Medium |
 | [secret-leak-prevention.md](secret-leak-prevention.md) | Mandatory pre/post-commit secret checks, gitleaks commands, sensitive artifacts | 2026-10-03 | Low |

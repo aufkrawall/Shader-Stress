@@ -1,0 +1,22 @@
+diff --git a/src/workloads/SynthKernel.inc b/src/workloads/SynthKernel.inc
+index dcea762..599207b 100644
+--- a/src/workloads/SynthKernel.inc
++++ b/src/workloads/SynthKernel.inc
+@@ -106,6 +106,17 @@
+           SK_BFLY_CONJ(ar, ai, br, bi);
+           SK_BFLY_CONJ(cr, ci, dr, di);
+         }
++        // Idle-pipe fill: two kk-scaled 2-point Hadamard transforms
++        // (x, y) -> (kk*(x+y), kk*(x-y)) on the real/imag pairs of two vectors.
++        // The matrix [[kk, kk], [kk, -kk]] is orthogonal (|w| = k = kk), so the
++        // transform is norm-preserving like the butterflies; the explicit
++        // MUL/ADD/SUB pair keeps FP0/FP1 and FP2/FP3 both busy per block.
++        {
++          SK_VEC s_ = SK_ADD(ar, ai), d_ = SK_SUB(ar, ai);
++          ar = SK_MUL(s_, kk); ai = SK_MUL(d_, kk);
++          s_ = SK_ADD(cr, ci); d_ = SK_SUB(cr, ci);
++          cr = SK_MUL(s_, kk); ci = SK_MUL(d_, kk);
++        }
+         SK_STORE(pa, ar); SK_STORE(pa + SK_W, ai);
+         SK_STORE(pb, br); SK_STORE(pb + SK_W, bi);
+         SK_STORE(pc, cr); SK_STORE(pc + SK_W, ci);

@@ -3,10 +3,10 @@
 Last verified: 2026-10-06. User constraints: benchmark job mix, compiler-sim
 threads only, 8 s warm-up + 15 s measurement per run (capped at 23 s); no
 batch/load budget — the per-run bound is the only timing rule (2026-10-06).
-Stale-risk: medium — P011 benchmark confirmation is
-complete (three paired runs per mode, extended to ten for AVX2); unexplained
-run-to-run power variation remains. All three targets are not yet established
-in one binary under the current bounded protocol.
+Stale-risk: medium — the traffic-rate power model is calibrated (P044–P050);
+unexplained run-to-run power variation remains. Scalar synthetic and avx2
+targets are established in one binary (P045); the realistic target remains
+unmet inside the pinned sim source.
 
 When the user says **"continue power draw optimization"** (or similar), follow this page.
 Results go into [power-ledger.md](power-ledger.md); kernel/flag design background is in
