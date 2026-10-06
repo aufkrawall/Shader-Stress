@@ -1,7 +1,8 @@
 # Power Optimization Runbook ("continue power draw optimization")
 
-Last verified: 2026-10-05. User constraints: benchmark job mix, compiler-sim
-threads only, 6 s warm-up + 15 s measurement per run (capped at 21 s); no hour-long tests.
+Last verified: 2026-10-06. User constraints: benchmark job mix, compiler-sim
+threads only, 8 s warm-up + 15 s measurement per run (capped at 23 s); no
+batch/load budget — the per-run bound is the only timing rule (2026-10-06).
 Stale-risk: medium — P011 benchmark confirmation is
 complete (three paired runs per mode, extended to ten for AVX2); unexplained
 run-to-run power variation remains. All three targets are not yet established
@@ -21,8 +22,9 @@ or revert (ledger-only commit) → the accepted build becomes the next baseline.
 ## Goal and scoring
 
 Scenario (the user's): **GUI-equivalent benchmark job mix, compiler-sim/compute
-threads only, no other workloads**. Bounded power runs use **6 s warm-up + 15 s
-measurement, at most 21 s**. **All logical CPUs** (the thread
+threads only, no other workloads**. Bounded power runs use **8 s warm-up + 15 s
+measurement, at most 23 s** (user instruction 2026-10-06: always 8 s warm-up +
+15 s test run — anything longer is a waste of time). **All logical CPUs** (the thread
 count the default compiler-sim benchmark uses; 16 on the 5700X), compute only, one ISA per
 run. Reference system: Ryzen 7 5700X, PBO limits reported open. Rated Tjmax is 90 C;
 the configured thermal limit is unverified and P011 sensors exceeded 90 C.
@@ -40,7 +42,7 @@ current power decisions, compiler rankings and target claims**:
 
 | Mode | Run | Use |
 |---|---|---|
-| `benchmark` (default) | 6 s warm-up + 15 s measurement, five repeats, no preheat; `--power-window 21` retains benchmark mode/job sizes. Default ISA `scalar-sim`, all compute workers | Current power comparisons and target evidence. Five A/B pairs for one ISA take ~4 min; report repeat count/uncertainty and short-window conditions |
+| `benchmark` (default) | 8 s warm-up + 15 s measurement, five repeats, no preheat; `--power-window 23` retains benchmark mode/job sizes. Default ISA `scalar-sim`, all compute workers | Current power comparisons and target evidence. Five A/B pairs for one ISA take ~5 min; report repeat count/uncertainty and short-window conditions |
 | `short` (explicit legacy mode) | Same bounded timing, but steady mode with fixed 12k jobs | Historical screening compatibility only; not valid for this goal. Do not substitute it to shorten benchmark tests |
 
 Readings average approximately contiguous 1 s energy-counter windows; check actual
@@ -50,7 +52,7 @@ transfer. Bounded benchmark windows match the GUI job mix, but do not prove
 three-minute thermal steady state. Do not conflate the two protocols or promise
 an exact GUI reading. Normal GUI/CLI benchmark scoring remains 180 s; bounded
 power windows produce no score/hash. Older long measurements remain evidence,
-but no new run may exceed the user's 6+15 s limit.
+but no new run may exceed the user's 8+15 s limit.
 
 | Workload | `--isa` | Package power target (5700X) |
 |---|---|---|
@@ -87,7 +89,7 @@ reduces thermal/ambient drift) with a Student-t 95% CI:
 - `tie-break better/worse`: power within noise, but the effective clock differs beyond its
   CI and by >= 15 MHz (lower = better).
 - `inconclusive`: otherwise, or < 2 paired repeats. A close call can use ten
-  bounded pairs on the targeted ISA within the load budget, never ten full
+  bounded pairs on the targeted ISA, never ten full
   benchmarks or a switch to steady mode. Never accept on an inconclusive verdict.
 - **Accept** a change only if it is `better` (or `tie-break better`) on the ISA(s) it targets
   **and** not `worse` on any other target ISA it can affect (when unsure, measure all three).
@@ -102,17 +104,17 @@ reduces thermal/ambient drift) with a Student-t 95% CI:
   This preference applies to future sessions, not just the current experiment.
 
 - **Compiler-sim threads / benchmark job mix only (user instruction, 2026-10-04).**
-  Use `--mode benchmark --power-window 21`, the selected ISA and all compute
-  workers, with zero decompression/RAM/I/O. Warm-up max 6 s, measurement max
-  15 s; never keep a workload running longer than their 21 s sum. No steady
-  proxy or fixed-job replacement. No extra preheat by default.
-- **No hour-long tests (user instruction, 2026-10-04).** Use bounded benchmark
-  comparisons; keep a load batch around ten minutes or less. Do not launch the
-  historical three-ISA, three-repeat 180 s comparison (~1 h), or automatically
-  chain batches into an hour of load. If a close call needs prolonged testing,
-  record it as inconclusive and move to another hypothesis. The tool rejects
-  planned load above its default 600 s budget before UAC/workloads; do not
-  increase it for this task. This overrides older screening/confirmation plans.
+  Use `--mode benchmark --power-window 23`, the selected ISA and all compute
+  workers, with zero decompression/RAM/I/O. Warm-up 8 s, measurement 15 s
+  (user instruction 2026-10-06: always 8 s warm-up + 15 s test run — anything
+  longer is a waste of time); never keep a workload running longer than their
+  23 s sum. No steady proxy or fixed-job replacement. No extra preheat by default.
+- **No batch/load budget (user instruction, 2026-10-06).** The per-run 8+15 s
+  bound is the only timing rule. The former 600 s planned-load budget and the
+  tool's refusal are removed (superseding the 2026-10-04 "no hour-long tests /
+  ten-minute batches" rule); `power_measure.py` still reports planned load as
+  information. Pick the repeat count for statistical resolution instead of
+  cutting comparisons short, and never run longer individual runs to compensate.
 - **One change per experiment.** A candidate differs from its baseline in exactly one
   thing (one code idea, one flag, one compiler, one knob value). Never bundle "a few small
   tweaks" — effects can have opposite signs and the sum hides both. A multi-arm session
@@ -184,8 +186,8 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
    ```
 
    Defaults are benchmark job mix, `scalar-sim`, five repeats, all logical CPUs,
-   6+15 s windows, no preheat, 600 s planned-load budget. Select the affected ISA
-   explicitly. Five bounded A/B pairs take roughly four minutes. Old snapshots
+   8+15 s windows, no preheat, no batch/load budget. Select the affected ISA
+   explicitly. Five bounded A/B pairs take roughly five minutes. Old snapshots
    without CLI `--power-window` support must be rebuilt from their saved patch;
    do not silently fall back to steady mode or a long benchmark.
    Run it as a
@@ -216,14 +218,16 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
   `--exe a,b,...` (repo-relative; labels = parent dir names, must differ),
   `--baseline NAME` (candidate the +/- deltas refer to; default: first `--exe`;
   unknown names fail fast), `--label`, `--mode short|benchmark`, `--warmup`,
-  `--measure`, `--repeats`, `--preheat`, `--max-load-seconds` (default 600),
+  `--measure`, `--repeats`, `--preheat`,
   `--isas`, `--threads` (0 = all), `--sweep --targets --buffers --rounds`, `--snapshot LABEL [--snapshot-source DIR]`, `--summarize CSV [--baseline NAME]`,
   `--max-background-load` (10%), `--temp-limit` (90), `--no-elevate`.
+  Per-run bounds are enforced in `parse_args` (warm-up <= 8 s, measurement <=
+  15 s, preheat <= 23 s); there is no batch/load budget (2026-10-06).
 - `workload_args()` passes `--mode benchmark --power-window <seconds>` and
   `--no-decompress --no-ram --no-io`. `CliRunDurationSeconds()` and
   `ApplyCliDefaults()` enforce the bounded duration and compute-only roles;
   normal benchmark remains 180 s. Optional preheat retains the selected job
-  mix and is capped at 21 s, included in the budget. Legacy steady data are
+  mix and is capped at 23 s. Legacy steady data are
   explicitly warned as unsuitable for GUI benchmark claims.
 - Regression anchors: CLI/self-test coverage in `src/app/SelfTest.cpp` and
   `tests/run_tests.py`; exact launch args, defaults, sweep/preheat accounting,

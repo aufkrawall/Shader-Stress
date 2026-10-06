@@ -1,7 +1,7 @@
 # Manual full CPU load: A/B-compare executables using fresh post-warmup samples
 # (package power, effective clock, temperature, Vcore). Self-elevates via UAC.
 # Workflow: llm-wiki/power-optimization.md. Default: GUI-equivalent benchmark,
-# only compiler-sim compute workers, no decompression/RAM/I/O; 6+15 s windows.
+# only compiler-sim compute workers, no decompression/RAM/I/O; 8+15 s windows.
 # Example: ./scripts/measure.ps1 -ISA avx2 -Label P001-change `
 #   -Exe audit/power-baselines/P001-base/ShaderStress.com,bin/x64-llvm-v3/ShaderStress.com
 param(

@@ -5,12 +5,13 @@ via UAC when needed (PawnIO sensors). Workflow and decision rules:
 llm-wiki/power-optimization.md; results ledger: llm-wiki/power-ledger.md.
 
     # GUI-equivalent A/B: 16/all compiler-sim compute threads, no auxiliary work.
-    # Default: benchmark job mix, 6 s warmup + 15 s window, five paired repeats.
+    # Default: benchmark job mix, 8 s warmup + 15 s window, five paired repeats.
     python scripts/power_measure.py --snapshot P001-base
     python scripts/power_measure.py --isas avx2 --label P001-my-change \\
         --exe audit/power-baselines/P001-base/ShaderStress.com,bin/x64-llvm-v3/ShaderStress.com
     # Steady-mode short data are historical screening, not GUI benchmark evidence.
-    # The load-time budget defaults to ten minutes; split/select small comparisons.
+    # The only timing rule is per run: <= 8 s warmup + <= 15 s measurement, nothing
+    # longer (user rule 2026-10-06); there is no batch/load budget.
     python scripts/power_measure.py --mode benchmark --label P001-confirm
     # Buffer x rounds x compiler sweep (isolated -tuning builds)
     python scripts/power_measure.py --sweep --targets win-v3 --isas avx2 --buffers 128,512 --rounds 1
@@ -56,9 +57,11 @@ MIN_CLOCK_DELTA_MHZ = 15.0   # smaller clock deltas never decide a tie
 # Per mode: ShaderStress run, warmup, measurement window, repeats, preheat.
 # "benchmark" uses the GUI's job mix, bounded by the CLI power-window option.
 # "short" retains the legacy steady job mix, never evidence for this goal.
-MODE_DEFAULTS = {"short": {"warmup": 6, "measure": 15, "repeats": 5, "preheat": 0},
-                 "benchmark": {"warmup": 6, "measure": 15, "repeats": 5, "preheat": 0}}
-MAX_POWER_WINDOW_SECONDS = 21
+# Per-run timing rule (user instruction 2026-10-06): warm-up 8 s, measurement
+# 15 s, anything longer is a waste of time; no batch/load budget exists.
+MODE_DEFAULTS = {"short": {"warmup": 8, "measure": 15, "repeats": 5, "preheat": 0},
+                 "benchmark": {"warmup": 8, "measure": 15, "repeats": 5, "preheat": 0}}
+MAX_POWER_WINDOW_SECONDS = 23
 NUMERIC = {"BufKiB": int, "Rounds": int, "Repeat": int, "Threads": int, "Samples": int,
            "Watts": float, "StdDevW": float, "MinW": float, "MaxW": float,
            "JobsPerSecond": float, "EffMHz": float, "TempMeanC": float, "TempMaxC": float,
@@ -381,15 +384,13 @@ def parse_args(argv=None):
                              "baseline, runs are interleaved in shuffled order")
     parser.add_argument("--label", default="adhoc", help="experiment id, e.g. P003-fadd-lane")
     parser.add_argument("--mode", choices=tuple(MODE_DEFAULTS), default="benchmark",
-                        help="benchmark (default): GUI benchmark job mix in a <=21 s compute-only window; "
+                        help="benchmark (default): GUI benchmark job mix in a <=23 s compute-only window; "
                              "short: legacy steady-mode screening, not benchmark evidence")
-    parser.add_argument("--warmup", type=float, help="seconds before the window (default/max 6)")
+    parser.add_argument("--warmup", type=float, help="seconds before the window (default/max 8)")
     parser.add_argument("--measure", type=float, help="window length in seconds (default/max 15)")
     parser.add_argument("--repeats", type=int, help="interleaved rounds (default 5)")
-    parser.add_argument("--max-load-seconds", type=int, default=600,
-                        help="planned workload-time budget (default 600 s); checked before UAC")
     parser.add_argument("--preheat", type=int, help="optional unrecorded load before round 1 "
-                        "(default 0; max 21 s, same selected job mix)")
+                        "(default 0; max 23 s, same selected job mix)")
     parser.add_argument("--threads", type=int, default=0, help="0 = all logical CPUs")
     parser.add_argument("--sample-interval", type=float, default=1.0,
                         help="PowerReader window in seconds (binaries before streaming: 6.5)")
@@ -424,12 +425,11 @@ def parse_args(argv=None):
             setattr(args, key, value)
     if args.warmup < 3 or args.measure < 5:
         parser.error("warmup must be >= 3 s and the measurement window >= 5 s")
-    if args.warmup > 6 or args.measure > 15 or args.preheat > MAX_POWER_WINDOW_SECONDS:
-        parser.error("power runs are bounded: warmup <= 6 s, measurement <= 15 s, preheat <= 21 s")
+    if args.warmup > 8 or args.measure > 15 or args.preheat > MAX_POWER_WINDOW_SECONDS:
+        parser.error("power runs are bounded per run: warmup <= 8 s, measurement <= 15 s, "
+                     "preheat <= 23 s (no batch budget)")
     if args.threads < 0 or args.repeats < 1 or args.preheat < 0:
         parser.error("threads must be >= 0 (0 = all), repeats positive, preheat >= 0")
-    if args.max_load_seconds < 1:
-        parser.error("--max-load-seconds must be positive")
     if not (0 < args.sample_interval <= args.max_gap):
         parser.error("need 0 < --sample-interval <= --max-gap")
     default_isas = SWEEP_ISAS if args.sweep else (
@@ -482,8 +482,7 @@ def run_session(options, argv):
             "GitHead": (git("rev-parse", "HEAD") or "").strip() or None,
             "GitDirty": bool((git("status", "--porcelain") or "").strip()),
             "Processor": platform.processor(), "LogicalCpus": os.cpu_count(),
-            "Python": sys.version.split()[0], "PlannedLoadSeconds": planned_load_seconds(options),
-            "MaxLoadSeconds": options.max_load_seconds}
+            "Python": sys.version.split()[0], "PlannedLoadSeconds": planned_load_seconds(options)}
     (session / "session.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     threads = options.threads or f"all ({os.cpu_count()})"
     seconds = run_seconds(options.mode, options.warmup, options.measure)
@@ -580,11 +579,8 @@ def main(argv=None):
         missing = [str(e) for e in options.exe if not e.exists()]
         if missing:
             raise RuntimeError("executable not found: " + ", ".join(missing))
-    planned = planned_load_seconds(options)
-    if planned > options.max_load_seconds:
-        raise RuntimeError(f"planned load {planned} s exceeds --max-load-seconds "
-                           f"{options.max_load_seconds}; select fewer ISAs, builds, repeats "
-                           "or sweep candidates")
+    # Per-run bounds (warmup/measure/preheat) are enforced in parse_args; there is
+    # deliberately no batch/load budget (user instruction 2026-10-06).
     if not power_host.is_admin():
         if options.no_elevate or options.elevated_child:
             raise RuntimeError("sensor readout needs an elevated process (omit --no-elevate "

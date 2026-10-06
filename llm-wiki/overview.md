@@ -79,7 +79,8 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
   compiler-sim/compute workers and no decompression/RAM/I/O: 8 s warm-up + 15 s
   measurement, no benchmark score/hash. Normal benchmark remains 180 s. The
   measurement tool defaults to this bounded protocol, five repeats, no preheat,
-  and checks a 600 s planned-load budget before elevation. See the power runbook;
+  and enforces only the per-run 8+15 s bounds (no batch/load budget since
+  2026-10-06). See the power runbook;
   old steady-mode measurements are not current benchmark ranking evidence.
 
 ## Invariants

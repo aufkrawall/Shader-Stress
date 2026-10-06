@@ -77,8 +77,9 @@ power improvements are **unverified for this goal**. Never advertise P023's
 Rechecks use `--mode benchmark --power-window 23` through the updated tool, all
 16 compute workers, no auxiliary work, five interleaved repeats unless specified.
 The normal scored benchmark remains 180 s; no new power run may last that long.
-No default preheat or hour-long matrices. Close calls may use ten bounded pairs
-on one ISA if the complete batch stays within 600 s. Rebuild old snapshots for
+No default preheat. Close calls may use ten bounded pairs on one ISA; there is
+no batch/load budget (user instruction 2026-10-06 — the per-run 8+15 s bound is
+the only timing rule). Rebuild old snapshots for
 the new CLI option instead of silently falling back to steady mode.
 
 ## Hypothesis backlog
@@ -150,6 +151,11 @@ heavier per-cycle current, matching the boost/backoff model).
 ## Current disposition after P039–P043
 
 Protocol updated per user instruction to **6 s warm-up + 15 s measurement** (capped at 21 s, `--power-window 21`).
+Correction (2026-10-06): the user restored **8 s warm-up + 15 s measurement**
+(`--power-window 23`) as the standing rule and removed the 600 s batch/load
+budget ("always only 8 s warm-up and 15 s actual test run; anything else is a
+waste of time"). The P039–P043 measurements were taken at 6+15 s and remain
+valid paired evidence; their relative deltas carry over.
 Empirical baseline audit (P041) under this protocol established:
 - **AVX2:** Zig v3 **151.5 W** (SD 1.0) -> **IN BAND (145–155 W)**.
 - **Scalar Synthetic:** Zig v3 **136.3 W** (SD 0.8) -> **IN BAND (135–140 W)**.

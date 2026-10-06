@@ -137,8 +137,9 @@ ShaderStress.com --mode benchmark --power-window 23 --isa avx2 --threads 16 --no
 Manual measurements use `python scripts/power_measure.py --isas avx2` (Windows;
 self-elevates for sensors). It defaults to five repeats of an 8-second warm-up
 plus 15-second measurement window, using the GUI benchmark's job-size distribution.
-Each run is capped at 23 seconds; five A/B pairs take roughly four minutes.
-Planned workload time is limited to 600 seconds by default. The normal benchmark
+Each run is capped at 23 seconds; five A/B pairs take roughly five minutes.
+There is no batch/load budget — the per-run 8+15 s bound is the only timing
+rule. The normal benchmark
 still runs for 180 seconds; `--power-window` produces no benchmark score/hash,
 requires benchmark mode and cannot be combined with `--duration`, wizard or
 diagnostic commands. Steady-mode readings use a different job-size distribution

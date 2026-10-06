@@ -128,7 +128,7 @@ void PrintCliHelp() {
       << "  --isa <name>             auto, avx512, avx2, scalar (SSE2/NEON), scalar-sim.\n"
       << "  --duration <sec>         Stop after N seconds.\n"
       << "  --max-duration <sec>     Alias of --duration.\n"
-      << "  --power-window <sec>     Benchmark job mix for 1-21 s, compute only; no score/hash.\n"
+      << "  --power-window <sec>     Benchmark job mix for 1-23 s, compute only; no score/hash.\n"
       << "  --benchmark              Shortcut for --mode benchmark (180 s, defaults to scalar-sim).\n"
       << "  --threads <n>            Use at most N worker threads (fastest cores first).\n"
       << "  --dwell <sec>            Core-cycle time per core (default 60).\n"
@@ -237,7 +237,7 @@ CliParseResult ParseCliArgs(const std::vector<std::wstring> &args) {
     }
     if (lowered == L"--power-window") {
       int v = 0;
-      if (TakePositiveInt(args, i, L"--power-window", 1, 21, v, result.errors)) {
+      if (TakePositiveInt(args, i, L"--power-window", 1, 23, v, result.errors)) {
         o.powerWindowSeconds = (uint64_t)v;
         o.runRequested = true;
       }

@@ -1,5 +1,26 @@
 # Recent Changes Log
 
+## 2026-10-06 — Measurement protocol simplified: 8+15 s per run, no batch budget
+
+- User instruction: "always only 8s warm up and 15s actual test run, anything
+  else is a waste of time", and the 600 s per-batch budget "doesn't make sense".
+  Standing rule is now the per-run bound only: **8 s warm-up + 15 s measurement**
+  (`--power-window 23`). Supersedes the 2026-10-05 6+15 s note and the
+  2026-10-04 "no hour-long tests / ten-minute batches" rule.
+- `scripts/power_measure.py`: warm-up default/max 6 -> 8 s, window cap 21 -> 23 s;
+  `--max-load-seconds` planned-load budget and its pre-elevation refusal removed
+  (planned load is still recorded/reported as information). CLI `--power-window`
+  cap raised 21 -> 23 s (`src/app/CliArgs.cpp`).
+- Regression coverage updated to the new contract: `tests/power_tool_tests.py`
+  (8+15 s defaults, 23 s caps, no-batch-budget flow reaches elevation instead of
+  refusing), `tests/run_tests.py` power-window CLI table (24 s rejected, 23 s
+  accepted), `SelfTest.cpp` power-window case (23 s).
+- Docs aligned on one protocol — they previously disagreed (runbook said 6+15 s
+  while ledger/overview/docs/cli.md said 8+15 s): `AGENTS.md`,
+  `power-optimization.md`, `power-ledger.md` (correction appended),
+  `overview.md`, `docs/cli.md`, `CHANGELOG.md`. Historical ledger entries keep
+  their recorded conditions; P039–P043 (6+15 s) remain valid paired evidence.
+
 ## 2026-10-05 — 6+15 s protocol enforcement, pair placement diagnostics, and P040–P043 audit
 
 - Enforced user-specified 6 s warmup + 15 s measurement limit (`--power-window 21`, total 21 s max)
