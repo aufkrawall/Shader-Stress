@@ -34,6 +34,19 @@ constexpr size_t SynthFarVector(size_t j, size_t vectors) {
   return j < half ? j + half : j - half;
 }
 
+// 128-bit kernels (P056): first vector of the 4-vector group the far cursor
+// swaps in block j. The cursor advances four vectors per block, so every block
+// streams two new 64-byte lines from the opposite buffer half instead of
+// swapping the previous block's pair back. The group is 4-aligned and in
+// bounds for every supported vector count (a multiple of 256).
+constexpr size_t SynthFarGroup4(size_t j, size_t vectors) {
+  return SynthFarVector((4 * j) % vectors, vectors);
+}
+
+// Logged once per run and by --perf-stats so a power log names its fill.
+constexpr const char *SYNTH_FAR_FILL_DESC =
+    "far fill: 128-bit 4-vector stream (P056), wide kernels re/im pair (P045)";
+
 // Butterfly constants: w = e^{i} / sqrt(2), k = 1 / sqrt(2).
 // The 2x2 butterfly [[k, w], [-k, w]] is unitary because |w| = k.
 constexpr double SYNTH_TW_RE = 0.38205142437008976;

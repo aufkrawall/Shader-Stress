@@ -406,8 +406,11 @@ def test_default_build_is_best_variant(b):
     check(re.search(r"#define SYNTH_BUF_KIB 512\b", hdr) is not None and
           re.search(r"#define SYNTH_ROUNDS 1\b", hdr) is not None,
           "synthetic knob defaults are the measured winners (512 KiB x 1 round: P003/P011)")
-    check("SynthFarVector(j, kVecs)" in _read("src/workloads/SynthKernel.inc"),
-          "P045 far-swap streaming fill is part of the default kernels")
+    kernel = _read("src/workloads/SynthKernel.inc")
+    check("SynthFarVector(j, kVecs)" in kernel,
+          "P045 far-swap streaming fill is part of the default wide kernels")
+    check(re.search(r"#if SK_W == 2\s.*?SynthFarGroup4\(j, kVecs\).*?#else", kernel, re.S) is not None,
+          "P056 4-vector far stream is the default 128-bit fill (measured +2.9..3.4 W scalar)")
 
 
 def test_kernel_codegen(b):

@@ -111,14 +111,32 @@
         SK_STORE(pc, cr); SK_STORE(pc + SK_W, ci);
         SK_STORE(pd, dr); SK_STORE(pd + SK_W, di);
 
-        // Idle load/store fill: swap the real/imag halves of two vectors half
-        // a buffer away. A second data cursor streams through the L2/L3 side
-        // of the buffer at zero ALU cost (swaps are register moves only), so
-        // every block pushes more cache traffic per butterfly work. Swaps are
-        // memory-observable (the checksum reads every position), deterministic
-        // and entropy-preserving. Measured +3.2 W avx2 / +1.0 W scalar on the
-        // 5700X (P045): package power tracks the cache-traffic rate, and this
-        // raises bytes/block ~50% for ~6% more instructions.
+        // Idle load/store fill: swap the real/imag halves of vectors half a
+        // buffer away. A second data cursor streams through the L2/L3 side of
+        // the buffer at zero ALU cost (swaps are register moves only). Swaps
+        // are memory-observable (the checksum reads every position),
+        // deterministic and entropy-preserving.
+#if SK_W == 2
+        // 128-bit kernels (P056): a contiguous 4-vector group that advances
+        // four vectors per block, i.e. two new lines every block. Measured
+        // +3.4 / +2.9 W scalar, -12 / -22 MHz effective clock on the 5700X
+        // versus the P045 pair. Re-swapping the previous block's lines (wider
+        // repeated groups, P055) or skipping lines (stride 8, P057) does not
+        // raise power; the far stream must bring in new contiguous lines.
+        {
+          double *pf = buf + SynthFarGroup4(j, kVecs) * 2 * SK_W;
+          SK_VEC t1_ = SK_LOAD(pf), t2_ = SK_LOAD(pf + SK_W);
+          SK_VEC t3_ = SK_LOAD(pf + 2 * SK_W), t4_ = SK_LOAD(pf + 3 * SK_W);
+          SK_STORE(pf, t2_); SK_STORE(pf + SK_W, t1_);
+          SK_STORE(pf + 2 * SK_W, t4_); SK_STORE(pf + 3 * SK_W, t3_);
+          t1_ = SK_LOAD(pf + 4 * SK_W); t2_ = SK_LOAD(pf + 5 * SK_W);
+          t3_ = SK_LOAD(pf + 6 * SK_W); t4_ = SK_LOAD(pf + 7 * SK_W);
+          SK_STORE(pf + 4 * SK_W, t2_); SK_STORE(pf + 5 * SK_W, t1_);
+          SK_STORE(pf + 6 * SK_W, t4_); SK_STORE(pf + 7 * SK_W, t3_);
+        }
+#else
+        // Wide kernels (P045): the pair (jf, jf^1). Measured +3.2 W avx2 on
+        // the 5700X; the P056 4-vector stream was not better on avx2.
         {
           size_t jf;
           if constexpr ((kVecs & (kVecs - 1)) == 0)
@@ -132,6 +150,7 @@
           t1_ = SK_LOAD(pg); t2_ = SK_LOAD(pg + SK_W);
           SK_STORE(pg, t2_); SK_STORE(pg + SK_W, t1_);
         }
+#endif
 
         g0 = Rotl64(g0 * 0x9E3779B97F4A7C15ull, 29) ^ g4;
         g1 = Rotl64(g1 * 0xBF58476D1CE4E5B9ull, 31) ^ g5;

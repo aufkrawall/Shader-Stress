@@ -6,7 +6,7 @@
 | [verification.md](verification.md) | Error detection: paired jobs, golden values, RAM/IO/decompress checks, attribution | 2026-10-03 | Low |
 | [opt-audit.md](opt-audit.md) | Power/heat design: kernel structure, build flags, traffic-rate model, rejected approaches | 2026-10-06 | Medium (realistic target unmet; tested settings do not prove exhaustion) |
 | [power-optimization.md](power-optimization.md) | Current targets, no architecture-specific tuning/builds, compiler-sim-only benchmark windows and A/B rules | 2026-10-06 | Low |
-| [power-ledger.md](power-ledger.md) | Power experiments, provisional rankings, current targets and general tuning rechecks | 2026-10-06 | Medium (P051–P053; realistic target remains open) |
+| [power-ledger.md](power-ledger.md) | Power experiments, provisional rankings, current targets and general tuning rechecks | 2026-10-06 | Medium (P055–P058: scalar far stream adopted, power model corrected; realistic target remains open) |
 | [debug-tools.md](debug-tools.md) | Debuggers, symbols, crash reports, sanitizer builds, known-good commands | 2026-10-03 | Medium (toolchain paths) |
 | [debug-tools-security-audit.md](debug-tools-security-audit.md) | Security/binary-analysis tool inventory + project risk notes | 2026-10-03 | Medium |
 | [secret-leak-prevention.md](secret-leak-prevention.md) | Mandatory pre/post-commit secret checks, gitleaks commands, sensitive artifacts | 2026-10-03 | Low |

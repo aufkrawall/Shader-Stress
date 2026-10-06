@@ -48,6 +48,14 @@ Target version: 3.6.0 (`VERSION`).
 
 ### Improved
 
+- **Higher scalar (SSE2) synthetic power draw:** the 128-bit kernel's far
+  data cursor now streams two new cache lines per block instead of swapping
+  the previous block's data back. Measured +3.0 W (136.6 → 139.5 W package
+  power) on a Ryzen 7 5700X in three separate sessions of five paired
+  8 s + 15 s benchmark-job-mix windows (16 compiler-sim threads). The AVX2
+  kernel is unchanged. Scalar benchmark scores drop ~13% (more data per job
+  unit), and the scalar golden checksum changes to `0x93b76b8c19837de7`.
+
 - **Build defaults are the measured-best variant:** `python build.py` always compiles the measured-best configuration. Strict aliasing is now set explicitly (`-fstrict-aliasing`, the accepted P007c setting measured at +1.9 W on the realistic sim; behavior-identical) alongside the already-default unrolling, LTO and isolated strict-FP synthetic kernels with the P045 streaming fill. Comparison variants (`win-v3-nounroll`, `*-interleave1`, etc.) remain single-setting A/B arms and get promoted into the defaults when they win. A new regression test pins the accepted flag set and knob defaults (512 KiB buffer x 1 round) so the best configuration cannot silently drift out of the default build.
 
 - **Higher synthetic package power via far-vector swap streaming:** every synthetic work block now also swaps the real/imag halves of two vectors half a buffer away — a second data cursor streaming through the cache at zero ALU cost, raising streamed bytes per block ~50% for ~6% more instructions. Measured on a Ryzen 7 5700X: AVX2 +3.2 ±1.6 W (148.7 -> 151.9 W) and SSE2 +1.0 ±0.7 W (135.3 -> 136.3 W), five paired 8+15 s benchmark-job-mix windows with all 16 workers, no run discarded (ledger P045). Benchmark scores drop ~25% because each block deliberately streams more data (378 -> 284 jobs/s on AVX2). Synthetic golden checksums change and were verified identical across all toolchains; realistic results stay bit-identical.

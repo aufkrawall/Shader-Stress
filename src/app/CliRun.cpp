@@ -120,7 +120,8 @@ void InitializeRuntime(bool quiet) {
                (g_Cpu.hasAVX2 ? L"yes" : L"no") + L", FMA " + (g_Cpu.hasFMA ? L"yes" : L"no") +
                L", AVX-512F " + (g_Cpu.hasAVX512F ? L"yes" : L"no") + L")");
   g_App.LogRaw(L"Kernel config: buffer " + std::to_wstring(SYNTH_BUF_KIB) + L" KiB/thread, " +
-               std::to_wstring(SYNTH_ROUNDS) + L" butterfly rounds per load");
+               std::to_wstring(SYNTH_ROUNDS) + L" butterfly rounds per load, " +
+               ToWide(SYNTH_FAR_FILL_DESC));
   InstallCrashHandlers();
 #ifdef PLATFORM_WINDOWS
   RequestHighPerformance();

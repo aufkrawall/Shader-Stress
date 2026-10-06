@@ -271,8 +271,9 @@ NOINLINE void RunPerfStats() {
   };
   const char *unit = "timer ticks";
 #endif
-  printf("Performance statistics (complexity=%d, seed=42, %s, buffer %d KiB, rounds %d):\n",
-         complexity, unit, (int)SYNTH_BUF_KIB, (int)SYNTH_ROUNDS);
+  printf("Performance statistics (complexity=%d, seed=42, %s, buffer %d KiB, rounds %d):\n"
+         "  (%s)\n",
+         complexity, unit, (int)SYNTH_BUF_KIB, (int)SYNTH_ROUNDS, SYNTH_FAR_FILL_DESC);
   for (const Entry &e : entries) {
     if (!e.available) {
       printf("  %-10s: skipped (not supported by this CPU)\n", e.name);

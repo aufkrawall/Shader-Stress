@@ -3,10 +3,13 @@
 Last verified: 2026-10-06. User constraints: benchmark job mix, compiler-sim
 threads only, 8 s warm-up + 15 s measurement per run (capped at 23 s); no
 batch/load budget — the per-run bound is the only timing rule (2026-10-06).
-Stale-risk: medium — the traffic-rate power model is calibrated (P044–P050);
-unexplained run-to-run power variation remains. Scalar synthetic and avx2
-targets are established in one binary (P045); the realistic target remains
-unmet inside the pinned sim source.
+Stale-risk: medium — the power model was corrected in P055 (new contiguous
+L2/L3 lines per block drive power, L1-hitting traffic does not; see
+[opt-audit.md](opt-audit.md)); unexplained run-to-run power variation remains.
+Scalar synthetic (139.5 W, P058) and avx2 (~151.5 W) targets are in band in
+one binary; the realistic target remains unmet inside the pinned sim source.
+Cheap no-load gate before power runs: time two `--repro` processes pinned to
+SMT siblings (single core, seconds) to compare block rates of candidates.
 
 When the user says **"continue power draw optimization"** (or similar), follow this page.
 Results go into [power-ledger.md](power-ledger.md); kernel/flag design background is in

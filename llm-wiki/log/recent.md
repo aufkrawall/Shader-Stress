@@ -1,5 +1,25 @@
 # Recent Changes Log
 
+## 2026-10-06 — P055–P058: 128-bit far stream adopted (+3.0 W scalar), power model corrected
+
+- **Accepted: P058** — `SK_W == 2` kernels swap a contiguous 4-vector group
+  `SynthFarGroup4(j)` (cursor advances 4 vectors/block, two new lines/block)
+  instead of the P045 pair: scalar 136.6 → 139.5 W (+3.0 ±2.1 W; P056 +3.4,
+  P057 +2.9 in earlier sessions), eff clock −15..−22 MHz, jobs/s −13%.
+  AVX2 kernel instruction-identical (151.4 W). Scalar golden re-recorded
+  `0x93b76b8c19837de7`; avx2/sim unchanged. Six new self-test checks.
+- **Rejected: P055** wider repeated far groups (−3.7..−11.6 W at N = 8/16);
+  P057 stride-8 skipping lines neutral. Experiment macros saved in
+  `power-patches/P055-P057-far-experiments.patch`.
+- **Model correction:** accessed bytes/s is not the driver; first-touch
+  contiguous lines at low instruction cost are. Kernels are dispatch/L1
+  bound (~3.6 IPC/core); software prefetch gives no speedup.
+- Realistic sim: seed-independent cost, SMT 1.34×/core, AGU-bound bitvector
+  loop + indirect-jump mispredicts. Remaining levers need user approval
+  (pinned source or benchmark job distribution). Target still unmet.
+- Diagnostics: run log `Kernel config` line and `--perf-stats` header now name
+  the far-fill variant (`SYNTH_FAR_FILL_DESC`).
+
 ## 2026-10-06 — Safe synthetic buffer tuning and P051–P053 rechecks
 
 - Fixed P045's far-vector mapping for non-power-of-two buffer sizes: at

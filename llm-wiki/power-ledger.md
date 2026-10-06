@@ -1,8 +1,8 @@
 # Power Experiment Ledger
 
-Last verified: 2026-10-06. Stale-risk: medium — P051–P053 rechecked without
-a new power winner; P045's non-power-of-two indexing corrected; realistic
-target remains unmet in measured settings, with source still pinned.
+Last verified: 2026-10-06. Stale-risk: medium — P058 128-bit far stream
+adopted (+3.0 W scalar); the accessed-bytes power model was corrected
+(P055); realistic target remains unmet in measured settings, source pinned.
 
 Durable record of every power experiment (procedure and decision rules:
 [power-optimization.md](power-optimization.md)). Rules: one entry per experiment ID, one
@@ -33,7 +33,13 @@ Historical targets and measurements below are evidence, not proof that these
 new ranges are reached reliably. A measured candidate is a provisional best
 among tested builds, never a global optimum.
 
-Status 2026-10-06 (post-P045, session frame with baseline 135.3/148.7/111.5 W):
+Status 2026-10-06 (post-P058): scalar synthetic **139.5 W** (P058, 8+15 s
+frame; base 136.6 W in the same session) and avx2 **151.4–151.9 W** (kernel
+unchanged since P045) are in band from one binary. Realistic stays at
+~108–112 W (user GUI reading ~108 W), 3–12 W short; no permitted
+compiler/flag/scheduling change measured so far closes it.
+
+Earlier status (post-P045, session frame with baseline 135.3/148.7/111.5 W):
 scalar synthetic 136.3 W and avx2 151.9 W are in band from one binary; realistic
 111.5 W is 3.5–8.5 W short of its band. The tested settings have not closed
 that gap; they do not prove all permitted tuning is exhausted.
@@ -163,6 +169,29 @@ heavier per-cycle current, matching the boost/backoff model).
 | P051 | flag | LTO level 2 through linker, compiler-matched controls | scalar-sim | codegen gate stopped; Zig unsupported, LLVM instructions unchanged |
 | P052 | flag | LTO level 1 on LLVM, compiler-matched control | scalar-sim | codegen gate stopped; instructions unchanged |
 | P053 | flag | Recheck current PGO in benchmark windows with current Zig control | scalar-sim | inconclusive (-0.1 +-3.0 W); not adopted |
+| P055 | kernel | Wider far-swap group: N = 4/8/16 contiguous far vectors per block instead of 2 (kernels are dispatch/L1-bound, single-core accessed-byte rate +30/+55/+100%) | scalar, avx2 | rejected (far4 −0.3 W; far8 −3.7/−4.3 W; far16 −8.5/−11.6 W scalar/avx2) |
+| P056 | kernel | Far cursor advances to new lines every block (index stride 2 or 4, same instruction count) instead of re-swapping the previous block's pair; plus stride-4 with a 4-vector group | scalar, avx2 | s4n4 better on scalar (+3.4 ±0.9 W), avx2 inconclusive (−0.8 ±0.6); s2/s4 not better |
+| P057 | kernel | Larger first-touch far groups on scalar: stride 8 with 4- or 8-vector group, s4n4 recheck | scalar | s4n4 replicated (+2.9 ±0.5 W); s8n8 +2.9 ±1.3 W at −17% jobs/s; s8n4 (skips lines) −0.1 W |
+| P058 | kernel | Production form of P056 s4n4 for 128-bit kernels only (single base pointer, constant offsets: 116 vs 126 loop instructions), confirm against base and the measured candidate | scalar | accepted (+3.0 ±2.1 W scalar, 139.5 W; AVX2 kernel instruction-identical) |
+
+## Current disposition after P055–P058 (2026-10-06)
+
+- **Accepted and adopted: P058 128-bit far stream** — scalar +3.0 ±2.1 W
+  (139.5 W), replicated across three sessions; AVX2 unchanged (151.4 W in
+  the same frame). Scalar jobs/s −13%.
+- **Model correction:** accessed bytes are not the power driver. L1-hitting
+  repeat traffic loses (P055), a contiguous first-touch line stream at low
+  instruction cost wins (P045, P056–P058), skipped lines are neutral (P057).
+  The synthetic kernels are dispatch / L1 load-store bound (~3.6 IPC/core),
+  not L3-latency bound (software prefetch: no speedup).
+- Realistic sim analysis (no full load): single-thread cost is seed
+  independent (10 seeds within ±1%); SMT pairs give 1.34× per core; the hot
+  loop is the bitvector update (5 loads + 2 stores per word, AGU-bound,
+  ~65% of instructions) plus one mispredicting indirect jump per op. The
+  remaining power levers are inside the pinned source or the benchmark job
+  distribution; both need the user's approval.
+- Load used: four sessions, 115 runs, every run 8+15 s benchmark job mix,
+  16 compute workers, no decompression/RAM/I/O; no valid run discarded.
 
 ## Current disposition after P044–P050 (2026-10-06)
 
@@ -267,6 +296,132 @@ CPU/steady-only rankings as proof of a global optimum.
 ## Entries
 
 Newest first. Copy the template.
+
+### P058 — Production 128-bit far stream (accepted)
+
+- Date: 2026-10-06. Type: kernel. Measured on top of P055-base. One change:
+  `SK_W == 2` kernels (SSE2 `scalar`, NEON) replace the P045 pair swap with
+  the contiguous 4-vector group `SynthFarGroup4(j, kVecs)` (= P056 s4n4
+  semantics, written as one base pointer with constant offsets). AVX2/AVX-512
+  and the generic kernel keep the P045 pair; their normalized instructions
+  are identical to P055-base (AVX2 verified by disassembly hash).
+- Codegen (Zig v3): inner loop 116 instructions, 6 stack accesses (base ~108;
+  the measured P056 macro form had 126 with more stack traffic). Checksum is
+  the measured candidate's: scalar golden `0x93b76b8c19837de7` (deliberate;
+  re-recorded), avx2 `0x658323a86c4d6bbd` and sim `0x58b1a15ca01f7216`
+  unchanged. Self-test adds six far-group index checks (bounds, alignment,
+  opposite half, per-block advance, P056 mapping, concrete positions).
+- Conditions as P055; 15/15 runs valid, scalar only (AVX2 code unchanged).
+
+  | Candidate | W (SD) | dW (CI95) | dMHz (CI95) | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|
+  | P058-prod | 139.5 (1.8) | +3.0 ±2.1 | −15 ±14 | 90.0 | 293 | better |
+  | P056-fars4n4 | 139.7 (1.2) | +3.1 ±1.4 | −16 ±13 | 90.1 | 287 | better |
+  | P055-base | 136.6 (0.2) | – | – | 90.6 | 336 | baseline |
+
+- Decision: accepted; three sessions agree (+3.4, +2.9, +3.0/+3.1 W). Side
+  effect per policy: scalar benchmark jobs/s −13% (more data per job unit).
+  Runs carry the diagnostic thermal flag (Tmax ~90 C), alike across arms.
+- Command: `python scripts/power_measure.py --mode benchmark --isas scalar --label P058-prod-confirm --baseline P055-base --exe audit/power-baselines/P055-base/ShaderStress.com,audit/power-baselines/P056-fars4n4/ShaderStress.com,audit/power-baselines/P058-prod/ShaderStress.com`.
+- Evidence: `audit/power-measurements/P058-prod-confirm-*/`.
+
+### P057 — Larger first-touch far groups (s4n4 replicated)
+
+- Date: 2026-10-06. Type: kernel. Measured on top of P055-base, scalar only
+  (AVX2 handled separately). Arms: P056-fars4n4 (recheck), `s8n4` (stride 8,
+  4-vector group: touches every other line pair), `s8n8` (stride 8, 8-vector
+  group: four new lines/block, +16 memory instructions).
+- Conditions as P055; 20/20 runs valid.
+
+  | Candidate | W (SD) | dW (CI95) | dMHz (CI95) | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|
+  | P056-fars4n4 | 139.5 (0.5) | +2.9 ±0.5 | −22 ±7 | 90.1 | 288 | better |
+  | P057-fars8n8 | 139.4 (1.1) | +2.9 ±1.3 | −3 ±10 | 88.9 | 238 | better |
+  | P057-fars8n4 | 136.4 (0.5) | −0.1 ±0.4 | −9 ±7 | 90.1 | 292 | inconclusive |
+  | P055-base | 136.5 (0.1) | – | – | 90.6 | 337 | baseline |
+
+- Decision: s4n4 replicated (two sessions: +3.4 ±0.9 and +2.9 ±0.5 W) and is
+  preferred over s8n8 (same power, lower effective clock, 21% more jobs/s).
+  s8n4 shows the far stream must be contiguous: skipping lines leaves power
+  unchanged although it touches as many new lines as s4n4.
+- Command: `python scripts/power_measure.py --mode benchmark --isas scalar --label P057-fargroup-stride --baseline P055-base --exe audit/power-baselines/P055-base/ShaderStress.com,audit/power-baselines/P056-fars4n4/ShaderStress.com,audit/power-baselines/P057-fars8n4/ShaderStress.com,audit/power-baselines/P057-fars8n8/ShaderStress.com`.
+- Evidence: `audit/power-measurements/P057-fargroup-stride-*/`; experiment
+  macros preserved in `llm-wiki/power-patches/P055-P057-far-experiments.patch`.
+
+### P056 — First-touch far cursor (stride) and stride-4 group (scalar winner)
+
+- Date: 2026-10-06. Type: kernel. Measured on top of the P055 baseline
+  (same P055-base snapshot). Arms, each one change versus base:
+  `s2` / `s4`: far index `((j*S) mod kVecs) ^ half` with the unchanged pair
+  swap (same instruction count, the far cursor reaches new lines every block
+  instead of swapping the previous block's pair back); `s4n4`: stride 4 plus
+  a 4-vector aligned group (SSE2: two new 64 B lines per block; AVX2: four).
+  Macro-only (`-DSK_X_FARSTRIDE=S [-DSK_X_FARN=4]`), tuning builds.
+- No-load gate: two processes on SMT siblings — s2/s4 ~3–6% faster than base
+  (fewer store-forwarding round trips), s4n4 ~10% slower.
+- Conditions as P055; 40/40 runs valid, background 1.4–9% (light browser).
+
+  | Candidate | ISA | W (SD) | dW (CI95) | Eff MHz | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|
+  | P056-fars4n4 | scalar | 140.6 (0.8) | +3.4 ±0.9 | 4362 | 89.5 | 286 | better |
+  | P056-fars4n4 | avx2 | 151.1 (0.4) | −0.8 ±0.6 | 4250 | 92.1 | 242 | inconclusive |
+  | P056-fars4 | scalar | 136.5 (0.9) | −0.7 ±1.1 | 4377 | 90.1 | 339 | inconclusive |
+  | P056-fars4 | avx2 | 149.8 (1.1) | −2.1 ±1.2 | 4261 | 92.0 | 289 | worse |
+  | P056-fars2 | scalar | 136.9 (0.2) | −0.3 ±0.1 | 4368 | 90.1 | 332 | inconclusive |
+  | P056-fars2 | avx2 | 151.4 (0.3) | −0.5 ±0.6 | 4244 | 93.5 | 308 | inconclusive |
+  | P055-base | scalar | 137.2 (0.1) | – | 4373 | 90.1 | 338 | baseline |
+  | P055-base | avx2 | 151.9 (0.3) | – | 4259 | 93.1 | 292 | baseline |
+
+- Decision: s4n4 is the first scalar win since P045, and it lowers the
+  scalar effective clock (−12 ±6 MHz), i.e. a heavier load per cycle. AVX2's
+  point estimate is lower, so a scalar-only (128-bit) adoption keeps the AVX2
+  kernel byte-identical; follow-up P057 tests larger first-touch groups first.
+  Interpretation (provisional): new L2/L3 lines per block raise power when the
+  instruction overhead per new line stays low (s4n4: 2 lines for ~12 extra
+  memory instructions); stride alone (1 line/block) is power-neutral.
+- Command: `python scripts/power_measure.py --mode benchmark --isas scalar,avx2 --label P056-farstride --baseline P055-base --exe audit/power-baselines/P055-base/ShaderStress.com,audit/power-baselines/P056-fars2/ShaderStress.com,audit/power-baselines/P056-fars4/ShaderStress.com,audit/power-baselines/P056-fars4n4/ShaderStress.com`.
+- Evidence: `audit/power-measurements/P056-farstride-20261006-215747-13500-00/`.
+
+### P055 — Wider far-swap groups (rejected; accessed-byte model corrected)
+
+- Date: 2026-10-06. Type: kernel. One change per arm: the P045 far swap
+  covers an aligned group of N = 4, 8 or 16 vectors (`jf ^ k`, k < N) instead
+  of the pair (jf, jf^1). Macro-only experiment (`-DSK_X_FARN=N`, tuning
+  builds); not in the default kernels.
+- Mechanism probe first (single-thread `--repro` and two processes pinned to
+  SMT siblings, no full load): removing the butterflies (−17%) or the divide
+  (~0–7%) barely shortens a block; removing the far swap −28%; software
+  prefetch at distance 8–64 vectors gives nothing (slightly slower under SMT).
+  The kernels run ~105 instructions/block at ~3.6 IPC per core: front-end /
+  dispatch and L1 load/store bound, not L3-latency bound.
+- Single-core accessed-byte rate: far4 +30%, far8 +55%, far16 +100%
+  (consecutive blocks swap the same group, so the extra traffic is L1 hits;
+  N >= 8 is a per-pass identity — checksum equals the no-far build).
+- Baseline: P055-base = current Zig v3 at 8d1f398 (HEAD binary; snapshot
+  flagged dirty only by off-by-default experiment macros). Conditions: Ryzen 7
+  5700X, 16 compute workers, benchmark job mix, 8 s + 15 s, five shuffled
+  paired repeats, no preheat/decompression/RAM/I/O, background 1.7–9%
+  (light browser, authorized). 40/40 runs valid.
+
+  | Candidate | ISA | W (SD) | dW (CI95) | Eff MHz | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|---|
+  | P055-far4 | scalar | 136.3 (0.5) | −0.3 ±0.3 | 4357 | 90.0 | 296 | inconclusive |
+  | P055-far4 | avx2 | 151.1 (0.3) | −0.3 ±0.4 | 4255 | 92.6 | 271 | inconclusive |
+  | P055-far8 | scalar | 133.0 (0.9) | −3.7 ±1.4 | 4384 | 87.9 | 232 | worse |
+  | P055-far8 | avx2 | 147.1 (0.7) | −4.3 ±1.1 | 4283 | 91.4 | 224 | worse |
+  | P055-far16 | scalar | 128.2 (0.5) | −8.5 ±1.0 | 4395 | 86.9 | 176 | worse |
+  | P055-far16 | avx2 | 139.9 (0.1) | −11.6 ±0.5 | 4335 | 89.4 | 160 | worse |
+  | P055-base | scalar | 136.7 (0.4) | – | 4365 | 90.0 | 328 | baseline |
+  | P055-base | avx2 | 151.4 (0.3) | – | 4256 | 92.3 | 279 | baseline |
+
+- Decision: rejected. **Correction to the P044–P050 "traffic-rate" model:**
+  package power does not follow accessed bytes; L1-hitting repeat traffic
+  displaces butterfly/first-touch work and loses power monotonically. P045's
+  gain is consistent with new L2/L3 lines per block, not bytes per se.
+  Follow-up P056 tests first-touch far lines at unchanged instruction count.
+- Command: `python scripts/power_measure.py --mode benchmark --isas scalar,avx2 --label P055-fargroup --baseline P055-base --exe audit/power-baselines/P055-base/ShaderStress.com,audit/power-baselines/P055-far4/ShaderStress.com,audit/power-baselines/P055-far8/ShaderStress.com,audit/power-baselines/P055-far16/ShaderStress.com`.
+- Evidence: `audit/power-measurements/P055-fargroup-20261006-213706-3332-00/`;
+  snapshots `audit/power-baselines/P055-*` (each with `DEFINES.txt`).
 
 ### P053 — Current PGO benchmark recheck (inconclusive; not adopted)
 

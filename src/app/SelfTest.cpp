@@ -67,6 +67,37 @@ void TestSynthFarIndices() {
         "synthetic far indices: 768 KiB SSE2 overrun regression");
 }
 
+void TestSynthFarGroups() {
+  // P056 128-bit far stream: arithmetic only, all tuning sizes. Each group of
+  // four must stay in bounds, be 4-aligned, sit in the half opposite its
+  // stream position, and advance to new lines every block (no re-swap of the
+  // previous block's vectors, which P055 measured as a power loss).
+  bool inBounds = true, aligned = true, oppositeHalf = true, advances = true, unchanged = true;
+  for (size_t kib : {32, 96, 160, 512, 768, 1024, 1536}) {
+    const size_t vectors = kib * 1024 / sizeof(double) / (2 * 2);
+    const size_t half = vectors / 2;
+    for (size_t j = 0; j < vectors; ++j) {
+      const size_t g = SynthFarGroup4(j, vectors);
+      inBounds &= g + 3 < vectors;
+      aligned &= (g & 3) == 0;
+      oppositeHalf &= ((4 * j) % vectors < half) != (g < half);
+      const size_t next = (4 * (j + 1)) % vectors;
+      if (next != 0 && next != half) // stream wraps or crosses into the other half
+        advances &= SynthFarGroup4(j + 1, vectors) == g + 4;
+      if ((vectors & (vectors - 1)) == 0)
+        unchanged &= g == (((4 * j) & (vectors - 1)) ^ half);
+    }
+  }
+  Check(inBounds, "synthetic far groups: four vectors stay inside tuning buffers");
+  Check(aligned, "synthetic far groups: 4-vector aligned");
+  Check(oppositeHalf, "synthetic far groups: opposite buffer half");
+  Check(advances, "synthetic far groups: stream advances four vectors per block");
+  Check(unchanged, "synthetic far groups: power-of-two mapping is the measured P056 mapping");
+  Check(SynthFarGroup4(1, 16384) == 8196 && SynthFarGroup4(4095, 16384) == 8188 &&
+            SynthFarGroup4(4096, 16384) == 8192,
+        "synthetic far groups: 512 KiB SSE2 stream positions");
+}
+
 void TestKernels() {
   for (const KernelEntry &k : Kernels()) {
     std::string n = k.name;
@@ -436,6 +467,7 @@ int RunSelfTests() {
   std::cout << "ShaderStress " << ToNarrow(APP_VERSION) << " self-test (" << ToNarrow(g_Cpu.brand)
             << ")\n";
   TestSynthFarIndices();
+  TestSynthFarGroups();
   TestFormatting();
   TestKernels();
   TestPreemption();

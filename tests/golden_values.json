@@ -3,7 +3,7 @@
   "complexity": 1000,
   "checksums": {
     "x64": {
-      "scalar": "0x1e986aef8e5e656e",
+      "scalar": "0x93b76b8c19837de7",
       "scalar-sim": "0x58b1a15ca01f7216",
       "avx2": "0x658323a86c4d6bbd"
     }
