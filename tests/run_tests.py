@@ -338,6 +338,12 @@ def test_build_comparisons(b):
           zen - base == {"-mtune=znver3"} and
           interleave1 - base == {"-mllvm", "-force-vector-interleave=1"} and
           not base - interleave1, "comparison flags vary one setting at a time")
+    simv4 = set(build.common_cxx_flags("bin/x64-zig-v3-simv4"))
+    zig_base = set(build.common_cxx_flags("bin/x64-zig-v3"))
+    check(simv4 - zig_base == {"-DSHADERSTRESS_REALISTIC_V4"} and not zig_base - simv4 and
+          [c[1] for c in select_configs(["x64-zig-v3-simv4"])] == ["bin/x64-zig-v3-simv4"] and
+          all(c[1] != "bin/x64-zig-v3-simv4" for c in select_configs(["all"])),
+          "realistic V4 test build: one define, explicit-only, never packaged")
     check(any(c[0].endswith("-msvc") for c in select_configs(["all"])) and
           select_configs(["msvc"]) == select_configs(["x64-msvc-v3"]) and
           len(select_configs(["win-v3", "win-v3"])) == 1, "MSVC default/explicit targets and deduplication")
@@ -392,7 +398,8 @@ def test_default_build_is_best_variant(b):
     accepted = {"-O3", "-funroll-loops", "-fstrict-aliasing", "-fno-stack-protector",
                 "-fomit-frame-pointer", "-fno-math-errno"}
     forbidden = {"-ffast-math", "-fno-strict-aliasing", "-fno-unroll-loops",
-                 "-funroll-all-loops", "-mtune=znver3", "-force-vector-interleave=1"}
+                 "-funroll-all-loops", "-mtune=znver3", "-force-vector-interleave=1",
+                 "-DSHADERSTRESS_REALISTIC_V4"}
     for out_dir in ("bin/x64-llvm", "bin/x64-llvm-v3", "bin/x64-zig", "bin/x64-zig-v3"):
         flags = set(build.common_cxx_flags(out_dir))
         check(accepted <= flags and not (flags & forbidden) and

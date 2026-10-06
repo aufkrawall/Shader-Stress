@@ -224,7 +224,11 @@ NOINLINE uint64_t RunComputeWorkload(WorkloadType type, uint64_t seed, int compl
   case WL_AVX2:
     return RunHyperStress_AVX2(seed, complexity, cfg);
   case WL_SCALAR_SIM:
+#ifdef SHADERSTRESS_REALISTIC_V4
+    return RunRealisticCompilerSim_V4(seed, complexity, cfg);
+#else
     return RunRealisticCompilerSim_V3(seed, complexity, cfg);
+#endif
   case WL_SCALAR:
   default:
     return RunHyperStress_Scalar(seed, complexity, cfg);
@@ -298,4 +302,20 @@ NOINLINE void RunPerfStats() {
     printf("\n");
     fflush(stdout);
   }
+  // Realistic V4 (experimental; the scalar-sim workload only in *-simv4 builds).
+  RunRealisticCompilerSimV4Diag(42, 10, nullptr);
+  SimV4Diag d;
+  const uint64_t t0 = ReadCycleCounter();
+  const uint64_t result = RunRealisticCompilerSimV4Diag(42, complexity, &d);
+  const uint64_t total = ReadCycleCounter() - t0;
+  const double nodes = d.nodes ? (double)d.nodes : 1.0;
+  printf("  %-10s: %llu (%llu/complexity), result=%016llx%s\n"
+         "              functions=%llu nodes=%llu folded=%.1f%% peephole=%.1f%% cse=%.1f%% "
+         "dead=%.1f%% spills=%.1f%% intern-hits=%llu bytes/node=%.2f\n",
+         "sim-v4", (unsigned long long)total, (unsigned long long)(total / complexity),
+         (unsigned long long)result, REALISTIC_V4_ACTIVE ? " (active scalar-sim)" : "",
+         (unsigned long long)d.functions, (unsigned long long)d.nodes, 100.0 * d.folded / nodes,
+         100.0 * d.peepholes / nodes, 100.0 * d.cseHits / nodes, 100.0 * d.dead / nodes,
+         100.0 * d.spills / nodes, (unsigned long long)d.internHits, d.emittedBytes / nodes);
+  fflush(stdout);
 }

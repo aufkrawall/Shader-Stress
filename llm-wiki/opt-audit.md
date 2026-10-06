@@ -77,6 +77,22 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
 ## Other workloads
 
 - Realistic compiler sim (pinned): branchy integer, hash/tree/bit-vector; benchmark default.
+  Its package power (~108–112 W, 5700X) matches the user's real driver shader
+  compiles on all threads (108–115 W, user report 2026-10-06), but its shape
+  does not: ~1 KB hot loop, AGU-bound dense bitvector loop (~65% of
+  instructions), uniformly random opcodes (one mispredicted indirect jump per op).
+- **Realistic V4 (experimental, `src/workloads/WorkloadRealisticV4.cpp`):**
+  optimizing-compiler model — 256 combine + 256 emit handlers (~217 KB code,
+  Zig v3) via indirect calls, skewed opcodes rotated per function, SSA graph
+  with use lists in a sliding bump arena (1024–16384 nodes/function), passes:
+  interning, build, worklist combine, CSE + second combine, DCE, linear-scan
+  allocation (31 registers, spill furthest end), variable-length emission.
+  Typical stats: folded ~12–15%, CSE ~4%, dead ~18%, spills ~2–3%, ~3.5 B/node.
+  7/4 nodes per complexity unit matches V3 single-thread job time. Only the
+  `x64-zig-v3-simv4` test build (`-DSHADERSTRESS_REALISTIC_V4`) runs it as
+  `scalar-sim`; all builds self-test it (golden `0x79d79ad453b38391`, identical
+  on Zig/LLVM/MSVC/baseline). P059: **105.6 W vs V3 110.4 W** (−4.7 ±0.7 W),
+  jobs/s +32% under SMT (front-end-heavy code scales better on SMT).
 - LZ decompression: real decoder (overlapping matches, wild copies) + per-64-byte DIV in
   the verification hash. Targets the failure class of game-asset decompression crashes
   on degraded/unstable cores.

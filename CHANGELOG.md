@@ -30,6 +30,14 @@ Target version: 3.6.0 (`VERSION`).
 
 ### New
 
+- **Experimental realistic V4 workload (test build only):** `python build.py
+  x64-zig-v3-simv4` builds a binary whose Realistic Compiler Sim runs a new
+  optimizing-shader-compiler model (large handler code footprint, skewed
+  opcodes, SSA graph with use lists, combine/CSE/DCE/register-allocation/
+  emission passes) instead of the pinned V3 sim. Release builds keep V3. On a
+  Ryzen 7 5700X it measured 105.6 W versus V3's 110.4 W (five paired 8 s +
+  15 s benchmark windows, 16 threads); scores are not comparable with V3.
+
 - **Redundant job verification.** Every compute job is executed twice, normally on two different cores, and the results are compared. On a mismatch the job is re-run to name the faulty CPU, and the log gives a `--repro` command.
 - **Per-CPU error attribution** in the GUI, CLI dashboard, final results and log ("Error CPUs: CPU 6 (core 3) x2").
 - **Core Cycle mode** (`--mode corecycle`, GUI button): one compute thread per physical core in turn, at maximum single-core boost, with configurable `--dwell`. Intended for finding per-core instability such as unstable Curve Optimizer / undervolt settings.

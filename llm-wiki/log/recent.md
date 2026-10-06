@@ -1,5 +1,20 @@
 # Recent Changes Log
 
+## 2026-10-06 — Realistic V4 test build (P059)
+
+- User context: real driver shader compiles on all 16 threads of the 5700X
+  draw 108–115 W, so V3's ~108–112 W already matches real-world power; V3's
+  microarchitectural shape differs (see opt-audit "Other workloads").
+- New `src/workloads/WorkloadRealisticV4.cpp` (compiled into every build,
+  self-tested: determinism, seed/complexity sensitivity, golden
+  `0x79d79ad453b38391` identical on Zig/LLVM/MSVC/x64 baseline, pass-statistics
+  sanity). `x64-zig-v3-simv4` (`-DSHADERSTRESS_REALISTIC_V4`, explicit-only,
+  never packaged) runs it as scalar-sim; the run log `Kernel config` line and
+  ISA name say "V4 (test build)"; `--perf-stats` prints a `sim-v4` line.
+- P059: V4 105.6 W vs V3 110.4 W (−4.7 ±0.7 W), jobs/s +32%. Open: user
+  decision whether V4 replaces V3 (would break realistic score continuity and
+  needs the V3 pin lifted).
+
 ## 2026-10-06 — P055–P058: 128-bit far stream adopted (+3.0 W scalar), power model corrected
 
 - **Accepted: P058** — `SK_W == 2` kernels swap a contiguous 4-vector group

@@ -165,7 +165,11 @@ std::wstring GetResolvedISAName(int workloadSel) {
   case WL_AVX512:
     return L"AVX-512";
   case WL_SCALAR_SIM:
+#ifdef SHADERSTRESS_REALISTIC_V4
+    return L"Realistic Compiler Sim V4 (test)";
+#else
     return L"Realistic Compiler Sim";
+#endif
   default:
     return L"Unknown";
   }

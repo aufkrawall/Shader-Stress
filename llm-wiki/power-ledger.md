@@ -172,6 +172,7 @@ heavier per-cycle current, matching the boost/backoff model).
 | P055 | kernel | Wider far-swap group: N = 4/8/16 contiguous far vectors per block instead of 2 (kernels are dispatch/L1-bound, single-core accessed-byte rate +30/+55/+100%) | scalar, avx2 | rejected (far4 −0.3 W; far8 −3.7/−4.3 W; far16 −8.5/−11.6 W scalar/avx2) |
 | P056 | kernel | Far cursor advances to new lines every block (index stride 2 or 4, same instruction count) instead of re-swapping the previous block's pair; plus stride-4 with a 4-vector group | scalar, avx2 | s4n4 better on scalar (+3.4 ±0.9 W), avx2 inconclusive (−0.8 ±0.6); s2/s4 not better |
 | P057 | kernel | Larger first-touch far groups on scalar: stride 8 with 4- or 8-vector group, s4n4 recheck | scalar | s4n4 replicated (+2.9 ±0.5 W); s8n8 +2.9 ±1.3 W at −17% jobs/s; s8n4 (skips lines) −0.1 W |
+| P059 | workload | Experimental realistic V4 (shader-compiler model, `x64-zig-v3-simv4` test build) versus pinned V3 | scalar-sim | measured: −4.7 ±0.7 W (105.6 vs 110.4 W); test build only, V3 stays default |
 | P058 | kernel | Production form of P056 s4n4 for 128-bit kernels only (single base pointer, constant offsets: 116 vs 126 loop instructions), confirm against base and the measured candidate | scalar | accepted (+3.0 ±2.1 W scalar, 139.5 W; AVX2 kernel instruction-identical) |
 
 ## Current disposition after P055–P058 (2026-10-06)
@@ -296,6 +297,27 @@ CPU/steady-only rankings as proof of a global optimum.
 ## Entries
 
 Newest first. Copy the template.
+
+### P059 — Realistic V4 test build (measured; not a default)
+
+- Date: 2026-10-06. Type: workload (user-requested test build, not a power
+  tuning candidate). V4 = `RunRealisticCompilerSim_V4` (see opt-audit), run as
+  `scalar-sim` only in `x64-zig-v3-simv4`; V3 stays pinned and default.
+  Baseline: P058-prod (current Zig v3, V3 sim). Candidate: P059-simv4.
+- Conditions: 5700X, 16 compute workers, benchmark job mix, 8 + 15 s, five
+  paired repeats, no preheat/decompression/RAM/I/O; 10/10 runs valid.
+
+  | Candidate | W (SD) | dW (CI95) | Eff MHz | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|
+  | P059-simv4 | 105.6 (1.1) | −4.7 ±0.7 | 4467 | 81.6 | 6088 | worse (less power) |
+  | P058-prod (V3) | 110.4 (1.3) | – | 4448 | 82.9 | 4602 | baseline |
+
+- Interpretation: as expected, a more compiler-like (front-end-heavy) load
+  draws less package power than V3; 105.6 W is just below the user's
+  108–115 W real-compile range. Jobs/s are not comparable with V3 (different
+  work per unit). Whether V4 replaces V3 is the user's decision.
+- Command: `python scripts/power_measure.py --mode benchmark --isas scalar-sim --label P059-simv4 --baseline P058-prod --exe audit/power-baselines/P058-prod/ShaderStress.com,audit/power-baselines/P059-simv4/ShaderStress.com`.
+- Evidence: `audit/power-measurements/P059-simv4-*/`.
 
 ### P058 — Production 128-bit far stream (accepted)
 

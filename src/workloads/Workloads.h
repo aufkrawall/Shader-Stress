@@ -113,5 +113,16 @@ JobContext &CurrentJob();
 // worker jobs) the work assignment changed so this worker's role differs.
 // Sticky per job. Cheap: one relaxed load in the common case.
 bool StopRequested();
+
+// Realistic V4 diagnostics (self-test / perf-stats only; nullptr in jobs).
+struct SimV4Diag {
+  uint64_t functions = 0, nodes = 0;    // compiled shader functions / IR nodes
+  uint64_t combined = 0, folded = 0;    // combine handler calls / constant folds
+  uint64_t peepholes = 0, cseHits = 0;  // pattern rewrites / merged duplicates
+  uint64_t dead = 0, spills = 0;        // DCE kills / register spills
+  uint64_t internHits = 0, emittedBytes = 0;
+  bool aborted = false;
+};
+uint64_t RunRealisticCompilerSimV4Diag(uint64_t seed, int complexity, SimV4Diag *diag);
 // Marks the start of a job on the calling thread.
 void BeginJob(int workload, uint64_t seed, int complexity);
