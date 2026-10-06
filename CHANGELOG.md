@@ -6,6 +6,9 @@ Target version: 3.6.0 (`VERSION`).
 
 ### Fixed
 
+- **Synthetic buffer tuning:** prevent out-of-bounds far-vector loads and stores
+  at supported non-power-of-two sizes such as 768 KiB. The default 512 KiB
+  mapping and all existing golden checksums stay unchanged.
 - **Power measurement workflow:** use the GUI benchmark job mix with only compiler-sim compute workers in bounded windows (8-second warm-up plus 15-second measurement), with no decompression, RAM or I/O. The new CLI `--power-window` stops after at most 23 seconds without producing a benchmark score/hash; the normal GUI benchmark remains 180 seconds. There is deliberately no batch/load budget — the per-run 8+15 s bound is the only timing rule (longer individual runs are a waste of time); explicitly requested legacy steady-mode measurements are labeled as unsuitable for GUI benchmark claims.
 - **Profile-guided builds:** keep native synthetic ISA kernels independent of host-specific profiles. Training on an AVX2 host no longer marks the unsupported AVX-512 kernel cold against its explicit hot annotation; the main program and realistic workload retain profiling.
 - **Synthetic AVX2/AVX-512/SSE2 kernels no longer run on infinity.** Their values overflowed to `inf` within the first ~0.05-0.16% of every job, so the FMA units spent >99.8% of the run on constant data (minimal switching) and computation errors were absorbed instead of detected. The scalar kernel's integer chains also collapsed to zero. The new kernels stay bounded with full-entropy mantissas (verified by `--self-test` and `--perf-stats`).

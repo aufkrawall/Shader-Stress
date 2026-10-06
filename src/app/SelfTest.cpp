@@ -41,6 +41,32 @@ std::vector<KernelEntry> Kernels() {
   return k;
 }
 
+void TestSynthFarIndices() {
+  bool inBounds = true, oppositeHalf = true, reversible = true, unchanged = true;
+  // Arithmetic only: exercise tuning sizes and all SIMD widths without
+  // allocating buffers or executing stress workloads. 768 KiB regresses P045's
+  // old XOR mapping: vector 16384 (SSE2) used to map beyond vector 24575.
+  for (size_t kib : {32, 96, 160, 512, 768, 1024, 1536}) {
+    for (size_t width : {1, 2, 4, 8}) {
+      const size_t vectors = kib * 1024 / sizeof(double) / (2 * width);
+      const size_t half = vectors / 2;
+      for (size_t j = 0; j < vectors; ++j) {
+        const size_t farIndex = SynthFarVector(j, vectors);
+        inBounds &= farIndex < vectors && (farIndex ^ size_t(1)) < vectors;
+        oppositeHalf &= (j < half) != (farIndex < half);
+        reversible &= SynthFarVector(farIndex, vectors) == j;
+        if ((vectors & (vectors - 1)) == 0) unchanged &= farIndex == (j ^ half);
+      }
+    }
+  }
+  Check(inBounds, "synthetic far indices: both vectors stay inside tuning buffers");
+  Check(oppositeHalf, "synthetic far indices: opposite buffer half");
+  Check(reversible, "synthetic far indices: bijective and reversible");
+  Check(unchanged, "synthetic far indices: power-of-two output unchanged");
+  Check(SynthFarVector(16384, 24576) == 4096,
+        "synthetic far indices: 768 KiB SSE2 overrun regression");
+}
+
 void TestKernels() {
   for (const KernelEntry &k : Kernels()) {
     std::string n = k.name;
@@ -409,6 +435,7 @@ int RunSelfTests() {
   g_pass = g_fail = 0;
   std::cout << "ShaderStress " << ToNarrow(APP_VERSION) << " self-test (" << ToNarrow(g_Cpu.brand)
             << ")\n";
+  TestSynthFarIndices();
   TestFormatting();
   TestKernels();
   TestPreemption();

@@ -170,12 +170,13 @@ load); never part of tests. Essentials:
 
 ## Open questions
 
-- Open gap (2026-10-06): **realistic sim 111.5 W** versus the 115–120 W target.
-  Compiler/flag/codegen/scheduling levers inside the pinned source are
-  exhausted at +-2 W (P048 interleave retest +0.0 +-0.8 W at ten pairs, P050
-  strict-aliasing recheck -2.1 +-0.8 W confirming P007c). The sim is
-  latency-bound scalar code; closing the gap needs a workload change, which the
-  source pin forbids without explicit user approval. Synthetic modes are in
+- Open gap (2026-10-06): **realistic sim 111.5 W** versus the 115–120 W target
+  in P048/P050. Tested compiler/codegen settings have not closed it (P048
+  interleave retest +0.0 +-0.8 W at ten pairs, P050 strict-aliasing recheck
+  -2.1 +-0.8 W confirming P007c). These experiments do **not** prove all
+  permitted tuning is exhausted or a workload change is necessary. The sim's
+  source remains pinned; general compiler/codegen/scheduling ideas remain
+  eligible for measured rechecks. Synthetic modes were in
   band after P045 (avx2 148.7->151.9 W, scalar 135.3->136.3 W in session
   frame). AVX2 run-to-run variability and thermal flags remain open; the
   backlog lives in [power-ledger.md](power-ledger.md).

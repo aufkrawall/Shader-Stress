@@ -1,6 +1,6 @@
 # ShaderStress Overview
 
-Last verified: 2026-10-04 (v3.6.0, P011 one-round worktree; 14/14 release targets rebuilt on Windows x64 / Ryzen 7 5700X; full test results recorded in the recent log).
+Last verified: 2026-10-06 (v3.6.0 after P045, safe far-vector tuning; 14/14 release targets rebuilt on Windows x64 / Ryzen 7 5700X; full suite 188/188 including ASan/UBSan).
 
 ## Summary
 
@@ -86,6 +86,10 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
 ## Invariants
 
 - Kernel results are bit-exact across x64 builds and compilers (verified: baseline, v3, Zig v3 and MSVC v3 produce identical checksums). Re-record golden checksums only for intended kernel changes.
+- Far-vector streaming indices use XOR only for power-of-two vector counts;
+  other supported buffer sizes use a wrapped half-buffer offset. Both vector
+  accesses must stay in bounds. `TestSynthFarIndices()` covers tuning sizes
+  and all vector widths using arithmetic only; default mapping is unchanged.
 - All compute goes through `RunComputeWorkload` (NOINLINE) so golden values, paired jobs and repro share one compiled body.
 - `WorkAssignment` is published as one packed atomic plus `workGen`; workers wait on `s_workCv`, aux testers on `s_auxCv` (no idle polling).
 - Logical-CPU slot order: fastest perf class first, SMT primaries before siblings.

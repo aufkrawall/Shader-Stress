@@ -1,5 +1,33 @@
 # Recent Changes Log
 
+## 2026-10-06 — Safe synthetic buffer tuning and P051–P053 rechecks
+
+- Fixed P045's far-vector mapping for non-power-of-two buffer sizes: at
+  768 KiB/SSE2, the old XOR mapped vector 16384 to 28672, beyond the 24576
+  vectors allocated. `SynthFarVector()` wraps the half-buffer offset; an
+  `if constexpr` retains the original XOR expression for power-of-two sizes.
+- Five arithmetic-only `TestSynthFarIndices()` checks cover bounds for both
+  accesses, opposite halves, reversibility, unchanged power-of-two mapping,
+  and the concrete overrun. No additional worker workload or hot-loop logging;
+  existing buffer configuration and kernel-health diagnostics identify tuning
+  builds. Default realistic/synthetic machine instructions and goldens match
+  the original user binary. Full rebuild 14/14; full suite 188/188, ASan/UBSan.
+- P051/P052 LTO levels 2/1: Zig linker interface rejects the option; matching
+  LLVM builds emit unchanged workload instructions, so no power runs.
+- Correction to earlier interpretation: P044–P050 do not prove that permitted
+  realistic tuning is exhausted or that a workload change is necessary.
+  Keep the realistic source pinned and treat rankings/models as provisional.
+- P053 PGO recheck: Zig generation lacks its profiling runtime, so the
+  comparison used LLVM controls plus current Zig, five repeats each (15 valid
+  8+15 s windows). PGO 109.6 W versus LLVM 109.8 W, delta -0.1 +-3.0 W;
+  Zig 109.7 W. Inconclusive; no power setting promoted. Realistic target
+  remains open. Further experiments deferred for the user's weekly quota.
+- Wiki semantic check: 51 relative links valid; no new/orphan pages. Current
+  claims distinguish measured results, historical protocols and untested
+  possibilities. Evidence/exports/profiles remain ignored local artifacts.
+- Evidence: `audit/P051-index-preserved-build.log`,
+  `audit/P051-index-full-tests.log`, `audit/P051-index-preserved-codegate.jsonl`.
+
 ## 2026-10-06 — Promotion rule: build.py defaults always compile the measured-best variant
 
 - User instruction: "build.py by default should always compile the best variant"

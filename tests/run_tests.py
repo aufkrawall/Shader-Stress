@@ -406,7 +406,7 @@ def test_default_build_is_best_variant(b):
     check(re.search(r"#define SYNTH_BUF_KIB 512\b", hdr) is not None and
           re.search(r"#define SYNTH_ROUNDS 1\b", hdr) is not None,
           "synthetic knob defaults are the measured winners (512 KiB x 1 round: P003/P011)")
-    check("j ^ (kVecs / 2)" in _read("src/workloads/SynthKernel.inc"),
+    check("SynthFarVector(j, kVecs)" in _read("src/workloads/SynthKernel.inc"),
           "P045 far-swap streaming fill is part of the default kernels")
 
 

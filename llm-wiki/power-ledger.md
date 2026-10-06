@@ -1,8 +1,8 @@
 # Power Experiment Ledger
 
-Last verified: 2026-10-06. Stale-risk: medium — P044–P050 recorded; P045
-(far-swap streaming) accepted and adopted; realistic target still unmet inside
-the pinned sim source.
+Last verified: 2026-10-06. Stale-risk: medium — P051–P053 rechecked without
+a new power winner; P045's non-power-of-two indexing corrected; realistic
+target remains unmet in measured settings, with source still pinned.
 
 Durable record of every power experiment (procedure and decision rules:
 [power-optimization.md](power-optimization.md)). Rules: one entry per experiment ID, one
@@ -35,8 +35,8 @@ among tested builds, never a global optimum.
 
 Status 2026-10-06 (post-P045, session frame with baseline 135.3/148.7/111.5 W):
 scalar synthetic 136.3 W and avx2 151.9 W are in band from one binary; realistic
-111.5 W is 3.5–8.5 W short of its band and the pinned-source lever space is
-exhausted at ±2 W (see the P044–P050 disposition).
+111.5 W is 3.5–8.5 W short of its band. The tested settings have not closed
+that gap; they do not prove all permitted tuning is exhausted.
 
 Interpretation correction (2026-10-04, P036–P038 review): P026's **147.1 W
 AVX2 mean is inside the requested 145–155 W band**, so its historical wording
@@ -160,6 +160,9 @@ heavier per-cycle current, matching the boost/backoff model).
 | P048 | flag | Retest `-mllvm -force-vector-interleave=1` (P028 point estimate +0.6 W) with ten bounded pairs | scalar-sim | see P048 entry |
 | P049 | flag | `-funroll-all-loops` on the current Zig baseline | all | codegen gate stopped (realistic sim and kernels emit identical instructions to the default) |
 | P050 | flag | Recheck `-fno-strict-aliasing` in benchmark windows (P007c's +1.9 W claim is short-mode-only/unverified) | scalar-sim (others guard) | see P050 entry |
+| P051 | flag | LTO level 2 through linker, compiler-matched controls | scalar-sim | codegen gate stopped; Zig unsupported, LLVM instructions unchanged |
+| P052 | flag | LTO level 1 on LLVM, compiler-matched control | scalar-sim | codegen gate stopped; instructions unchanged |
+| P053 | flag | Recheck current PGO in benchmark windows with current Zig control | scalar-sim | inconclusive (-0.1 +-3.0 W); not adopted |
 
 ## Current disposition after P044–P050 (2026-10-06)
 
@@ -181,9 +184,10 @@ heavier per-cycle current, matching the boost/backoff model).
 - **Targets:** scalar synthetic (136.3 W) and avx2 (151.9 W) in band in this
   session's frame after P045. **Realistic remains 111.5 W versus the 115–120 W
   target — unmet.** Ten-pair flag retests (P048/P050) and all prior
-  compiler/flag/codegen/scheduling work bound the achievable space at ~111–113 W
-  inside the pinned sim source; closing the gap needs a workload-level change,
-  which the source pin forbids without explicit user approval.
+  compiler/flag/codegen/scheduling work observed ~111–113 W for those tested
+  settings. Interpretation corrected in P051–P053: this does not bound all
+  achievable settings or establish that a workload change is necessary. The
+  pinned sim remains unchanged while general tuning is rechecked.
 - Load used: two sessions, 1610 s planned (920 + 690), 70/70 valid runs, no run
   discarded, every run 8+15 s benchmark job mix with 16 compute workers and
   zero decompression/RAM/I/O; background 1.8–9.3% (authorized light browser).
@@ -263,6 +267,87 @@ CPU/steady-only rankings as proof of a global optimum.
 ## Entries
 
 Newest first. Copy the template.
+
+### P053 — Current PGO benchmark recheck (inconclusive; not adopted)
+
+- Date: 2026-10-06. Type: flag. One change: profile-use compilation of the
+  main program, leaving the native synthetic kernels unprofiled. P008 used
+  LLVM and legacy steady measurements; it does not settle current Zig power.
+- Zig generation failed to link: its bundled runtime lacks
+  `__llvm_profile_instrument_memop`, `__llvm_profile_instrument_target` and
+  `__llvm_profile_runtime`. No runtime/toolchain modification attempted.
+  Rechecked LLVM PGO instead, with current Zig as an independent control.
+- Baseline: P053-llvm-base, LLVM v3 at 1cf98c34 after P045 plus the buffer index
+  correctness fix; dirty snapshot with task-owned code/tests/wiki only.
+  P054-base is the corresponding current Zig control snapshot (label only,
+  no P054 experiment was started). Candidate: P053-pgo, same sources plus
+  `SHADERSTRESS_EXTRA_DEFINES="-fprofile-use=audit/P053-profile.profdata"`.
+- Training: `--pgo-gen win-v3` with an unused probe define for isolated
+  `-tuning` output. Fourteen finite single-thread repro processes: realistic
+  seeds 7/42/123456789 at complexity 5000/15000/100000/500000, synthetic scalar
+  and avx2 at seed 42/complexity 1000. Merge only these raw profiles using
+  installed LLVM 22 `llvm-profdata`. No full worker load during training.
+- Gates: self-test 75/75; all three existing goldens unchanged. Realistic
+  machine code changes from 1110 to 1129 instructions; all three native
+  synthetic kernels retain matching normalized instruction hashes.
+- Conditions: Ryzen 7 5700X, five shuffled paired repeats, scalar-sim only,
+  16 compute workers, benchmark job mix, 8 s warm-up + 15 s measurement,
+  no preheat/decompression/RAM/I/O. All 15 runs valid; 12–14 contiguous
+  sensor windows/run; pre-run background 1.9–9.6% (light browser authorized).
+  Tmax 83.4 C; no thermal flags, no valid low reading discarded.
+
+  | Candidate | Runs | W (SD) | dW vs LLVM (CI95) | Eff MHz | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|
+  | P053-pgo | 5 | 109.6 (2.3) | -0.1 +-3.0 | 4468 | 4403 | inconclusive |
+  | P054-base (Zig) | 5 | 109.7 (1.6) | -0.1 +-2.5 | 4466 | 4438 | inconclusive |
+  | P053-llvm-base | 5 | 109.8 (1.3) | - | 4459 | 4614 | baseline |
+
+- Decision: no verified power improvement, so profile-use stays opt-in.
+  PGO jobs/s decreased 4.6% in these short variable-job windows; this is not
+  a measured normal 180 s score. Realistic target remains unmet. Synthetic
+  power was not remeasured because no power candidate is retained; default
+  kernel instructions and goldens remain unchanged. Further experiments
+  deferred to conserve the user's remaining weekly quota, not because the
+  tuning space has been proven exhausted.
+- Command: `python scripts/power_measure.py --mode benchmark --isas scalar-sim --label P053-pgo-recheck --baseline P053-llvm-base --exe audit/power-baselines/P053-llvm-base/ShaderStress.com,audit/power-baselines/P053-pgo/ShaderStress.com,audit/power-baselines/P054-base/ShaderStress.com`.
+- Evidence: `audit/power-measurements/P053-pgo-recheck-20261006-112314-18028-00/`,
+  `audit/P053-{training,use-build,self-test}.log`, `audit/P053-codegate.jsonl`,
+  raw profiles and merged profile under `audit/` only.
+
+### P052 — LTO optimization level 1 (codegen gate stopped)
+
+- Date: 2026-10-06. Type: flag. One change: linker `--lto-O1`, leaving
+  frontend O3, strict FP, native synthetic objects and workload sources intact.
+- Baseline: P051-base, clean current Zig v3, after P045. Compare actual
+  realistic codegen and all goldens first; measure only changed machine code.
+- Planned protocol: five interleaved 8+15 s benchmark pairs, scalar-sim first,
+  all 16 compute workers, no decompression/RAM/I/O. Light browser load allowed.
+- Actual gate: Zig level 1 was not attempted after its linker rejected level 2
+  in P051; LLVM accepts level 1 but emits the same normalized
+  realistic and synthetic instructions as its matching P051-llvm-base.
+  No measurement or default change. Evidence: `audit/P052-lto1-build.log`
+  and `audit/P052-lto1-codegate.jsonl`.
+
+### P051 — LTO optimization level 2 (codegen gate stopped)
+
+- Date: 2026-10-06. Type: flag. One change: linker `--lto-O2`, leaving
+  frontend O3, strict FP, native synthetic objects and workload sources intact.
+- Baseline: P051-base, clean current Zig v3, after P045; P051-user-binary also
+  preserves the user's supplied artifact before the full preflight rebuild.
+- Motivation: P029 tested frontend O2 only; effective LTO pipeline levels
+  remain untested. Historical rankings and claims of exhausted tuning space
+  do not establish that these settings cannot improve realistic power.
+- Preflight: 14/14 release targets rebuilt, 13 archives; 148/148 no-load tests.
+- Planned protocol: codegen/golden gate, then five interleaved 8+15 s benchmark
+  pairs on scalar-sim, all 16 compute workers, no decompression/RAM/I/O.
+  Light browser load authorized; background-load guard remains unchanged.
+- Actual gate: Zig rejects `--lto-O2` as unsupported; retry on LLVM against
+  P051-llvm-base emits identical normalized realistic/synthetic instructions.
+  No power measurement or default change. Linker flags produce unused-input
+  warnings only in the separate `-c` kernel commands; none is retained.
+- The user's Zig artifact and preflight rebuild have byte-identical `.text`
+  sections. Evidence: `audit/P051-base-codegate.jsonl`,
+  `audit/P051-llvm-lto2-build.log`, snapshot `P051-lto2`.
 
 ### P050 — strict-aliasing off recheck in benchmark windows (rejected; P007c confirmed)
 

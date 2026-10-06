@@ -25,6 +25,15 @@ static_assert(SYNTH_BUF_KIB >= 32, "SYNTH_BUF_KIB must be at least 32");
 static_assert(SYNTH_BUF_DOUBLES % 4096 == 0, "SYNTH_BUF_KIB must be a multiple of 32");
 static_assert(SYNTH_ROUNDS >= 1 && SYNTH_ROUNDS <= 16, "SYNTH_ROUNDS out of range");
 
+// Map to the opposite buffer half for every supported (even) vector count.
+// XOR only wraps correctly for powers of two; keep that fast path unchanged
+// for the default buffer and use a wrapped half-offset for other tuning sizes.
+constexpr size_t SynthFarVector(size_t j, size_t vectors) {
+  const size_t half = vectors / 2;
+  if ((vectors & (vectors - 1)) == 0) return j ^ half;
+  return j < half ? j + half : j - half;
+}
+
 // Butterfly constants: w = e^{i} / sqrt(2), k = 1 / sqrt(2).
 // The 2x2 butterfly [[k, w], [-k, w]] is unitary because |w| = k.
 constexpr double SYNTH_TW_RE = 0.38205142437008976;

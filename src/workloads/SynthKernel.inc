@@ -120,7 +120,11 @@
         // 5700X (P045): package power tracks the cache-traffic rate, and this
         // raises bytes/block ~50% for ~6% more instructions.
         {
-          const size_t jf = j ^ (kVecs / 2);
+          size_t jf;
+          if constexpr ((kVecs & (kVecs - 1)) == 0)
+            jf = j ^ (kVecs / 2);
+          else
+            jf = SynthFarVector(j, kVecs);
           double *pf = buf + jf * 2 * SK_W;
           double *pg = buf + (jf ^ (size_t)1) * 2 * SK_W;
           SK_VEC t1_ = SK_LOAD(pf), t2_ = SK_LOAD(pf + SK_W);
