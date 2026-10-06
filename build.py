@@ -148,9 +148,19 @@ def common_cxx_flags(out_dir):
     -O3 with strict IEEE FP semantics (no -ffast-math): every result must be
     bit-reproducible across call sites and cores for the redundant job
     verification. Unwind tables are kept so crash dumps have usable stacks.
-    Strict aliasing is ON (no -fno-strict-aliasing): P007c measured +1.9 W on the
-    realistic sim from TBAA alone. Type-punning through unrelated pointer types
-    is therefore UB in this codebase — use memcpy or explicitly may_alias types.
+    Strict aliasing is ON (explicit -fstrict-aliasing): P007c measured +1.9 W on
+    the realistic sim from TBAA alone. Type-punning through unrelated pointer
+    types is therefore UB in this codebase — use memcpy or explicitly may_alias
+    types.
+
+    Defaults are the measured-best variant (promotion rule, user instruction
+    2026-10-06): every accepted power setting lives in the default flag set,
+    `scripts/build_kernels.py` or the `Workloads.h` knob defaults — never behind
+    an opt-in variant. Comparison variants (`-nounroll`, `-strictalias-off`,
+    `-znver3`, `-nolto`, `-slp`, `-interleave1`, `--sweep` `-tuning` builds) are
+    single-setting A/B arms and get promoted into these defaults when they win
+    (see llm-wiki/power-ledger.md). `tests/run_tests.py`'s
+    `test_default_build_is_best_variant` pins this set.
     """
     flags = [
         "-std=c++20", "-O3",
@@ -160,6 +170,7 @@ def common_cxx_flags(out_dir):
         "-fno-exceptions",
         "-fno-stack-protector",
         "-fomit-frame-pointer",
+        "-fstrict-aliasing",
         "-ffunction-sections", "-fdata-sections",
         "-fno-ident",
         "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-missing-field-initializers",
@@ -179,6 +190,13 @@ def common_cxx_flags(out_dir):
         # objects only; native kernel objects keep build_kernels.py flags).
         flags += ["-mllvm", "-force-vector-interleave=1"]
     return flags
+
+
+def release_lto(out_dir, macos=False):
+    """LTO is an accepted power setting (P007b kept it on). Defaults are the
+    measured-best variant: LTO is on for release builds except Apple targets
+    and the `win-v3-nolto` single-setting A/B arm (promotion rule)."""
+    return not macos and "-nolto" not in out_dir
 
 
 def sanitizer_flags():
@@ -344,7 +362,7 @@ def build_windows_target(config):
         else:
             # Release: LTO, CodeView debug info into a separate PDB, stripped exe.
             cmd += ["-g", "-gcodeview", "-s"]
-            if "-nolto" not in out_dir:
+            if release_lto(out_dir):
                 cmd.append("-flto")
         cmd += pgo_flags(target)
         cmd += ["-static-libstdc++", "-static",
@@ -431,7 +449,7 @@ def build_zig_target(config):
         if SANITIZER_MODE:
             cmd += sanitizer_flags()
         else:
-            if not is_macos:
+            if release_lto(out_dir, macos=is_macos):
                 cmd.append("-flto")
             # Windows: Zig emits a PDB next to the exe. Linux: DWARF is split
             # into shaderstress.debug below. macOS: stripped (no dsymutil).

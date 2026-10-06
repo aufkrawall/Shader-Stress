@@ -96,6 +96,16 @@ reduces thermal/ambient drift) with a Student-t 95% CI:
 
 ## Hard rules
 
+- **Defaults are the measured-best variant (promotion rule, user instruction
+  2026-10-06).** `python build.py` always compiles the measured-best
+  configuration: every accepted power setting lives in `build.py`'s default
+  flag set, `scripts/build_kernels.py` or the `Workloads.h` knob defaults —
+  never behind an opt-in variant. Comparison variants (`win-v3-*`, `*-nounroll`,
+  `*-interleave1`, `--sweep` `-tuning` builds) are single-setting A/B arms and
+  get **promoted into the defaults** when they win; measured-worse or
+  variant-only settings must never leak into defaults. Enforced by
+  `tests/run_tests.py::test_default_build_is_best_variant` (accepted flag set,
+  LTO default, knob defaults, adopted kernel fill).
 - **No architecture-specific optimizations/builds (user instruction,
   2026-10-04).** Do not add or select CPU-specific tuning such as
   `-mtune=znver3`, CPU-family special cases, or CPU-specialized binaries.

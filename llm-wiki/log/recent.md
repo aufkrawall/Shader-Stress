@@ -1,5 +1,23 @@
 # Recent Changes Log
 
+## 2026-10-06 — Promotion rule: build.py defaults always compile the measured-best variant
+
+- User instruction: "build.py by default should always compile the best variant"
+  (confirmed scope: defaults carry the measured-best **settings**; A/B variant
+  settings get promoted into the defaults when they win).
+- `build.py`: strict aliasing made explicit (`-fstrict-aliasing`, P007c's
+  accepted state — behavior-identical, goldens unchanged); the LTO decision
+  extracted into `release_lto()` (on for release builds except Apple targets and
+  the `win-v3-nolto` A/B arm) and used by both toolchain builders.
+- New regression test `test_default_build_is_best_variant` pins the accepted
+  flag set (`-O3 -funroll-loops -fstrict-aliasing -fno-math-errno ...`), forbids
+  variant-only/measured-worse settings in defaults (`-mtune=*`, `-fno-strict-aliasing`,
+  `-force-vector-interleave=1`, `-ffast-math`, profile flags), and asserts the
+  LTO default, the measured knob winners (512 KiB x 1 round) and the P045
+  far-swap fill in the default kernels.
+- Docs: promotion rule added to [power runbook](../power-optimization.md)
+  hard rules and [opt-audit](../opt-audit.md) build flags.
+
 ## 2026-10-06 — P045 far-swap streaming adopted (+3.2 W avx2); traffic-rate model; P044–P050
 
 - **Accepted/adopted: P045 far-vector swap streaming fill** in `SynthKernel.inc`

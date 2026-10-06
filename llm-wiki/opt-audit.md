@@ -110,6 +110,12 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
   profile modes leave kernels unchanged without removing parent-command flags,
   strict FP, symbols or optimization. Profile builds log this boundary. P008
   measured no power benefit; PGO remains opt-in, with local generated profiles.
+- **Promotion rule (2026-10-06):** build defaults are the measured-best
+  variant. Accepted settings live in `build.py`'s default flags (explicit
+  `-fstrict-aliasing`, `-funroll-loops`, `-fno-math-errno`...), the kernel-object
+  flags and the `Workloads.h` knob defaults (512 KiB x 1 round) — never behind
+  opt-in variants. `tests/run_tests.py::test_default_build_is_best_variant`
+  pins the accepted flag set and rejects variant-only settings in defaults.
 - **One-setting comparison builds** (never packaged): `win-v3-nounroll` (no
   `-funroll-loops`), `win-v3-strictalias-off` (pre-P007c `-fno-strict-aliasing`
   default; `win-v3-strictalias` stays a compat alias), `win-v3-znver3`

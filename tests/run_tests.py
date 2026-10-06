@@ -381,6 +381,35 @@ def test_build_comparisons(b):
         check(not result[3], "MSVC comparison build is never packaged")
 
 
+def test_default_build_is_best_variant(b):
+    """Promotion rule (user instruction 2026-10-06): build.py's defaults always
+    compile the measured-best variant. Every accepted power setting lives in the
+    default flag set / kernel-object flags / Workloads.h knob defaults, and no
+    A/B-variant-only setting does. Comparison variants stay single-setting arms
+    and get promoted into the defaults when they win (power-ledger)."""
+    sys.path.insert(0, PROJECT_ROOT) if PROJECT_ROOT not in sys.path else None
+    import build
+    accepted = {"-O3", "-funroll-loops", "-fstrict-aliasing", "-fno-stack-protector",
+                "-fomit-frame-pointer", "-fno-math-errno"}
+    forbidden = {"-ffast-math", "-fno-strict-aliasing", "-fno-unroll-loops",
+                 "-funroll-all-loops", "-mtune=znver3", "-force-vector-interleave=1"}
+    for out_dir in ("bin/x64-llvm", "bin/x64-llvm-v3", "bin/x64-zig", "bin/x64-zig-v3"):
+        flags = set(build.common_cxx_flags(out_dir))
+        check(accepted <= flags and not (flags & forbidden) and
+              not any(f.startswith(("-mtune=", "-fprofile")) for f in flags),
+              "default flags are the measured-best set: " + out_dir, " ".join(sorted(flags)))
+    check(build.release_lto("bin/x64-llvm-v3") and build.release_lto("bin/x64-zig-v3") and
+          not build.release_lto("bin/x64-llvm-v3-nolto") and
+          not build.release_lto("bin/macos-x64", macos=True),
+          "LTO on in defaults (P007b kept), off only for A/B arms and Apple targets")
+    hdr = _read("src/workloads/Workloads.h")
+    check(re.search(r"#define SYNTH_BUF_KIB 512\b", hdr) is not None and
+          re.search(r"#define SYNTH_ROUNDS 1\b", hdr) is not None,
+          "synthetic knob defaults are the measured winners (512 KiB x 1 round: P003/P011)")
+    check("j ^ (kVecs / 2)" in _read("src/workloads/SynthKernel.inc"),
+          "P045 far-swap streaming fill is part of the default kernels")
+
+
 def test_kernel_codegen(b):
     """Static disassembly only. SLP used to pack the integer chains into vector
     registers, spilling ymm/zmm in the hot loop (and adding ymm integer work to
@@ -421,6 +450,7 @@ def test_power_measurement(b):
 
 LIGHTWEIGHT_TESTS = [
     test_build_comparisons,
+    test_default_build_is_best_variant,
     test_kernel_codegen,
     test_power_measurement,
     test_help,
