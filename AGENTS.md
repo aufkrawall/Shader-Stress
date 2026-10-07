@@ -70,6 +70,7 @@
 
 Regression coverage and diagnosability are first-class deliverables, not optional polish.
 
+- On Windows, run every CLI mode (`--self-test`, `--repro`, `--perf-stats`, power runs) through `ShaderStress.com`, never `ShaderStress.exe` with arguments: the GUI binary pops a blocking message box on the user's desktop.
 - Fix pre-existing, as well as newly introduced LSP errors/warnings along they way!
 - We are paranoid about having sufficient regression tests, better too many than too few!
 - For every bug fix or behavioral correction, explicitly assess both regression coverage and diagnostics even when existing tests pass. Strongly prefer a focused automated regression test that fails before the fix and passes after it.

@@ -1,23 +1,19 @@
-// WorkloadRealisticV5Back.cpp - Realistic V5 back end: dense-bitset block
-// liveness (NIR-style iterative dataflow), per-block list scheduling on a
-// dependence DAG with a critical-path priority queue, live ranges, linear-scan
-// register allocation and per-opcode encoders with a hash of the binary.
+// WorkloadRealisticV5Back.cpp - Realistic V5 back end: instruction indexing
+// (per-block instruction vectors in list order, like nir_index_instrs / ACO's
+// blocks), dense-bitset block liveness (NIR-style iterative dataflow),
+// per-block list scheduling on a dependence DAG with a critical-path priority
+// queue, live ranges, linear-scan register allocation and per-opcode encoders
+// with a hash of the binary.
 #include "workloads/WorkloadRealisticV5.h"
 #include <array>
 #include <utility>
 
 namespace simv5 {
 namespace {
-inline bool NeedsLive(const Node &n) {
-  return !(n.op & (kConstFlag | kDeadFlag)) && (n.op & (kPhiFlag | kInputFlag) || !IsStoreOp(n.op & kOpMask));
-}
+inline bool NeedsLive(const Node &n) { return !(n.op & (kConstFlag | kDeadFlag)) && n.type != kVoid; }
 constexpr uint32_t kSchedWindow = 24;
 inline bool Scheduled(const Node &n) { return !(n.op & (kConstFlag | kDeadFlag)); }
-inline uint32_t Latency(const Node &n) {
-  if (IsInput(n)) return 24; // memory
-  const uint32_t op = n.op & kOpMask;
-  return 1 + (Family(op) == 5 ? 8 : Family(op) == 1 ? 3 : 0) + (op >= 0x80 ? 4 : 0);
-}
+inline uint32_t Latency(const Node &n) { return IsPhi(n) ? 0 : 1 + Info(OpOf(n)).latency; }
 inline void SetBit(uint64_t *s, uint32_t k) { s[k >> 6] |= 1ull << (k & 63); }
 inline void ClearBit(uint64_t *s, uint32_t k) { s[k >> 6] &= ~(1ull << (k & 63)); }
 
@@ -61,18 +57,18 @@ inline uint8_t *PutLE(uint8_t *p, uint64_t v, int bytes) {
   for (int k = 0; k < bytes; ++k) *p++ = (uint8_t)(v >> (8 * k));
   return p;
 }
-inline uint8_t *PutOperand(const Fn &f, uint32_t i, uint32_t oi, uint8_t *out, uint64_t key,
-                           bool varint, int bytes) {
+inline uint8_t *PutOperand(const Fn &f, uint32_t pos, uint32_t oi, uint8_t *out, uint64_t key, bool varint) {
   const Node &o = f.nodes[oi];
-  if (IsConst(o)) {
-    if (varint) return PutVar(out, o.val ^ key);
-    return PutLE(out, o.val + key, bytes);
+  if (IsConst(o)) { // literal constant (32-bit inline / literal dword)
+    if (varint) return PutVar(out, (o.val ^ key) & 0xFFFFFFFFu);
+    return PutLE(out, o.val + key, 4);
   }
+  const uint32_t d = pos > o.pos ? pos - o.pos : o.pos - pos;
   if (o.reg == kSpill) {
     *out++ = 0xFF;
-    return PutVar(out, i > oi ? i - oi : oi - i);
+    return PutVar(out, d);
   }
-  *out++ = (uint8_t)(o.reg | ((i > oi ? i - oi : oi - i) < 16 ? 0x80 : 0));
+  *out++ = (uint8_t)(o.reg | (d < 16 ? 0x80 : 0));
   return out;
 }
 
@@ -81,19 +77,18 @@ template <uint32_t Op> NOINLINE uint8_t *Emit(const Fn &f, uint32_t i, uint8_t *
   constexpr uint64_t K = OpConst(Op, 4);
   constexpr uint32_t layout = (Op >> 4) & 3;
   const Node &n = f.nodes[i];
-  if constexpr (Op < 0x80) {
+  if constexpr (Op < 0x40) {
     *out++ = (uint8_t)Op;
   } else {
     *out++ = (uint8_t)(0xC0 | (K & 0x3F));
     *out++ = (uint8_t)Op;
   }
   *out++ = (uint8_t)(((n.reg & 0x3F) << 2) | layout);
-  // Scalar (uniform) or vector encoding, operand size.
-  *out++ = (uint8_t)((n.type & 0x7F) | (n.op & kDivergentFlag ? 0 : 0x80));
+  // Scalar (uniform) or vector encoding, result type; extract index.
+  *out++ = (uint8_t)((n.type & 0x3F) | (n.imm << 6 & 0x40) | (n.op & kDivergentFlag ? 0 : 0x80));
   const uint32_t ops[3] = {n.a, n.b, n.c};
-  for (uint32_t k = 0; k < ar; ++k)
-    out = PutOperand(f, i, ops[(k + layout) % ar], out, K, (layout & 1) != 0, (Op & 1) ? 4 : 8);
-  if constexpr (IsStoreOp(Op)) out = PutVar(out, n.val & 0xFFFF);
+  for (uint32_t k = 0; k < ar; ++k) out = PutOperand(f, n.pos, ops[(k + layout) % ar], out, K, (layout & 1) != 0);
+  if constexpr (HasFlag(Op, kMemRead) || IsStoreOp(Op)) out = PutVar(out, n.name + 1); // reflection name
   return out;
 }
 
@@ -102,15 +97,36 @@ template <uint32_t... I>
 constexpr std::array<EmitFn, sizeof...(I)> EmitTable(std::integer_sequence<uint32_t, I...>) {
   return {{&Emit<I>...}};
 }
-constexpr auto kEmit = EmitTable(std::make_integer_sequence<uint32_t, kOps>{});
+constexpr auto kEmit = EmitTable(std::make_integer_sequence<uint32_t, kOpCount>{});
 } // namespace
 
+// Per-block instruction vectors in list order (phis first); Node::pos is the
+// position. Later passes address instructions by position, not by node slot.
+void Linearize(Fn &f, Arena &ar) {
+  f.seq = ar.Take<uint32_t>(f.n);
+  f.seqStart = ar.Take<uint32_t>((size_t)f.nblocks + 1);
+  uint32_t k = 0;
+  for (uint32_t b = 0; b < f.nblocks; ++b) {
+    f.seqStart[b] = k;
+    for (uint32_t i = f.blocks[b].head; i != kNone && k < f.n; i = f.nodes[i].next) {
+      f.nodes[i].pos = k;
+      f.seq[k++] = i;
+    }
+  }
+  f.seqStart[f.nblocks] = k;
+  f.nseq = k;
+}
+
 // Backward dataflow over per-block dense bitsets of all SSA values (constants
-// and stores excluded), iterated to a fixed point from a post-order worklist.
-// Phi sources are live out of their predecessor, not live into the phi block.
+// and void instructions excluded), iterated to a fixed point from a post-order
+// worklist. Phi sources are live out of their predecessor, not live into the
+// phi block.
 void RunLiveness(Fn &f, Arena &ar) {
   uint32_t count = 0;
-  for (uint32_t i = 0; i < f.n; ++i) f.nodes[i].liveIdx = NeedsLive(f.nodes[i]) ? count++ : kNone;
+  for (uint32_t k = 0; k < f.nseq; ++k) {
+    Node &n = f.nodes[f.seq[k]];
+    n.liveIdx = NeedsLive(n) ? count++ : kNone;
+  }
   const uint32_t words = std::max(1u, (count + 63) / 64), nb = f.nblocks;
   f.liveCount = count;
   f.liveWords = words;
@@ -130,7 +146,7 @@ void RunLiveness(Fn &f, Arena &ar) {
     queued[f.rpoOrder[k]] = 1;
   }
   auto use = [&](uint32_t v) {
-    if (v != kNone && f.nodes[v].liveIdx != kNone) SetBit(live, f.nodes[v].liveIdx);
+    if (v != kNone && f.nodes[v].liveIdx != kNone && !IsDead(f.nodes[v])) SetBit(live, f.nodes[v].liveIdx);
   };
   while (sp) {
     const uint32_t b = work[--sp];
@@ -142,17 +158,15 @@ void RunLiveness(Fn &f, Arena &ar) {
       if (s == kNone) continue;
       const uint64_t *in = f.liveIn + (size_t)s * words;
       for (uint32_t w = 0; w < words; ++w) live[w] |= in[w];
-      for (uint32_t i = f.blocks[s].first; i < f.blocks[s].last && IsPhi(f.nodes[i]); ++i) {
-        const Node &p = f.nodes[i];
-        if (!IsDead(p)) use(f.phiPred[i] == b ? p.a : p.b);
+      for (uint32_t k = f.seqStart[s]; k < f.seqStart[s + 1] && IsPhi(f.nodes[f.seq[k]]); ++k) {
+        const uint32_t i = f.seq[k];
+        use(f.phiPred[i] == b ? f.nodes[i].a : f.nodes[i].b);
       }
     }
     std::memcpy(f.liveOut + (size_t)b * words, live, words * sizeof(uint64_t));
     use(blk.cond);
-    if (blk.succ[0] == kNone) use(f.ret);
-    for (uint32_t i = blk.last; i-- > blk.first;) {
-      const Node &n = f.nodes[i];
-      if (n.op & (kConstFlag | kDeadFlag)) continue;
+    for (uint32_t k = f.seqStart[b + 1]; k-- > f.seqStart[b];) {
+      const Node &n = f.nodes[f.seq[k]];
       if (n.liveIdx != kNone) ClearBit(live, n.liveIdx);
       if (IsPhi(n)) continue;
       use(n.a);
@@ -183,83 +197,79 @@ void RunLiveness(Fn &f, Arena &ar) {
   }
 }
 
-// Per-block list scheduling: phis stay first; other values follow a ready
-// list ordered by critical-path height (then program order); stores keep
-// their relative order.
+// Per-block list scheduling: phis stay first; other instructions follow a
+// ready list ordered by critical-path height (then list order); side effects
+// keep their relative order.
 void Schedule(Fn &f, Arena &ar) {
-  f.order = ar.Take<uint32_t>(f.n);
+  const uint32_t ns = f.nseq;
+  f.order = ar.Take<uint32_t>(ns ? ns : 1);
   f.blockStart = ar.Take<uint32_t>((size_t)f.nblocks + 1);
-  uint32_t *npred = ar.Take<uint32_t>(f.n);
-  uint32_t *height = ar.Take<uint32_t>(f.n);
-  uint32_t *chain = ar.Take<uint32_t>(f.n);
-  Heap ready{ar.Take<uint64_t>(f.n)};
-  Heap deferred{ar.Take<uint64_t>(f.n)}; // ready but outside the window: min index on top
+  uint32_t *npred = ar.Take<uint32_t>(ns + 1); // by position
+  uint32_t *height = ar.Take<uint32_t>(ns + 1);
+  uint32_t *chain = ar.Take<uint32_t>(ns + 1);
+  Heap ready{ar.Take<uint64_t>(ns + 1)};
+  Heap deferred{ar.Take<uint64_t>(ns + 1)}; // ready but outside the window: min position on top
   uint32_t out = 0;
   for (uint32_t b = 0; b < f.nblocks; ++b) {
-    const Block &blk = f.blocks[b];
+    const uint32_t end = f.seqStart[b + 1];
     f.blockStart[b] = out;
-    uint32_t first = blk.first;
-    for (; first < blk.last && IsPhi(f.nodes[first]); ++first)
-      if (!IsDead(f.nodes[first])) f.order[out++] = first;
-    auto inBlock = [&](uint32_t v) {
-      return v != kNone && v >= first && v < blk.last && Scheduled(f.nodes[v]);
+    uint32_t first = f.seqStart[b];
+    for (; first < end && IsPhi(f.nodes[f.seq[first]]); ++first) f.order[out++] = f.seq[first];
+    auto local = [&](uint32_t v) { // position of an in-block operand, else kNone
+      if (v == kNone || !Scheduled(f.nodes[v]) || IsPhi(f.nodes[v])) return kNone;
+      const uint32_t p = f.nodes[v].pos;
+      return p >= first && p < end ? p : kNone;
     };
-    uint32_t lastStore = kNone;
-    for (uint32_t i = first; i < blk.last; ++i) {
-      const Node &n = f.nodes[i];
-      chain[i] = kNone;
-      if (!Scheduled(n)) continue;
-      npred[i] = (uint32_t)inBlock(n.a) + (uint32_t)inBlock(n.b) + (uint32_t)inBlock(n.c);
-      if (!IsInput(n) && IsStoreOp(n.op & kOpMask)) {
-        if (lastStore != kNone) {
-          chain[lastStore] = i;
-          npred[i]++;
+    uint32_t lastSide = kNone;
+    for (uint32_t p = first; p < end; ++p) {
+      const Node &n = f.nodes[f.seq[p]];
+      chain[p] = kNone;
+      npred[p] = (local(n.a) != kNone) + (local(n.b) != kNone) + (local(n.c) != kNone);
+      if (IsStore(n)) {
+        if (lastSide != kNone) {
+          chain[lastSide] = p;
+          npred[p]++;
         }
-        lastStore = i;
+        lastSide = p;
       }
     }
     // ACO-style bounded motion: a ready instruction is eligible only within
     // kSchedWindow of the oldest unscheduled one (limits register pressure).
     uint32_t low = first;
-    auto key = [&](uint32_t i) { return ((uint64_t)height[i] << 32) | (0xFFFFFFFFu - i); };
-    auto release = [&](uint32_t i) {
-      if (i <= low + kSchedWindow) ready.Push(key(i));
-      else deferred.Push(0xFFFFFFFFu - i);
+    auto key = [&](uint32_t p) { return ((uint64_t)height[p] << 32) | (0xFFFFFFFFu - p); };
+    auto release = [&](uint32_t p) {
+      if (p <= low + kSchedWindow) ready.Push(key(p));
+      else deferred.Push(0xFFFFFFFFu - p);
     };
-    for (uint32_t i = blk.last; i-- > first;) {
-      const Node &n = f.nodes[i];
-      if (!Scheduled(n)) continue;
+    for (uint32_t p = end; p-- > first;) {
+      const Node &n = f.nodes[f.seq[p]];
       const uint32_t lat = Latency(n);
       uint32_t h = lat;
       for (uint32_t u = n.firstUse; u != kNone; u = f.UseNext(u)) {
-        const uint32_t ui = UseUser(u);
-        if (ui > i && ui < blk.last && Scheduled(f.nodes[ui]) && !IsPhi(f.nodes[ui]))
-          h = std::max(h, lat + height[ui]);
+        const uint32_t up = local(UseUser(u));
+        if (up != kNone && up > p) h = std::max(h, lat + height[up]);
       }
-      if (chain[i] != kNone) h = std::max(h, 1 + height[chain[i]]);
-      height[i] = h;
-      if (npred[i] == 0) release(i);
+      if (chain[p] != kNone) h = std::max(h, 1 + height[chain[p]]);
+      height[p] = h;
+      if (npred[p] == 0) release(p);
     }
     uint32_t expect = first;
     while (ready.n || deferred.n) {
       if (!ready.n) ready.Push(key(0xFFFFFFFFu - (uint32_t)deferred.Pop()));
-      const uint32_t i = 0xFFFFFFFFu - (uint32_t)ready.Pop();
-      while (expect < blk.last && !Scheduled(f.nodes[expect])) ++expect;
-      if (i != expect) f.st.schedMoved++;
+      const uint32_t p = 0xFFFFFFFFu - (uint32_t)ready.Pop();
+      if (p != expect) f.st.schedMoved++;
       ++expect;
-      f.order[out++] = i;
-      npred[i] = kNone; // scheduled
-      while (low < blk.last && (!Scheduled(f.nodes[low]) || npred[low] == kNone)) ++low;
+      f.order[out++] = f.seq[p];
+      npred[p] = kNone; // scheduled
+      while (low < end && npred[low] == kNone) ++low;
       while (deferred.n && 0xFFFFFFFFu - (uint32_t)deferred.v[0] <= low + kSchedWindow)
         ready.Push(key(0xFFFFFFFFu - (uint32_t)deferred.Pop()));
-      const Node &n = f.nodes[i];
+      const Node &n = f.nodes[f.seq[p]];
       for (uint32_t u = n.firstUse; u != kNone; u = f.UseNext(u)) {
-        const uint32_t ui = UseUser(u);
-        if (ui > i && ui < blk.last && Scheduled(f.nodes[ui]) && !IsPhi(f.nodes[ui]) &&
-            --npred[ui] == 0)
-          release(ui);
+        const uint32_t up = local(UseUser(u));
+        if (up != kNone && up > p && npred[up] != kNone && --npred[up] == 0) release(up);
       }
-      if (chain[i] != kNone && --npred[chain[i]] == 0) release(chain[i]);
+      if (chain[p] != kNone && --npred[chain[p]] == 0) release(chain[p]);
     }
   }
   f.blockStart[f.nblocks] = out;
@@ -283,10 +293,12 @@ void Schedule(Fn &f, Arena &ar) {
 void BuildRanges(Fn &f, Arena &ar) {
   f.rangeEnd = ar.Take<uint32_t>(f.liveCount ? f.liveCount : 1);
   const uint32_t words = f.liveWords;
-  for (uint32_t i = 0; i < f.n; ++i)
-    if (f.nodes[i].liveIdx != kNone) f.rangeEnd[f.nodes[i].liveIdx] = f.nodes[i].pos;
+  for (uint32_t k = 0; k < f.norder; ++k) {
+    const Node &n = f.nodes[f.order[k]];
+    if (n.liveIdx != kNone) f.rangeEnd[n.liveIdx] = n.pos;
+  }
   auto extend = [&](uint32_t v, uint32_t p) {
-    if (v == kNone) return;
+    if (v == kNone || IsDead(f.nodes[v])) return;
     const uint32_t l = f.nodes[v].liveIdx;
     if (l != kNone && f.rangeEnd[l] < p) f.rangeEnd[l] = p;
   };
@@ -308,14 +320,13 @@ void BuildRanges(Fn &f, Arena &ar) {
       extend(n.c, k);
     }
     extend(f.blocks[b].cond, end);
-    if (f.blocks[b].succ[0] == kNone) extend(f.ret, end);
   }
 }
 
 // Linear scan over the schedule; when the file is full, spill whichever
 // interval ends last.
 void RunRegAlloc(Fn &f, Arena &ar) {
-  Heap active{ar.Take<uint64_t>(f.n)}; // max-heap of ~(end << 32 | node): min end on top
+  Heap active{ar.Take<uint64_t>(f.norder + 1)}; // max-heap of ~(end << 32 | node): min end on top
   uint64_t freeMask = (1ull << kRegs) - 1;
   for (uint32_t k = 0; k < f.norder; ++k) {
     const uint32_t i = f.order[k];
@@ -324,7 +335,7 @@ void RunRegAlloc(Fn &f, Arena &ar) {
       const uint32_t r = f.nodes[(uint32_t)~active.Pop()].reg;
       if (r < kRegs) freeMask |= 1ull << r;
     }
-    if (n.liveIdx == kNone) continue; // stores
+    if (n.liveIdx == kNone) continue; // void instructions
     const uint32_t end = f.rangeEnd[n.liveIdx];
     if (!freeMask) {
       uint32_t m = 0; // active entry with the furthest end
@@ -352,23 +363,16 @@ void RunRegAlloc(Fn &f, Arena &ar) {
 }
 
 uint64_t EmitAndHash(Fn &f, Arena &ar) {
-  uint8_t *buf = ar.Take<uint8_t>((size_t)f.n * 40 + (size_t)f.nblocks * 16 + 128);
+  uint8_t *buf = ar.Take<uint8_t>((size_t)f.norder * 40 + (size_t)f.nblocks * 16 + 128);
   uint8_t *out = buf;
   // Header from gather_info (driver metadata: resource usage, input mask).
-  for (uint32_t c : f.info.famCount) out = PutVar(out, c);
+  for (uint32_t c : f.info.unitCount) out = PutVar(out, c);
   out = PutLE(out, f.info.inputsRead, 8);
   for (uint32_t c : {f.info.stores, f.info.phis, f.info.uniform, f.info.divergent}) out = PutVar(out, c);
   for (uint32_t b = 0; b < f.nblocks; ++b) {
     if (f.blocks[b].rpo == kNone) continue; // deleted (unreachable)
     for (uint32_t i = f.blocks[b].head; i != kNone; i = f.nodes[i].next) {
       const Node &n = f.nodes[i];
-      if (IsInput(n)) { // input load plus its reflection name
-        *out++ = 0xF4;
-        *out++ = (uint8_t)n.reg;
-        *out++ = (uint8_t)n.op;
-        out = PutVar(out, n.name + 1);
-        continue;
-      }
       if (IsPhi(n)) { // resolved to moves on the incoming edges
         *out++ = 0xF0;
         *out++ = (uint8_t)n.reg;
@@ -376,7 +380,7 @@ uint64_t EmitAndHash(Fn &f, Arena &ar) {
         *out++ = (uint8_t)f.nodes[n.b].reg;
         continue;
       }
-      out = kEmit[n.op & kOpMask](f, i, out);
+      out = kEmit[OpOf(n)](f, i, out);
     }
     const Block &blk = f.blocks[b];
     *out++ = (uint8_t)(0xE0 | (blk.cond != kNone ? 1 : 0) | (blk.succ[0] == kNone ? 2 : 0));

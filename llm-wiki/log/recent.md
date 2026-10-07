@@ -1,5 +1,51 @@
 # Recent Changes Log
 
+## 2026-10-07 — V5 realism milestone 1 committed: 114.3 W (P066)
+
+User decisions (2026-10-07): **V5 becomes the default scalar-sim and will
+ship**; realism upgrade wanted ("ideally without lowering power"; ~115 W is
+fine, maybe less — user decides later); recommend a compiler after measuring
+V5 on zig-v3 vs llvm-v3 vs msvc-v3 (one session, not yet run).
+
+- Milestone 1 (real DXIL op table, typed 4096-shader pixel/compute corpus,
+  exact folding, real lowering passes, list-based back end): P066 **114.3 W
+  vs P065 117.1 W (−2.8 ±0.5 W)**, jobs/s 1417 vs 1807. Golden
+  `0x3b44fe5e0fa74778` identical on Zig/LLVM/MSVC.
+- Root causes fixed: (1) `RunDce` erased unused constants → freed slots
+  still referenced by the constant DenseMap → `GetConst` and `NewNode`
+  handed out the same slot (validator: use-count mismatch after
+  `VectorizeLoads`, list break after scheduling). Constants are now never
+  erased; `ValidateIr` checks every map entry. (2) Generator dropped values
+  (pending overflow, if-arm results, i32/i1 leftovers): 78% dead. Now open
+  trees join (`MakeRoom`/`Combine`, `Reduce` per scope; phis need room made
+  *before* the opening branch — a combine between phis broke back-edge
+  patching, ASan heap overflow in `Encode`). (3) Branch conditions derived
+  from constant-only chains folded ~half of all branches (dead CF 86% of
+  dead nodes); `cd_` tracking + `PickVar` keep conditions variable, only
+  pipeline-state bits fold. Dead now 6.7% (diag) / 15.9% (`--perf-stats`).
+- New regression coverage: corpus self-test requires < 0.1% unused generated
+  values (`ShaderRef::unused`), validator const-map check; `[INFO]` stats
+  lines in `--self-test`.
+- Process lesson: run CLI modes via `ShaderStress.com` only (an `.exe`
+  self-test popped a GUI dialog on the user's desktop; AGENTS.md rule).
+  `SHADERSTRESS_EXTRA_DEFINES` builds land in `bin/<target>-tuning`.
+
+Next steps, in order:
+1. Remaining milestones: M2 ISel to GCN-like machine instrs + waitcnt +
+   format encoders; M3 loop analysis/LICM/unroll, structurizer / exec-mask
+   lowering, peephole select; M4 per-thread size-class allocator, DenseMaps,
+   strings (no locked shared caches: verification gap + timing-dependent).
+   Measure each milestone against `P066-realism1` (baseline + 2, 5 runs).
+2. Flip V5 to default: all builds run V5 for scalar-sim, add `-simv3`
+   comparison variant, rename UI strings, update run_tests simv5 checks,
+   AGENTS.md V3-pin text, wiki/changelog; then compiler comparison session.
+Pitfalls: bash heredocs turn `\n` in Python/C strings into real newlines
+(use the Edit tool or chr(10)); never pass several `Pick()` calls as
+arguments of one call (unspecified evaluation order → compiler-dependent
+corpus); anything that pushes generator values (e.g. `PickCond`) must run
+before `MakeRoom` for a phi group.
+
+
 ## 2026-10-07 — Realistic V5 shader-compiler model: 118.0 W (P060–P065)
 
 - User request: a workload that is both realistic DXBC/DXIL compile load and

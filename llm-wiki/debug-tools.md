@@ -151,7 +151,7 @@ upgrades; keep in sync with `LLVM_MINGW_DIR` / `ZIG_DIR` in `build.py`).
 | Crash report | `Crash_<date>_<time>_W<worker>/crash_info.txt` + `crash.dmp` in the working directory | Written by `CrashFilter` (`src/core/Platform.cpp`). Compact minidump (no full memory — RAM-test buffers would make it many GiB). Contains exception code, module offset, worker, logical CPU, workload, seed, complexity and a `--repro` line. |
 | Unix crash | stderr `[CRASH]` block | `CrashSignalHandler` (`src/core/Platform.cpp`): signal, worker, CPU, workload, seed, repro line. |
 | Run log | `ShaderStress.log` (working directory; `bin/test-work/` for test runs) | Topology, worker->CPU order, golden values, phase changes, per-minute health line, all CPU/RAM/I/O error details with suspect CPU. |
-| Sanitizer builds | `bin/<target>-ubsan`, `-asan`, `-tsan` | `python build.py --sanitize[=address|thread] <target>`; console subsystem on Windows so reports reach stderr; ASan copies its runtime DLLs next to the exe. |
+| Sanitizer builds | `bin/<target>-ubsan`, `-asan`, `-tsan` | `python build.py --sanitize[=address|thread] <target>`; ASan copies its runtime DLLs next to the exe. Run CLI modes (`--self-test`, `--repro`, ...) through the `ShaderStress.com` launcher in the same folder: `ShaderStress.exe` with CLI arguments shows a blocking "Use ShaderStress.com" message box on the user's desktop (seen 2026-10-07 with an `-asan` build). |
 
 ### Project-pinned LLVM tools
 
@@ -163,6 +163,10 @@ with `tools/discover-debug-tools.ps1`.
 ### Known-good commands
 
 ```text
+# Always run CLI modes via ShaderStress.com (ShaderStress.exe + arguments pops a GUI message box).
+# Symbolize an ASan frame without a debugger (module offset from the report):
+llvm-addr2line -f -C -i -e bin/x64-llvm-asan/ShaderStress.exe 0x14003a1ee
+
 # Find a UBSan/ASan report site (sanitizer runtimes also print to stderr):
 lldb -b -o "breakpoint set -r __ubsan_handle_.*" -o run -o "bt 12" -- bin/x64-llvm-ubsan/ShaderStress.exe --repro 7 20 --isa scalar-sim
 #   (set SHADERSTRESS_CLI_LAUNCHER=1 when starting ShaderStress.exe directly)

@@ -4,9 +4,9 @@
 |------|---------|---------------|------------|
 | [overview.md](overview.md) | Architecture, source map, modes, build, tests, invariants | 2026-10-06 | Low |
 | [verification.md](verification.md) | Error detection: paired jobs, golden values, RAM/IO/decompress checks, attribution | 2026-10-03 | Low |
-| [opt-audit.md](opt-audit.md) | Power/heat design: kernel structure, build flags, traffic-rate model, realistic V5 model, rejected approaches | 2026-10-07 | Medium (V3 realistic target unmet; V5 test build 118 W; tested settings do not prove exhaustion) |
+| [opt-audit.md](opt-audit.md) | Power/heat design: kernel structure, build flags, traffic-rate model, realistic V5 model, rejected approaches | 2026-10-07 | Medium (V5 realism milestone 1: 114.3 W, P066; default flip to V5 pending; tested settings do not prove exhaustion) |
 | [power-optimization.md](power-optimization.md) | Current targets, no architecture-specific tuning/builds, compiler-sim-only benchmark windows, session procedure and A/B rules | 2026-10-07 | Low |
-| [power-ledger.md](power-ledger.md) | Power experiments, provisional rankings, current targets and general tuning rechecks | 2026-10-07 | Medium (P060–P065: realistic V5 118 W in a test build; V3 adoption decision open) |
+| [power-ledger.md](power-ledger.md) | Power experiments, provisional rankings, current targets and general tuning rechecks | 2026-10-07 | Medium (P066: realistic V5 milestone 1 at 114.3 W; V5 to become default scalar-sim) |
 | [debug-tools.md](debug-tools.md) | Debuggers, symbols, crash reports, sanitizer builds, known-good commands | 2026-10-03 | Medium (toolchain paths) |
 | [debug-tools-security-audit.md](debug-tools-security-audit.md) | Security/binary-analysis tool inventory + project risk notes | 2026-10-03 | Medium |
 | [secret-leak-prevention.md](secret-leak-prevention.md) | Mandatory pre/post-commit secret checks, gitleaks commands, sensitive artifacts | 2026-10-03 | Low |

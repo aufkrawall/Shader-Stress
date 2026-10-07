@@ -135,11 +135,14 @@ struct SimV5Diag {
   uint64_t optIters = 0;                // middle-end loop iterations
   uint64_t lowered = 0, divIters = 0;   // lowering rewrites / divergence sweeps
   uint64_t uniform = 0;                 // uniform (scalar-encoded) ALU instructions
+  uint64_t slotsReused = 0, slotsExhausted = 0; // node allocator: free-list hits / budget misses
+  uint64_t mapRehashes = 0;             // DenseMap growth (constant uniquing)
   uint64_t livePeak = 0, liveInSum = 0; // largest / summed block live-in set (diag)
   uint64_t readErrors = 0;              // corpus decode failures (must stay 0)
   uint64_t irErrors = 0;                // ValidateIr findings (diagnostic runs; must stay 0)
   uint64_t arenaPeak = 0, arenaCap = 0, arenaOverflows = 0;
   uint64_t corpusShaders = 0;
+  uint64_t corpusValues = 0, corpusUnused = 0; // generated values / values without a use
   uint64_t phaseNs[kSimV5Phases] = {};  // wall time per phase
   bool aborted = false;
 };

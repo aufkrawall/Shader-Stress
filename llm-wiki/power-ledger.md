@@ -3,7 +3,9 @@
 Last verified: 2026-10-07. Stale-risk: medium — P058 128-bit far stream
 adopted (+3.0 W scalar); the accessed-bytes power model was corrected
 (P055); the pinned V3 realistic sim stays at ~110 W, the realistic V5 test
-build reaches 118.0 W (P065), adoption is the user's decision.
+build reaches 118.0 W (P065); its realism rewrite (milestone 1, P066)
+measures 114.3 W (−2.8 W, inside the user's ~115 W tolerance); V5 becomes the
+default scalar-sim (user decision, flip pending).
 
 Durable record of every power experiment (procedure and decision rules:
 [power-optimization.md](power-optimization.md)). Rules: one entry per experiment ID, one
@@ -188,6 +190,7 @@ heavier per-cycle current, matching the boost/backoff model).
 | P063 | workload | V5d: real 128-byte LLVM-style nodes (co-allocated uses, lists, parent, type, name) | scalar-sim | accepted (+4.5 ±1.1 W, 111.2 W) |
 | P064 | workload | NIR-style lowering pipeline: 24/48/64/96 filtered list passes + divergence + gather_info | scalar-sim | accepted 48 (+5.0 ±1.1 W, 117.6/118.7 W); 64/96 no conclusive gain |
 | P065 | workload | Final V5 (P064 + IR validator fixes) vs current V3 | scalar-sim | 118.0 W vs 110.0 W (+7.9 ±0.9 W) |
+| P066 | workload | V5 realism milestone 1 (real DXIL op table, typed 4096-shader corpus without dead code, exact folding, real lowering passes) vs P065 | scalar-sim | 114.3 W vs 117.1 W (−2.8 ±0.5 W), jobs/s 1417 vs 1807; kept pending user decision (~115 W accepted) |
 | P058 | kernel | Production form of P056 s4n4 for 128-bit kernels only (single base pointer, constant offsets: 116 vs 126 loop instructions), confirm against base and the measured candidate | scalar | accepted (+3.0 ±2.1 W scalar, 139.5 W; AVX2 kernel instruction-identical) |
 
 ## Current disposition after P055–P058 (2026-10-06)
@@ -312,6 +315,44 @@ CPU/steady-only rankings as proof of a global optimum.
 ## Entries
 
 Newest first. Copy the template.
+
+### P066 — V5 realism milestone 1 (114.3 W)
+
+- Date: 2026-10-07. Type: workload (user request: make V5 mirror real DXIL
+  driver compiles — real semantics, lowering, bigger code footprint, always
+  new shaders — "ideally not lowering power draw"; ~115 W acceptable, user
+  decides later). One change set = milestone 1 (cannot be split: the op
+  table, corpus format, folding and lowering depend on each other).
+- Change: X-macro op table with real DXIL opcodes (LLVM binop/cast/cmp
+  codes, dx.op numbers) + driver ops; typed corpus of 4096 unique shaders
+  (2048/1024/512/256/128/128 per class, pixel or compute) with LLVM value
+  numbering; exact IEEE folding, known bits / float facts, per-op rules;
+  real lowering passes (I/O, descriptors, UBO/SSBO addressing, fsub→fneg,
+  udiv magic numbers, fdiv→rcp, offsets, ffma fusion, UBO vectorizer, sink,
+  compare motion, source modifiers); slot reuse via a free list, DenseMap
+  constant uniquing. Fixed on the way: DCE freed unused constants still in
+  the uniquing map (slot handed out twice); generator dropped values (78% →
+  6.7% dead in the diag run, 15.9% in `--perf-stats`) and let constant-only
+  chains decide branches (now only pipeline-state bits fold branches).
+- Conditions: as P065 (5700X, 16 compute workers, benchmark mix, 8 + 15 s,
+  5 paired repeats, foreign CPU <= 10%).
+- Command: `python scripts/power_measure.py --mode benchmark --isas scalar-sim --label P066-realism1 --baseline P065-v5-final --exe audit/power-baselines/P065-v5-final/ShaderStress.com,audit/power-baselines/P066-realism1/ShaderStress.com`.
+
+  | Candidate | W (SD) | dW (CI95) | Eff MHz | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|
+  | P066-realism1 | 114.3 (0.4) | −2.8 ±0.5 | 4453 | 83.8 | 1417 | worse (less power) |
+  | P065-v5-final | 117.1 (0.3) | – | 4457 | 84.6 | 1807 | baseline |
+
+- `--perf-stats` time shares: read 9.1%, lower 16.7%, combine 24.9%,
+  dom+cse 10.5%, dce 14.9%, liveness 5.4%, schedule 7.5%, regalloc 6.5%,
+  emit 4.6%; dead 15.9%, folded 2.4%, cse 0.9%, spills 1.5%, lowered 10.3%.
+- Decision: kept as the V5 state (inside the user's ~115 W tolerance; the
+  user decides on adoption). Evidence:
+  `audit/power-measurements/P066-realism1-20261007-134300-25276-00`.
+- Follow-up ideas (unmeasured): the remaining milestones (ISel/waitcnt,
+  loop passes, allocator/hash maps/strings) add realistic footprint and may
+  recover power; the 48 generated filler passes of P064 were replaced by
+  fewer real ones (lower share 31% → 17%), a likely part of the loss.
 
 ### P060–P065 — Realistic V5 shader-compiler model (test build; 118.0 W)
 

@@ -39,7 +39,11 @@ Target version: 3.6.0 (`VERSION`).
   scheduling, register allocation and emission. Release builds keep V3. On a
   Ryzen 7 5700X it measured 118.0 W versus V3's 110.0 W (five paired 8 s +
   15 s benchmark windows, 16 threads); scores are not comparable with V3.
-  It replaces the earlier V4 test build (105.6 W).
+  It replaces the earlier V4 test build (105.6 W). A realism upgrade now
+  uses real DXIL opcodes and semantics, 4096 always-different pixel and
+  compute shaders without dead code, exact constant folding and real driver
+  lowering passes; measured 114.3 W versus 117.1 W before the upgrade (same
+  method), with about 22% fewer jobs per second (more work per shader).
 
 - **Redundant job verification.** Every compute job is executed twice, normally on two different cores, and the results are compared. On a mismatch the job is re-run to name the faulty CPU, and the log gives a `--repro` command.
 - **Per-CPU error attribution** in the GUI, CLI dashboard, final results and log ("Error CPUs: CPU 6 (core 3) x2").

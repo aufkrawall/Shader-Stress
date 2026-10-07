@@ -101,10 +101,28 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
   regalloc work is least power-dense. P065: **118.0 W vs V3 110.0 W**
   (+7.9 ±0.9 W); jobs/s ~0.4× V3 (7/4 values per unit, all shader classes
   fit benchmark jobs). Only `x64-zig-v3-simv5` (`-DSHADERSTRESS_REALISTIC_V5`)
-  runs it as `scalar-sim`; all builds self-test it (golden
+  runs it as `scalar-sim`; all builds self-test it (P065 golden
   `0x880cc0edc3288ba2`, identical on Zig/LLVM/MSVC/x64 baseline).
   Probe knobs (never in shipped builds): `SIMV5_PROBE_PHASE`/`_REPEAT`,
   `SIMV5_LOWER_PASSES`, `SIMV5_VALIDATE_TRACE`.
+  **Update 2026-10-07 (P066, realism milestone 1; supersedes the details
+  above where they differ):** real DXIL op table (`WorkloadRealisticV5Ops.h`),
+  typed corpus of 4096 unique pixel/compute shaders without dead code
+  (generator `WorkloadRealisticV5Corpus.cpp`, encoder + shared storage
+  `WorkloadRealisticV5Encode.cpp`, program types `WorkloadRealisticV5Gen.h`)
+  (generator joins open expression trees instead of dropping values; branch
+  conditions never derive from constants only, so only pipeline-state bits
+  fold branches), exact folding + known bits (`WorkloadRealisticV5Fold.cpp`),
+  real lowering passes instead of the 48 generated filler passes, node slot
+  reuse (free list) and DenseMap constant uniquing. Invariant: constants are
+  owned by the uniquing map and are never erased (DCE once freed them →
+  slot handed out twice; `ValidateIr` now checks the map). Golden
+  `0x3b44fe5e0fa74778` (Zig/LLVM/MSVC identical). 114.3 W (−2.8 W vs P065).
+  Self-test prints `[INFO] realistic V5 statistics` lines; the corpus test
+  requires < 0.1% unused generated values. Trace knobs:
+  `SIMV5_VALIDATE_TRACE` (decode/generator/validator findings, `unused:`
+  values), `SIMV5_DEAD_TRACE` (`deadop alg|dce|cf <op>` per erased node;
+  histogram with `sort | uniq -c`). Trace builds go to `bin/<target>-tuning`.
 - LZ decompression: real decoder (overlapping matches, wild copies) + per-64-byte DIV in
   the verification hash. Targets the failure class of game-asset decompression crashes
   on degraded/unstable cores.

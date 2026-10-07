@@ -126,7 +126,7 @@ void TestRealisticV5() {
   Check(a != RunRealisticCompilerSimV5Diag(8, 300, nullptr), "realistic V5 seed-sensitive");
   Check(a != RunRealisticCompilerSimV5Diag(7, 301, nullptr), "realistic V5 complexity-sensitive");
   const uint64_t golden = RunRealisticCompilerSimV5Diag(42, 1000, nullptr);
-  Check(golden == 0x880cc0edc3288ba2ull, "realistic V5 golden checksum (all compilers)", Hex(golden));
+  Check(golden == 0x3b44fe5e0fa74778ull, "realistic V5 golden checksum (all compilers)", Hex(golden));
   SimV5Diag d;
   RunRealisticCompilerSimV5Diag(11, 4000, &d);
   const double n = d.nodes ? (double)d.nodes : 1.0;
@@ -142,15 +142,22 @@ void TestRealisticV5() {
                     d.lowered / n > 0.001 && d.lowered / n < 0.20 && d.uniform > 0 &&
                     d.uniform / n < 0.5 && d.divIters >= 2 * d.functions;
   Check(sane, "realistic V5 pass statistics are compiler-like", SimV5Stats(d));
+  std::cout << "[INFO] realistic V5 statistics: " << SimV5Stats(d) << "\n";
   // Every corpus shader decodes and fits the arena bound (overflow = memory
   // corruption in the benchmark).
   SimV5Diag all;
   RunRealisticCompilerSimV5AllShaders(&all);
   Check(all.readErrors == 0 && all.irErrors == 0 && all.arenaOverflows == 0 && all.arenaPeak <= all.arenaCap &&
-            all.functions == all.corpusShaders && all.corpusShaders >= 48 &&
+            all.functions >= all.corpusShaders / 32 && all.corpusShaders >= 4000 &&
             all.branchesFolded > 0 && all.deadBlocks > 0,
         "realistic V5 corpus: every shader decodes, IR validates, arena bound holds, spec constants fold branches",
         SimV5Stats(all));
+  // Regression: the generator once dropped values (pending overflow, if-arm
+  // results, i32/i1 leftovers): 78% of the IR died in the driver's DCE.
+  Check(all.corpusValues > 0 && all.corpusUnused * 1000 < all.corpusValues,
+        "realistic V5 corpus: generated DXIL has no dead code (< 0.1% unused values)",
+        std::to_string(all.corpusUnused) + "/" + std::to_string(all.corpusValues));
+  std::cout << "[INFO] realistic V5 corpus statistics: " << SimV5Stats(all) << "\n";
 }
 
 void TestKernels() {

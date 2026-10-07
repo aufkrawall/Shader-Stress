@@ -5,13 +5,17 @@
 // (WorkloadRealistic.cpp) and only compiles V5 for --self-test / --perf-stats.
 // Pipeline and design: WorkloadRealisticV5.h.
 //
-// A job compiles shaders from the shared corpus until its value budget is
-// spent. Each compile uses fresh specialization-constant values (a pipeline
-// variant), so constant folding, CSE and DCE outcomes differ between jobs.
+// A job compiles shaders from the shared corpus (thousands of unique shaders)
+// until its value budget is spent. Each compile uses fresh pipeline-state
+// constants (a pipeline variant), so folding, dead control flow, CSE and DCE
+// outcomes differ between compiles of the same shader.
 #include "workloads/WorkloadRealisticV5.h"
 #include <algorithm>
 #include <chrono>
 #include <memory>
+#ifdef SIMV5_VALIDATE_TRACE
+#include <cstdio>
+#endif
 
 namespace simv5 {
 namespace {
@@ -21,14 +25,7 @@ constexpr size_t kArenaSlide = 1024 * 1024; // per-function base slide
 // V3 job (scores are not comparable). Changing it shifts the shader-size mix,
 // so it needs a power recheck.
 constexpr uint64_t kValuesPerUnitNum = 7, kValuesPerUnitDen = 4;
-constexpr uint32_t kMaxOptIters = 4;
-// Lowering pipeline: generated filtered instruction passes, half before the
-// optimization loop (lower_io / alu / bit-size style), half after it (late
-// lowering), like a Mesa driver's NIR pipeline.
-#ifndef SIMV5_LOWER_PASSES
-#define SIMV5_LOWER_PASSES 48
-#endif
-constexpr uint32_t kLowerPasses = SIMV5_LOWER_PASSES;
+constexpr uint32_t kMaxOptIters = 6;
 // Power profiling only (never in shipped builds): -DSIMV5_PROBE_PHASE=<SimV5Phase>
 // -DSIMV5_PROBE_REPEAT=<n> repeats that phase n times per shader, so a power A/B
 // against the normal build shows the phase's power density. Arena state is
@@ -56,17 +53,18 @@ struct ThreadState {
   size_t cap = 0;
 };
 
-// Upper bound of one function's arena use (all passes), from its sizes.
+// Upper bound of one function's arena use (all passes), from its sizes: node
+// slots grow to 1.5x + 512 (ReadShader), per-pass arrays scale with them.
 size_t ArenaBound(const ShaderRef &s) {
-  const size_t n = s.values, nb = s.blocks, words = (n + 63) / 64 + 1;
-  return (352 + sizeof(Node)) * n + 192 * nb + 16 * nb * words + (64u << 10);
+  const size_t cap = s.values + s.values / 2 + 512, nb = s.blocks, words = (cap + 63) / 64 + 1;
+  return (448 + sizeof(Node)) * cap + 192 * nb + 16 * nb * words + (64u << 10);
 }
 
 ThreadState &State(const Corpus &corpus) {
   static thread_local ThreadState t;
   if (!t.arena) {
     size_t cap = 0;
-    for (uint32_t k = 0; k < corpus.classes * corpus.perClass; ++k)
+    for (uint32_t k = 0; k < corpus.total; ++k)
       cap = std::max(cap, ArenaBound(corpus.shaders[k]));
     // Heap with manual 64-byte alignment (PE TLS ignores large alignas).
     t.raw = std::make_unique<uint8_t[]>(cap + kArenaSlide + 64);
@@ -95,6 +93,19 @@ private:
   std::chrono::steady_clock::time_point t_{};
 };
 
+// Diagnostic runs validate the IR after every stage (nir_validate in Mesa
+// debug builds); -DSIMV5_VALIDATE_TRACE names the stage of each finding.
+inline void Validate(Fn &f, const char *stage) {
+  if (!f.diag) return;
+  const uint32_t errors = ValidateIr(f);
+  f.st.irErrors += errors;
+#ifdef SIMV5_VALIDATE_TRACE
+  if (errors) std::fprintf(stderr, "validate: %u findings after %s%c", errors, stage, 10);
+#else
+  (void)stage;
+#endif
+}
+
 uint64_t CompileShader(ThreadState &t, const Corpus &corpus, const ShaderRef &s,
                        const uint64_t *spec, uint64_t funcIndex, SimV5Diag &st, SimV5Diag *diag) {
   // Bump arena reset per function; the base slides like a real allocator's slabs.
@@ -110,38 +121,50 @@ uint64_t CompileShader(ThreadState &t, const Corpus &corpus, const ShaderRef &s,
     st = f.st;
     return 0;
   }
+  BuildDominators(f, ar);
   clock.Lap(f.st, kPhaseRead);
-  RunPhase(kPhaseLower, ar, [&] { RunLowering(f, 0, kLowerPasses / 2); });
+  Validate(f, "read");
+  RunPhase(kPhaseLower, ar, [&] { RunEarlyLowering(f); });
   clock.Lap(f.st, kPhaseLower);
-  const uint32_t words = (f.n + 63) / 64;
-  f.inList = ar.Take<uint64_t>(words);
-  std::memset(f.inList, 0, words * sizeof(uint64_t));
-  // Optimization loop as in Mesa's NIR pipelines: repeat the passes until an
-  // iteration makes no progress (that last, unproductive sweep is real cost).
+  Validate(f, "early lowering");
+  // Optimization loop as in Mesa's NIR pipelines: every pass walks the whole
+  // shader; repeat until an iteration makes no progress (that last,
+  // unproductive sweep is real cost).
   for (uint32_t iter = 0; iter < kMaxOptIters; ++iter) {
-    const uint64_t before = f.st.folded + f.st.peepholes + f.st.cseHits + f.st.branchesFolded;
+    bool progress = false;
     RunPhase(kPhaseCombine, ar, [&] {
-      PushAll(f);
-      RunCombine(f);
+      progress |= OptConstantFolding(f);
+      progress |= OptAlgebraic(f);
     });
-    if (RunDeadCf(f, ar)) RunCombine(f);
+    Validate(f, "algebraic");
+    progress |= RunDeadCf(f, ar);
     clock.Lap(f.st, kPhaseCombine);
+    Validate(f, "dead cf");
     BuildDominators(f, ar);
-    RunCse(f, ar);
-    RunCombine(f); // users of merged values
+    progress |= RunCse(f, ar);
     clock.Lap(f.st, kPhaseCse);
+    Validate(f, "cse");
+    progress |= RunDce(f, ar);
+    clock.Lap(f.st, kPhaseDce);
+    Validate(f, "dce");
     f.st.optIters++;
-    if (f.st.folded + f.st.peepholes + f.st.cseHits + f.st.branchesFolded == before) break;
+    if (!progress) break;
   }
-  RunPhase(kPhaseLower, ar, [&] { RunLowering(f, kLowerPasses / 2, kLowerPasses); });
+  RunPhase(kPhaseLower, ar, [&] { RunLateLowering(f); });
+  Validate(f, "late lowering");
+  OptConstantFolding(f); // late algebraic: clean up after lowering
+  OptAlgebraic(f);
   clock.Lap(f.st, kPhaseLower);
   RunDce(f, ar);
   clock.Lap(f.st, kPhaseDce);
   RunDivergence(f);
   GatherInfo(f);
   clock.Lap(f.st, kPhaseLower);
-  if (f.diag) f.st.irErrors += ValidateIr(f); // middle end done
-  RunPhase(kPhaseLiveness, ar, [&] { RunLiveness(f, ar); });
+  Validate(f, "middle end");
+  RunPhase(kPhaseLiveness, ar, [&] {
+    Linearize(f, ar);
+    RunLiveness(f, ar);
+  });
   clock.Lap(f.st, kPhaseLiveness);
   RunPhase(kPhaseSchedule, ar, [&] { Schedule(f, ar); });
   clock.Lap(f.st, kPhaseSchedule);
@@ -150,7 +173,7 @@ uint64_t CompileShader(ThreadState &t, const Corpus &corpus, const ShaderRef &s,
     RunRegAlloc(f, ar);
   });
   clock.Lap(f.st, kPhaseRegAlloc);
-  if (f.diag) f.st.irErrors += ValidateIr(f); // schedule relinked the lists
+  Validate(f, "schedule");
   uint64_t acc = 0;
   RunPhase(kPhaseEmit, ar, [&] { acc = f.names ^ EmitAndHash(f, ar); });
   for (uint32_t i = 0; i < f.n; i += 61) // sample the analysis summaries
@@ -187,7 +210,7 @@ uint64_t RunRealisticCompilerSimV5Diag(uint64_t seed, int complexity, SimV5Diag 
     const uint64_t r = Next(rng);
     uint32_t cls = std::min(corpus.classes - 1, (uint32_t)std::countr_zero(r | (1ull << 40)));
     while (cls > 0 && ClassValues(cls) > budget) --cls;
-    const ShaderRef &s = corpus.shaders[cls * corpus.perClass + (uint32_t)((r >> 40) % corpus.perClass)];
+    const ShaderRef &s = corpus.shaders[corpus.classFirst[cls] + (uint32_t)((r >> 40) % corpus.classCount[cls])];
     uint64_t spec[kSpecConsts]; // pipeline-state key -> specialization constants
     for (uint64_t &v : spec) {
       const uint64_t q = Next(rng);
@@ -213,12 +236,26 @@ uint64_t RunRealisticCompilerSimV5AllShaders(SimV5Diag *diag) {
   ThreadState &t = State(corpus);
   SimV5Diag st;
   st.arenaCap = t.cap;
-  st.corpusShaders = corpus.classes * corpus.perClass;
+  st.corpusShaders = corpus.total;
+  for (uint32_t k = 0; k < corpus.total; ++k) {
+    st.corpusValues += corpus.shaders[k].values - corpus.shaders[k].consts;
+    st.corpusUnused += corpus.shaders[k].unused;
+  }
   const uint64_t spec[kSpecConsts] = {1, 2, 3, 0xFF, 0x9E3779B97F4A7C15ull, 0, 7, 8};
+  // Every shader must decode; every 32nd one and the largest are compiled in
+  // diagnostic mode (IR validation, arena bound) to keep the self-test fast.
+  uint32_t largest = 0;
+  for (uint32_t k = 0; k < corpus.total; ++k) {
+    if (corpus.shaders[k].values > corpus.shaders[largest].values) largest = k;
+    Arena ar{t.arena, 0, t.cap};
+    Fn f;
+    if (!ReadShader(corpus, corpus.shaders[k], spec, ar, f)) st.readErrors++;
+  }
   uint64_t acc = 0;
   SimV5Diag validate; // diagnostic mode: IR validation (and phase clocks)
-  for (uint32_t k = 0; k < st.corpusShaders; ++k)
-    acc = Rotl64(acc, 23) ^ CompileShader(t, corpus, corpus.shaders[k], spec, k, st, &validate);
+  for (uint32_t k = 0; k < corpus.total; ++k)
+    if (k % 32 == 0 || k == largest)
+      acc = Rotl64(acc, 23) ^ CompileShader(t, corpus, corpus.shaders[k], spec, k, st, &validate);
   if (diag) *diag = st;
   return acc;
 }

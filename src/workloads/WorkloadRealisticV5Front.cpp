@@ -3,6 +3,12 @@
 // reader feeding a per-record-code IR builder) and SSA/CFG construction.
 #include "workloads/WorkloadRealisticV5.h"
 #include "workloads/WorkloadRealisticV5Format.h"
+#ifdef SIMV5_VALIDATE_TRACE // -DSIMV5_VALIDATE_TRACE: report decode failures
+#include <cstdio>
+#define SIMV5_TRACE(...) std::fprintf(stderr, __VA_ARGS__)
+#else
+#define SIMV5_TRACE(...) ((void)0)
+#endif
 
 namespace simv5 {
 namespace {
@@ -141,15 +147,26 @@ struct NameEntry {
   uint32_t pos, len;
 };
 
+// Pipeline-state constant of the given type from the driver's state key.
+uint64_t SpecValue(uint64_t v, uint32_t ty) {
+  if (ty != kF32) return (uint32_t)v;
+  const uint32_t sel = (uint32_t)(v >> 9) & 3;
+  if (sel == 0) return F32Bits(1.0f);
+  if (sel == 1) return F32Bits(0.0f);
+  return F32Bits((float)((int32_t)(v & 0x1FF) - 256) * (1.0f / 128.0f));
+}
+
 class Builder {
 public:
-  Builder(Fn &f, const uint64_t *spec, Arena &ar) : f_(f), spec_(spec), ar_(ar) {}
+  Builder(Fn &f, const uint64_t *spec, Arena &ar, uint32_t *valueMap)
+      : f_(f), spec_(spec), ar_(ar), map_(valueMap) {}
   bool Run(Cursor &c);
 
 private:
   bool FunctionBlock(Cursor &c, unsigned width);
   bool ConstantsBlock(Cursor &c, unsigned width);
   bool SymtabBlock(Cursor &c, unsigned width);
+  bool Instruction(uint32_t code, uint32_t nvals);
   bool EnterBlock(Cursor &c, uint32_t &id, unsigned &width) {
     id = (uint32_t)c.ReadVBR(8);
     width = (unsigned)c.ReadVBR(4);
@@ -158,10 +175,13 @@ private:
     return width >= 2 && width <= 8;
   }
   // Constants are not instructions: block 0, outside every instruction list.
-  Node &NewInst(uint32_t op, uint32_t type) {
-    Node &n = f_.nodes[id_];
+  // Non-void values get the next value id (LLVM numbering); the node index
+  // runs over all instructions.
+  Node *NewNode(uint32_t op, uint32_t type) {
+    if (node_ >= f_.n) return nullptr;
+    Node &n = f_.nodes[node_];
     const bool inst = !(op & kConstFlag);
-    const uint32_t prev = inst && id_ > f_.blocks[cur_].first ? id_ - 1 : kNone;
+    const uint32_t prev = inst && node_ > f_.blocks[cur_].first ? node_ - 1 : kNone;
     n.op = op;
     n.a = n.b = n.c = n.firstUse = kNone;
     n.reg = kNoReg;
@@ -172,27 +192,32 @@ private:
     n.prev = prev;
     n.next = kNone;
     n.name = n.liveIdx = n.pos = kNone;
-    if (prev != kNone) f_.nodes[prev].next = id_;
-    return n;
+    n.imm = 0;
+    if (prev != kNone) f_.nodes[prev].next = node_;
+    if (type != kVoid) map_[vid_++] = node_;
+    node_++;
+    return &n;
   }
-  uint32_t TypeOf(uint32_t v) const { return f_.nodes[v].type; }
-  bool Operand(uint64_t rel, uint32_t &out) const {
-    if (rel == 0 || rel > id_) return false;
-    out = id_ - (uint32_t)rel;
+  uint32_t TypeOf(uint32_t node) const { return f_.nodes[node].type; }
+  // Relative value id -> node index.
+  bool Value(uint64_t rel, uint32_t &out) const {
+    if (rel == 0 || rel > vid_) return false;
+    out = map_[vid_ - (uint32_t)rel];
     return true;
   }
   bool EndBlock() {
-    f_.blocks[cur_].last = id_;
-    f_.blocks[cur_].head = f_.blocks[cur_].first < id_ ? f_.blocks[cur_].first : kNone;
+    f_.blocks[cur_].last = node_;
+    f_.blocks[cur_].head = f_.blocks[cur_].first < node_ ? f_.blocks[cur_].first : kNone;
     if (++cur_ > f_.nblocks) return false;
-    if (cur_ < f_.nblocks) f_.blocks[cur_].first = id_;
+    if (cur_ < f_.nblocks) f_.blocks[cur_].first = node_;
     return true;
   }
 
   Fn &f_;
   const uint64_t *spec_;
   Arena &ar_;
-  uint32_t id_ = 0, cur_ = 0, fixups_ = 0, cstType_ = 0;
+  uint32_t *map_; // value id -> node
+  uint32_t node_ = 0, vid_ = 0, cur_ = 0, fixups_ = 0, cstType_ = kVoid;
   uint64_t vals_[kMaxVals];
 };
 
@@ -202,14 +227,17 @@ bool Builder::Run(Cursor &c) {
   unsigned width;
   if (!EnterBlock(c, id, width) || id != fmt::kFunctionBlock) return false;
   if (!FunctionBlock(c, width) || !c.ok_) return false;
-  // Forward phi operands (loop back edges) are linked once their node exists.
+  // Forward phi operands (loop back edges) are resolved once their value exists:
+  // the phi's b field holds the value id until then.
   for (uint32_t k = 0; k < fixups_; ++k) {
     const uint32_t i = f_.stack[k];
-    const Node &n = f_.nodes[i];
-    if (n.b >= id_) return false;
+    Node &n = f_.nodes[i];
+    if (n.b >= vid_) return false;
+    n.b = map_[n.b];
+    if (TypeOf(n.b) != n.type) return false;
     AddUse(f_, i, 1, n.b);
   }
-  return cur_ == f_.nblocks && id_ == f_.n;
+  return cur_ == f_.nblocks && node_ == f_.n;
 }
 
 bool Builder::ConstantsBlock(Cursor &c, unsigned width) {
@@ -227,24 +255,22 @@ bool Builder::ConstantsBlock(Cursor &c, unsigned width) {
     }
     if (abbrev == fmt::kEnterSubblock) return false;
     const uint32_t code = ReadRecord(c, abbrev, t, vals_, nvals);
-    if (!c.ok_) return false;
+    if (!c.ok_ || nvals != 1) return false;
     if (code == fmt::kCstSetType) {
-      if (nvals != 1) return false;
+      if (vals_[0] >= kTyCount) return false;
       cstType_ = (uint32_t)vals_[0];
       continue;
     }
-    if (id_ >= f_.n || nvals != 1 || (code != fmt::kCstInteger && code != fmt::kCstSpec)) return false;
     uint64_t v;
-    if (code == fmt::kCstSpec) {
-      if (vals_[0] >= kSpecConsts) return false;
-      v = spec_[vals_[0]]; // pipeline-state specialization
-    } else {
-      v = (uint64_t)DecodeSigned(vals_[0]);
-    }
-    Node &n = NewInst(kConstFlag | (uint32_t)(Mix(v) & 0xFF), cstType_);
-    n.val = v;
-    ++id_;
-    f_.nconst = id_;
+    if (code == fmt::kCstSpec && vals_[0] < kSpecConsts) v = SpecValue(spec_[vals_[0]], cstType_);
+    else if (code == fmt::kCstInteger && (cstType_ == kI32 || cstType_ == kI1)) v = (uint32_t)DecodeSigned(vals_[0]);
+    else if (code == fmt::kCstFloat && cstType_ == kF32) v = (uint32_t)vals_[0];
+    else return false;
+    Node *n = NewNode(kConstFlag | kNotAnOp, cstType_);
+    if (!n) return false;
+    n->val = v;
+    MapConst(f_, node_ - 1); // LLVM uniques constants (first definition wins)
+    f_.nconst = node_;
   }
 }
 
@@ -270,7 +296,7 @@ bool Builder::SymtabBlock(Cursor &c, unsigned width) {
     }
     if (abbrev == fmt::kEnterSubblock) return false;
     const uint32_t code = ReadRecord(c, abbrev, t, vals_, nvals);
-    if (!c.ok_ || code != fmt::kVstEntry || nvals < 2 || vals_[0] >= f_.n) return false;
+    if (!c.ok_ || code != fmt::kVstEntry || nvals < 2 || vals_[0] >= vid_) return false;
     char name[kMaxVals];
     const uint32_t len = nvals - 1;
     uint64_t h = 0xcbf29ce484222325ull;
@@ -294,7 +320,7 @@ bool Builder::SymtabBlock(Cursor &c, unsigned width) {
         break;
       }
     }
-    f_.nodes[vals_[0]].name = (uint32_t)h & (size - 1); // home slot of the interned name
+    f_.nodes[map_[vals_[0]]].name = (uint32_t)h & (size - 1); // home slot of the interned name
     f_.names = Rotl64(f_.names ^ h, 13) + vals_[0];
   }
 }
@@ -318,7 +344,7 @@ bool Builder::FunctionBlock(Cursor &c, unsigned width) {
       if (!EnterBlock(c, id, w)) return false;
       if (id == fmt::kConstantsBlock) {
         if (!ConstantsBlock(c, w)) return false;
-        if (f_.nblocks) f_.blocks[0].first = id_;
+        if (f_.nblocks) f_.blocks[0].first = node_;
       } else if (id == fmt::kValueSymtabBlock) {
         if (!SymtabBlock(c, w)) return false;
       } else {
@@ -327,115 +353,148 @@ bool Builder::FunctionBlock(Cursor &c, unsigned width) {
       continue;
     }
     const uint32_t code = ReadRecord(c, abbrev, t, vals_, nvals);
-    if (!c.ok_) return false;
-    uint32_t a = kNone, b = kNone, cc = kNone, op = 0, type = 0;
-    switch (code) {
-    case fmt::kDeclareBlocks:
-      if (nvals != 1 || vals_[0] != f_.nblocks) return false;
-      continue;
-    case fmt::kInstCast: // [opval, destty, opcode]
-      if (nvals != 3 || !Operand(vals_[0], a)) return false;
-      op = (uint32_t)vals_[2];
-      type = (uint32_t)vals_[1];
-      break;
-    case fmt::kInstBinop: // [lhs, rhs, opcode]
-      if (nvals != 3 || !Operand(vals_[0], a) || !Operand(vals_[1], b)) return false;
-      op = (uint32_t)vals_[2];
-      type = TypeOf(a);
-      break;
-    case fmt::kInstVSelect: // [true, false, cond, opcode]
-      if (nvals != 4 || !Operand(vals_[0], a) || !Operand(vals_[1], b) || !Operand(vals_[2], cc))
-        return false;
-      op = (uint32_t)vals_[3];
-      type = TypeOf(a);
-      break;
-    case fmt::kInstStore: // [ptr, val, align, opcode]
-      if (nvals != 4 || !Operand(vals_[0], a) || !Operand(vals_[1], b)) return false;
-      op = (uint32_t)vals_[3];
-      break;
-    case fmt::kInstCall: // [attrs, cc, fnty, callee, dx.op opcode, args...]
-      if (nvals < 6 || !(vals_[1] & fmt::kCallExplicitType) || vals_[2] != fmt::kTypeDxOp ||
-          vals_[3] != id_ + fmt::kDxOpFunction)
-        return false;
-      op = (uint32_t)vals_[4];
-      if (op >= kOps || nvals != 5 + Arity(op) || !Operand(vals_[5], a) ||
-          (nvals == 7 && !Operand(vals_[6], b)))
-        return false;
-      type = IsStoreOp(op) ? 0 : TypeOf(a);
-      break;
-    case fmt::kInstPhi: { // [ty, val0 (signed rel), bb0, val1, bb1]
-      if (nvals != 5 || id_ >= f_.n || vals_[2] >= f_.nblocks || vals_[4] >= f_.nblocks) return false;
-      const int64_t r0 = DecodeSigned(vals_[1]), r1 = DecodeSigned(vals_[3]);
-      if (r0 <= 0 || r0 > (int64_t)id_ || (int64_t)id_ - r1 < 0 || (int64_t)id_ - r1 >= (int64_t)f_.n)
-        return false;
-      Node &n = NewInst(kPhiFlag, (uint32_t)vals_[0]);
-      n.a = id_ - (uint32_t)r0;
-      n.b = (uint32_t)((int64_t)id_ - r1);
-      f_.phiPred[id_] = (uint32_t)vals_[2];
-      AddUse(f_, id_, 0, n.a);
-      if (n.b < id_) AddUse(f_, id_, 1, n.b);
-      else f_.stack[fixups_++] = id_;
-      f_.st.phis++;
-      ++id_;
-      continue;
-    }
-    case fmt::kInstLoad: { // [slot, ty, align, volatile]
-      if (nvals != 4 || id_ >= f_.n) return false;
-      Node &n = NewInst(kInputFlag | (uint32_t)(vals_[0] & 0xFF), (uint32_t)vals_[1]);
-      n.val = Mix(vals_[0] + 1);
-      ++id_;
-      continue;
-    }
-    case fmt::kInstBr: { // [bb] or [bbtrue, bbfalse, cond]
-      if (cur_ >= f_.nblocks || (nvals != 1 && nvals != 3) || vals_[0] >= f_.nblocks) return false;
-      Block &blk = f_.blocks[cur_];
-      blk.succ[0] = (uint32_t)vals_[0];
-      if (nvals == 3) {
-        if (vals_[1] >= f_.nblocks || !Operand(vals_[2], blk.cond)) return false;
-        blk.succ[1] = (uint32_t)vals_[1];
-        f_.nodes[blk.cond].op |= kCondFlag;
-      }
-      if (!EndBlock()) return false;
-      continue;
-    }
-    case fmt::kInstRet:
-      if (nvals != 1 || cur_ >= f_.nblocks || !Operand(vals_[0], f_.ret)) return false;
-      f_.nodes[f_.ret].op |= kCondFlag;
-      if (!EndBlock()) return false;
-      continue;
-    default:
+    if (!c.ok_ || !Instruction(code, nvals)) {
+      SIMV5_TRACE("decode: record %u (%u operands: %llu %llu %llu %llu %llu) failed at value %u node %u\n", code,
+                  nvals, (unsigned long long)vals_[0], (unsigned long long)vals_[1], (unsigned long long)vals_[2],
+                  (unsigned long long)vals_[3], (unsigned long long)vals_[4], vid_, node_);
       return false;
     }
-    if (id_ >= f_.n || op >= kOps) return false;
-    Node &n = NewInst(op, type);
-    n.a = a;
-    n.b = b;
-    n.c = cc;
-    const uint32_t ar = Arity(op);
-    if ((ar >= 2) != (b != kNone) || (ar == 3) != (cc != kNone)) return false;
-    AddUse(f_, id_, 0, a);
-    if (b != kNone) AddUse(f_, id_, 1, b);
-    if (cc != kNone) AddUse(f_, id_, 2, cc);
-    ++id_;
   }
+}
+
+// One function-block record: decodes it into an instruction node.
+bool Builder::Instruction(uint32_t code, uint32_t nvals) {
+  uint32_t v[3] = {kNone, kNone, kNone}, op = kNoOp, type = kVoid, imm = 0;
+  switch (code) {
+  case fmt::kDeclareBlocks:
+    return nvals == 1 && vals_[0] == f_.nblocks;
+  case fmt::kInstBinop: // [lhs, rhs, opcode]
+    if (nvals < 3 || !Value(vals_[0], v[0]) || !Value(vals_[1], v[1]) || vals_[2] >= 16) return false;
+    type = TypeOf(v[0]);
+    op = (IsFloatTy(type) ? kCodeMaps.floatBinop : kCodeMaps.intBinop)[vals_[2]];
+    if (TypeOf(v[1]) != type) return false;
+    break;
+  case fmt::kInstCast: // [opval, destty, castopc]
+    if (nvals != 3 || !Value(vals_[0], v[0]) || vals_[1] >= kTyCount || vals_[2] >= 16) return false;
+    op = kCodeMaps.cast[vals_[2]];
+    type = (uint32_t)vals_[1];
+    break;
+  case fmt::kInstCmp2: // [lhs, rhs, predicate]
+    if (nvals != 3 || !Value(vals_[0], v[0]) || !Value(vals_[1], v[1]) || vals_[2] >= 64) return false;
+    op = kCodeMaps.cmp[vals_[2]];
+    type = kI1;
+    if (TypeOf(v[1]) != TypeOf(v[0])) {
+      SIMV5_TRACE("decode: compare operand types %u (node %u op %08x) vs %u (node %u op %08x)\n", TypeOf(v[0]), v[0],
+                  f_.nodes[v[0]].op, TypeOf(v[1]), v[1], f_.nodes[v[1]].op);
+      return false;
+    }
+    break;
+  case fmt::kInstVSelect: // [true, false, cond]
+    if (nvals != 3 || !Value(vals_[0], v[0]) || !Value(vals_[1], v[1]) || !Value(vals_[2], v[2]))
+      return false;
+    op = kSelect;
+    type = TypeOf(v[0]);
+    if (TypeOf(v[1]) != type || TypeOf(v[2]) != kI1) return false;
+    break;
+  case fmt::kInstExtractVal: { // [aggregate, index]
+    if (nvals != 2 || !Value(vals_[0], v[0]) || vals_[1] > 3) return false;
+    const uint32_t agg = TypeOf(v[0]);
+    if (!IsResRet(agg)) return false;
+    op = kExtract;
+    type = agg == kResRetF32 ? kF32 : kI32;
+    imm = (uint32_t)vals_[1];
+    break;
+  }
+  case fmt::kInstCall: { // [attrs, cc, fnty, callee, dx.op opcode, args...]
+    uint32_t opc;
+    if (nvals < 6 || !(vals_[1] & fmt::kCallExplicitType) || vals_[2] != fmt::kTypeDxOpFn ||
+        vals_[3] < vid_ + fmt::kDxOpCallee || vals_[3] - vid_ - fmt::kDxOpCallee >= kTyCount ||
+        !Value(vals_[4], opc))
+      return false;
+    const Node &oc = f_.nodes[opc];
+    if (!IsConst(oc) || oc.type != kI32 || oc.val >= 128) return false;
+    op = kCodeMaps.dxop[oc.val]; // the opcode is an i32 constant operand, as in DXIL
+    if (op == kNoOp || nvals != 5 + Arity(op)) return false;
+    for (uint32_t k = 0; k < Arity(op); ++k)
+      if (!Value(vals_[5 + k], v[k])) return false;
+    const uint32_t overload = (uint32_t)(vals_[3] - vid_ - fmt::kDxOpCallee);
+    const uint32_t ty = Info(op).ty;
+    type = ty == kTySame ? TypeOf(v[0]) : ty == kTyExplicit ? overload : ty;
+    break;
+  }
+  case fmt::kInstPhi: { // [ty, val0 (signed rel), bb0, val1, bb1]
+    if (nvals != 5 || vals_[0] >= kTyCount || vals_[2] >= f_.nblocks || vals_[4] >= f_.nblocks) return false;
+    const int64_t r0 = DecodeSigned(vals_[1]), r1 = DecodeSigned(vals_[3]);
+    const int64_t self = vid_, fwd = self - r1; // relative to this phi's own value id
+    if (r0 <= 0 || r0 > self || fwd < 0) return false;
+    const uint32_t node = node_;
+    Node *n = NewNode(kPhiFlag | kNotAnOp, (uint32_t)vals_[0]);
+    if (!n) return false;
+    n->a = map_[self - r0];
+    if (TypeOf(n->a) != n->type) return false;
+    f_.phiPred[node] = (uint32_t)vals_[2];
+    AddUse(f_, node, 0, n->a);
+    if (fwd < self) {
+      n->b = map_[fwd];
+      if (TypeOf(n->b) != n->type) return false;
+      AddUse(f_, node, 1, n->b);
+    } else {
+      n->b = (uint32_t)fwd; // value id, resolved in Run()
+      f_.stack[fixups_++] = node;
+    }
+    f_.st.phis++;
+    return true;
+  }
+  case fmt::kInstBr: { // [bb] or [bbtrue, bbfalse, cond]
+    if (cur_ >= f_.nblocks || (nvals != 1 && nvals != 3) || vals_[0] >= f_.nblocks) return false;
+    Block &blk = f_.blocks[cur_];
+    blk.succ[0] = (uint32_t)vals_[0];
+    if (nvals == 3) {
+      if (vals_[1] >= f_.nblocks || !Value(vals_[2], blk.cond) || TypeOf(blk.cond) != kI1) return false;
+      blk.succ[1] = (uint32_t)vals_[1];
+      f_.nodes[blk.cond].op |= kCondFlag;
+    }
+    return EndBlock();
+  }
+  case fmt::kInstRet: // ret void
+    return nvals == 0 && cur_ < f_.nblocks && EndBlock();
+  default:
+    return false;
+  }
+  if (op == kNoOp) return false;
+  const uint32_t node = node_;
+  Node *n = NewNode(op, type);
+  if (!n) return false;
+  n->imm = imm;
+  for (uint32_t k = 0; k < Arity(op); ++k) {
+    if (v[k] == kNone) return false;
+    OperandRef(*n, k) = v[k];
+    AddUse(f_, node, k, v[k]);
+  }
+  return true;
 }
 } // namespace
 
 bool ReadShader(const Corpus &corpus, const ShaderRef &s, const uint64_t *spec, Arena &ar, Fn &f) {
   f.n = s.values;
+  f.cap = s.values + s.values / 2 + 512; // room for lowering / unrolling
   f.nblocks = s.blocks;
   f.nconst = 0; // a fresh function (also when a probe re-reads)
   f.ret = kNone;
   f.names = 0;
-  f.nodes = ar.Take<Node>(f.n);
-  f.phiPred = ar.Take<uint32_t>(f.n);
-  f.stack = ar.Take<uint32_t>(f.n);
+  f.freeList = kNone;
+  f.ar = &ar;
+  f.consts = DenseMap{};
+  f.nodes = ar.Take<Node>(f.cap);
+  f.phiPred = ar.Take<uint32_t>(f.cap);
+  f.stack = ar.Take<uint32_t>(f.cap);
   f.blocks = ar.Take<Block>(f.nblocks);
-  if (!f.nodes || !f.phiPred || !f.stack || !f.blocks) return false;
+  uint32_t *valueMap = ar.Take<uint32_t>(f.n);
+  if (!f.nodes || !f.phiPred || !f.stack || !f.blocks || !valueMap) return false;
   for (uint32_t b = 0; b < f.nblocks; ++b)
     f.blocks[b] = {0, 0, {kNone, kNone}, kNone, b ? kNone : 0, kNone, kNone, kNone, 0, 0, kNone};
   Cursor c(corpus.words, s.wordOffset);
-  Builder builder(f, spec, ar);
+  Builder builder(f, spec, ar, valueMap);
   if (!builder.Run(c)) return false;
   f.st.bitsRead += (uint64_t)(c.WordPos() - s.wordOffset) * 32;
   f.preds = ar.Take<uint32_t>((size_t)f.nblocks * kMaxSucc);
