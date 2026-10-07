@@ -174,6 +174,20 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
   (`RunRealisticCompilerSimV5SchedTest`), monotonic-buffer vectors, stats
   (`heap < minsts/4` guards against scattered instructions); golden
   `0xe595f2d2a7ac91f4` (Zig/LLVM/MSVC, x64 and v3).
+  **M6 code footprint (P072, power pending the user's manual test):**
+  `..Replica.h`: the hot per-opcode / per-node workers are templates on a
+  replica index R (kReplicas = 8, `-DSIMV5_CODE_REPLICAS=1` compact):
+  `Visit<Op,R>` (+ `ComputeFactsOf<R>`), `Encode<Op,R>`,
+  `Isel::SelectNodeIn<R>`, `Optimizer::Forward<R>`, `Waitcnt::BlockIn<R>`;
+  dispatch tables pick R from the block index (`ReplicaOf`). Same logic,
+  different addresses: golden unchanged. `SIMV5_REPLICA_TAG(R)` (empty asm
+  with R in a register) keeps identical-code folding from merging copies;
+  MSVC `/opt:icf` may still fold its build. Rejected: `flatten` on per-block
+  lambdas (clang does not inline the lambdas' cross-TU callees: replicas
+  were 0.1-0.6 KiB). Effect: V5 text 235 -> 722 KiB (Linux x64 symbols),
+  exe +0.59 MB, `--perf-stats` +7-9% cycles/complexity on the 5700X
+  (front-end misses, as in real compilers). Larger footprints: raise
+  kReplicas (16 ~ 1.3 MB).
 - LZ decompression: real decoder (overlapping matches, wild copies) + per-64-byte DIV in
   the verification hash. Targets the failure class of game-asset decompression crashes
   on degraded/unstable cores.

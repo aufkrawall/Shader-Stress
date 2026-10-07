@@ -66,8 +66,14 @@ Target version: 3.6.0 (`VERSION`).
   blocks), and a scheduler moves memory loads earlier so their latency
   overlaps other work, without letting register use cut the number of
   waves the GPU could run (about 17% fewer memory waits in the generated
-  code). Scalar (Realistic) results and scores change again; power not yet
-  measured.
+  code). Scalar (Realistic) results and scores change again; measured at
+  about 110 W by the user (manual test, not a paired comparison). The hot
+  code (per-opcode handlers, encoders, instruction selection) now also runs
+  from eight copies, giving the workload the large code footprint of a real
+  driver compiler (722 KiB instead of 235 KiB), so CPUs with bigger
+  instruction caches and stronger front ends are rewarded as in real shader
+  compiles; results are unchanged, scores drop by roughly 7-9% on a Ryzen 7
+  5700X (single-thread `--perf-stats`). Power not yet measured.
 
 - **Redundant job verification.** Every compute job is executed twice, normally on two different cores, and the results are compared. On a mismatch the job is re-run to name the faulty CPU, and the log gives a `--repro` command.
 - **Per-CPU error attribution** in the GUI, CLI dashboard, final results and log ("Error CPUs: CPU 6 (core 3) x2").

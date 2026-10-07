@@ -11,6 +11,7 @@
 // outcomes differ between compiles of the same shader.
 #include "workloads/WorkloadRealisticV5Alloc.h"
 #include "workloads/WorkloadRealisticV5Mach.h"
+#include "workloads/WorkloadRealisticV5Replica.h"
 #include <algorithm>
 #include <chrono>
 #include <memory>
@@ -316,6 +317,13 @@ uint64_t RunRealisticCompilerSimV5Diag(uint64_t seed, int complexity, SimV5Diag 
   volatile uint64_t sink = acc;
   (void)sink;
   return acc;
+}
+
+uint32_t RealisticV5CodeReplicas() {
+  using namespace simv5;
+  uint64_t seen = 0; // the first 64 block indices must reach every replica
+  for (uint32_t b = 0; b < 64; ++b) seen |= 1ull << ReplicaOf(b);
+  return seen == (kReplicas == 64 ? ~0ull : (1ull << kReplicas) - 1) ? kReplicas : 0;
 }
 
 uint64_t RunRealisticCompilerSim_V5(uint64_t seed, int complexity, const StressConfig &config) {

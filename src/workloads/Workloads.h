@@ -172,6 +172,8 @@ uint64_t RunRealisticCompilerSimV5Diag(uint64_t seed, int complexity, SimV5Diag 
 uint64_t RunRealisticCompilerSimV5AllShaders(SimV5Diag *diag);
 // Machine back end on hand-built code (encodings, s_waitcnt): failed-check bits.
 uint32_t RunRealisticCompilerSimV5MachineTest();
+// Code replicas of the hot V5 workers (0 when block keys miss a replica).
+uint32_t RealisticV5CodeReplicas();
 // Register demand and machine scheduler on hand-built code: failed-check bits.
 uint32_t RunRealisticCompilerSimV5SchedTest();
 // Thread heap, StringMap, DenseMap32 and SHA-1 on known inputs: failed-check bits.

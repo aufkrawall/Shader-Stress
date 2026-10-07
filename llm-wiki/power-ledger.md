@@ -321,6 +321,21 @@ CPU/steady-only rankings as proof of a global optimum.
 
 Newest first. Copy the template.
 
+### P072 — V5 M6: 8 code replicas of the hot workers (pending)
+
+- Date: 2026-10-07. Type: workload realism (benchmark validity: real
+  compilers' instruction-cache / op-cache / BTB footprint), user tests
+  `bin/x64-zig-v3` manually.
+- Change: per-opcode visitors / encoders, instruction selection, machine
+  optimizer forward sweep and s_waitcnt block sweep instantiated 8 times,
+  chosen per basic block (see opt-audit M6). Results bit-identical (golden
+  `0xe595f2d2a7ac91f4` unchanged). V5 code 235 -> 722 KiB.
+- `--perf-stats`: +7-9% cycles/complexity vs P071-m5 (two alternating
+  runs each; absolute values were inflated in that run, ratio only).
+- Expected: somewhat lower power (front-end stalls lower IPC), lower
+  scores. Baseline snapshot: `audit/power-baselines/P071-m5`.
+- Result: not measured yet. Record the user's reading here.
+
 ### P071 — V5 M5: ACO instruction buffer + register demand / load scheduler (~110 W, user reading)
 
 - Date: 2026-10-07. Type: workload (user: "one big change" for realism

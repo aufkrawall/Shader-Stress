@@ -9,6 +9,7 @@
 // Bit-reproducibility: one IEEE operation per expression, FP contraction off,
 // no transcendental folding (libm results differ between C runtimes).
 #include "workloads/WorkloadRealisticV5.h"
+#include "workloads/WorkloadRealisticV5Replica.h"
 #include <cstdio>
 #include <array>
 #include <cmath>
@@ -231,7 +232,7 @@ uint64_t FloatFacts(const Fn &f, uint32_t v) {
 inline uint64_t PackKnown(uint32_t zero, uint32_t one) { return zero | ((uint64_t)one << 32); }
 
 // Facts of node i from its operands' facts (sound; phis meet their inputs).
-uint64_t ComputeFactsOf(const Fn &f, uint32_t i) {
+template <uint32_t R = 0> uint64_t ComputeFactsOf(const Fn &f, uint32_t i) { // per replica via Visit
   const Node &n = f.nodes[i];
   if (IsPhi(n)) {
     if (IsFloatTy(n.type)) return FloatFacts(f, n.a) & FloatFacts(f, n.b);
@@ -335,14 +336,15 @@ inline uint32_t C32(Fn &f, uint32_t v) { return GetConst(f, kI32, v); }
 // Algebraic rules of one opcode (instantiated per opcode, like InstCombine's
 // visitXxx / nir_opt_algebraic's generated per-opcode matchers). Returns true
 // when the node was replaced, folded or rewritten.
-template <uint32_t Op> NOINLINE bool Visit(Fn &f, uint32_t i) {
+template <uint32_t Op, uint32_t R> NOINLINE bool Visit(Fn &f, uint32_t i) {
+  SIMV5_REPLICA_TAG(R); // one copy per code replica (WorkloadRealisticV5Replica.h)
   Node &n = f.nodes[i];
   const uint32_t a = n.a, b = n.b;
   f.st.combined++;
   if constexpr (IsCommutative(Op)) {
     if (IsC(f, a) && !IsC(f, b)) { // canonical: constant right
       SwapOperands(f, i);
-      return Visit<Op>(f, i);
+      return Visit<Op, R>(f, i);
     }
   }
   if constexpr (Op == kIAdd || Op == kOr || Op == kXor || Op == kShl || Op == kLShr || Op == kAShr || Op == kISub) {
@@ -511,16 +513,20 @@ template <uint32_t Op> NOINLINE bool Visit(Fn &f, uint32_t i) {
   if constexpr (Op == kExtract) { // extract from a constant-free aggregate: nothing to fold
     (void)a;
   }
-  n.val = ComputeFactsOf(f, i);
+  n.val = ComputeFactsOf<R>(f, i);
   return false;
 }
 
 using VisitFn = bool (*)(Fn &, uint32_t);
-template <uint32_t... I>
+template <uint32_t R, uint32_t... I>
 constexpr std::array<VisitFn, sizeof...(I)> VisitTable(std::integer_sequence<uint32_t, I...>) {
-  return {{&Visit<I>...}};
+  return {{&Visit<I, R>...}};
 }
-constexpr auto kVisit = VisitTable(std::make_integer_sequence<uint32_t, kOpCount>{});
+template <uint32_t... R>
+constexpr std::array<std::array<VisitFn, kOpCount>, sizeof...(R)> VisitTables(std::integer_sequence<uint32_t, R...>) {
+  return {{VisitTable<R>(std::make_integer_sequence<uint32_t, kOpCount>{})...}};
+}
+constexpr auto kVisit = VisitTables(std::make_integer_sequence<uint32_t, kReplicas>{}); // [replica][op]
 
 // phi(x, x), phi(x, self) -> x; phi of equal constants -> constant.
 bool RemovePhi(Fn &f, uint32_t i) {
@@ -586,7 +592,7 @@ bool OptAlgebraic(Fn &f) {
     }
     if (IsPhi(n)) return RemovePhi(f, i);
     if (HasModifiers(n)) return false; // source modifiers: selected code, not IR algebra
-    return kVisit[OpOf(n)](f, i);
+    return kVisit[ReplicaOf(n.block)][OpOf(n)](f, i);
   });
 }
 

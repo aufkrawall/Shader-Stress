@@ -9,6 +9,7 @@
 // instructions whose results lost all uses, then the code is compacted.
 #include "workloads/WorkloadRealisticV5Mach.h"
 #include "workloads/WorkloadRealisticV5Alloc.h"
+#include "workloads/WorkloadRealisticV5Replica.h"
 #ifdef SIMV5_DEAD_TRACE
 #include <cstdio>
 #endif
@@ -57,7 +58,12 @@ private:
   }
   bool InlineSlot(const MInst &mi, uint32_t k) const;
   void Rewrite(MInst &mi, uint32_t op, uint32_t a, uint32_t b, uint32_t c, uint8_t mods);
-  void Forward(uint32_t i);
+  template <uint32_t R> void Forward(uint32_t i);
+  template <uint32_t R> struct PickForward {
+    static constexpr void (Optimizer::*value)(uint32_t) = &Optimizer::Forward<R>;
+  };
+  static constexpr auto kForward = ReplicaTable<void (Optimizer::*)(uint32_t), PickForward>(
+      std::make_integer_sequence<uint32_t, kReplicas>{});
   void Label(uint32_t i);
   void ValueNumbering();
   uint32_t Hash(const MInst &mi) const;
@@ -96,7 +102,8 @@ void Optimizer::Rewrite(MInst &mi, uint32_t op, uint32_t a, uint32_t b, uint32_t
   f_.st.moptCombines++;
 }
 
-void Optimizer::Forward(uint32_t i) {
+template <uint32_t R> NOINLINE void Optimizer::Forward(uint32_t i) {
+  SIMV5_REPLICA_TAG(R);
   MInst &mi = m_.code[i];
   const uint32_t fmt = kMOpInfo[mi.op].fmt;
   if (fmt == kFPseudo && mi.op != m_p_create_vector) return;
@@ -282,7 +289,7 @@ void Optimizer::Run() {
   ValueNumbering();
   for (uint32_t i = 0; i < n; ++i) {
     if (dead[i]) continue;
-    Forward(i);
+    (this->*kForward[ReplicaOf(m_.code[i].block)])(i); // the block's code replica
     Label(i);
   }
   // Backward: drop instructions whose results are unused (no side effects).

@@ -11,6 +11,7 @@
 //    one encoder per opcode; the shader binary is hashed (cache key).
 #include "workloads/WorkloadRealisticV5Alloc.h"
 #include "workloads/WorkloadRealisticV5Mach.h"
+#include "workloads/WorkloadRealisticV5Replica.h"
 #include <array>
 
 namespace simv5 {
@@ -95,13 +96,20 @@ private:
       s.val[c][r] = 0;
     }
   }
-  void Block(uint32_t b, WaitState &s, bool emit);
+  void Block(uint32_t b, WaitState &s, bool emit) { (this->*kBlock[ReplicaOf(b)])(b, s, emit); }
+  template <uint32_t R> void BlockIn(uint32_t b, WaitState &s, bool emit); // one copy per code replica
+  template <uint32_t R> struct PickBlock {
+    static constexpr void (Waitcnt::*value)(uint32_t, WaitState &, bool) = &Waitcnt::BlockIn<R>;
+  };
+  static constexpr auto kBlock = ReplicaTable<void (Waitcnt::*)(uint32_t, WaitState &, bool), PickBlock>(
+      std::make_integer_sequence<uint32_t, kReplicas>{});
   Fn &f_;
   Mach &m_;
   uint32_t term_ = 0;
 };
 
-void Waitcnt::Block(uint32_t b, WaitState &s, bool emit) {
+template <uint32_t R> NOINLINE void Waitcnt::BlockIn(uint32_t b, WaitState &s, bool emit) {
+  SIMV5_REPLICA_TAG(R);
   const MBlock &mb = m_.blocks[b];
   for (uint32_t i = mb.start; i < mb.end; ++i) {
     const MInst &mi = m_.code[i];
@@ -224,7 +232,8 @@ inline uint32_t Words(const MInst &mi) {
   return (wide ? 2 : 1) + (HasLiteral(mi) ? 1 : 0);
 }
 
-template <uint32_t Op> NOINLINE uint32_t *Encode(const MInst &mi, uint32_t *out, const Ctx &c) {
+template <uint32_t Op, uint32_t R> NOINLINE uint32_t *Encode(const MInst &mi, uint32_t *out, const Ctx &c) {
+  SIMV5_REPLICA_TAG(R); // one copy per code replica (WorkloadRealisticV5Replica.h)
   constexpr MOpInfo info = kMOpInfo[Op];
   constexpr uint32_t code = info.code;
   const uint32_t d = mi.pdef[0], s0 = mi.pop[0], s1 = mi.pop[1], s2 = mi.pop[2];
@@ -284,11 +293,15 @@ template <uint32_t Op> NOINLINE uint32_t *Encode(const MInst &mi, uint32_t *out,
 }
 
 using EncodeFn = uint32_t *(*)(const MInst &, uint32_t *, const Ctx &);
-template <uint32_t... I>
+template <uint32_t R, uint32_t... I>
 constexpr std::array<EncodeFn, sizeof...(I)> EncodeTable(std::integer_sequence<uint32_t, I...>) {
-  return {{&Encode<I>...}};
+  return {{&Encode<I, R>...}};
 }
-constexpr auto kEncode = EncodeTable(std::make_integer_sequence<uint32_t, kMOpCount>{});
+template <uint32_t... R>
+constexpr std::array<std::array<EncodeFn, kMOpCount>, sizeof...(R)> EncodeTables(std::integer_sequence<uint32_t, R...>) {
+  return {{EncodeTable<R>(std::make_integer_sequence<uint32_t, kMOpCount>{})...}};
+}
+constexpr auto kEncode = EncodeTables(std::make_integer_sequence<uint32_t, kReplicas>{}); // [replica][op]
 } // namespace
 
 void InsertWaitcnt(Fn &f, Mach &m) {
@@ -309,10 +322,12 @@ uint64_t AssembleAndHash(Fn &f, Mach &m) {
   *out++ = (uint32_t)m.code.size() | f.info.stores << 20;
   *out++ = f.info.phis | f.info.divergent << 16;
   *out++ = (uint32_t)f.info.inputsRead ^ (uint32_t)(f.info.inputsRead >> 32);
-  for (const MBlock &mb : m.blocks) {
+  for (uint32_t b = 0; b < m.blocks.size(); ++b) {
+    const MBlock &mb = m.blocks[b];
+    const auto &encode = kEncode[ReplicaOf(b)]; // the block's code replica
     for (uint32_t i = mb.start; i < mb.end; ++i) {
       const Ctx c{m, (uint32_t)(out - buf)};
-      out = kEncode[m.code[i].op](m.code[i], out, c);
+      out = encode[m.code[i].op](m.code[i], out, c);
     }
   }
   const size_t words = (size_t)(out - buf);

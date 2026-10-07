@@ -162,6 +162,11 @@ void TestRealisticV5() {
   const uint32_t mt = RunRealisticCompilerSimV5MachineTest();
   Check(mt == 0, "realistic V5 machine code: GFX9 encodings (MUBUF/VOP2/VOP3/SOPP), s_waitcnt vmcnt(0)",
         "failed checks " + std::to_string(mt));
+  // Hot workers run from address-distinct copies (code footprint of a real
+  // compiler); the golden checksum above proves the copies compute the same.
+  const uint32_t replicas = RealisticV5CodeReplicas();
+  Check(replicas == 8, "realistic V5 code replicas: 8 copies, every one reached by block indices",
+        std::to_string(replicas));
   const uint32_t sc = RunRealisticCompilerSimV5SchedTest();
   Check(sc == 0, "realistic V5 register demand + scheduler: SMEM/VMEM hoisting, dependencies, exec, occupancy limit",
         "failed checks " + std::to_string(sc));

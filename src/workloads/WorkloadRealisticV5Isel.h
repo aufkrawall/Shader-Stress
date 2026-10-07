@@ -4,6 +4,7 @@
 #pragma once
 #include "workloads/WorkloadRealisticV5Alloc.h"
 #include "workloads/WorkloadRealisticV5Mach.h"
+#include "workloads/WorkloadRealisticV5Replica.h"
 
 namespace simv5 {
 namespace isel {
@@ -206,7 +207,12 @@ private:
   uint32_t Desc(uint32_t handle);
   uint32_t SelectIdiv(uint32_t op, uint32_t a, uint32_t b);
   uint32_t SelectCompare(uint32_t i, const Node &n);
-  void SelectNode(uint32_t i);
+  void SelectNode(uint32_t i) { (this->*kSelectIn[ReplicaOf(f_.nodes[i].block)])(i); } // block's replica
+  template <uint32_t R> void SelectNodeIn(uint32_t i); // one copy per code replica
+  template <uint32_t R> struct PickSelect {
+    static constexpr void (Isel::*value)(uint32_t) = &Isel::SelectNodeIn<R>;
+  };
+  static const std::array<void (Isel::*)(uint32_t), kReplicas> kSelectIn;
   void Terminator(uint32_t b);
   void AnalyzeCf();
   uint32_t ExecOp(uint32_t op, uint32_t a, uint32_t b);

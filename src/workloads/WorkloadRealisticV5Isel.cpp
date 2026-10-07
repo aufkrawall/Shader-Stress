@@ -104,7 +104,8 @@ uint32_t Isel::SelectCompare(uint32_t i, const Node &n) {
   return u ? BoolFromMask(m) : m;
 }
 
-void Isel::SelectNode(uint32_t i) {
+template <uint32_t R> NOINLINE void Isel::SelectNodeIn(uint32_t i) {
+  SIMV5_REPLICA_TAG(R);
   Node &n = f_.nodes[i];
   node_ = i;
   const uint32_t op = OpOf(n);
@@ -333,5 +334,7 @@ void Isel::SelectNode(uint32_t i) {
   if (r != kONone && IsTempOp(r) && ClassOf(i).cls == kSgpr && IsV(r)) r = ToS(r); // p_as_uniform
   n.reg = r;
 }
+const std::array<void (Isel::*)(uint32_t), kReplicas> Isel::kSelectIn =
+    ReplicaTable<void (Isel::*)(uint32_t), Isel::PickSelect>(std::make_integer_sequence<uint32_t, kReplicas>{});
 } // namespace isel
 } // namespace simv5
