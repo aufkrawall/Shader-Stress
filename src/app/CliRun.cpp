@@ -304,7 +304,8 @@ static void PrintFinalResults(const CliOptions &options) {
   VerifyStats v = GetVerifyStats();
   std::cout << "\n=== Final Results ===\n"
             << "Total Jobs: " << (unsigned long long)g_App.shaders.load() << "\n"
-            << "Avg Rate: " << (unsigned long long)g_App.currentRate.load() << " jobs/s\n";
+            << "Avg Rate: " << (unsigned long long)(g_App.shaders.load() / std::max<uint64_t>(1, g_App.elapsed.load()))
+            << " jobs/s (whole run; the live rate is a sliding window)\n";
   double cpuW = SampleCpuPackagePower();
   if (cpuW > 0) {
     std::cout << "CPU Package Power: " << (int)cpuW << " W\n";

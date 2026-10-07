@@ -1,6 +1,7 @@
 // Watchdog.cpp - Rate accounting, benchmark minutes/hash, duration limit and
 // periodic health/verification logging.
 #include "engine/AuxStress.h"
+#include "engine/RateMeter.h"
 #include "engine/Verification.h"
 using namespace std::chrono_literals;
 
@@ -78,8 +79,7 @@ void Watchdog() {
   bool warmingUp = false, lastRunning = false;
   uint64_t benchIntervalStartShaders = 0;
   int lastBenchIntervalIndex = -1;
-  uint64_t lastRateTime = GetTick();
-  uint64_t lastRateShaders = 0;
+  RateMeter rate; // display rate (sliding window; RateMeter.h)
   uint64_t lastPowerDropped = 0;
   uint64_t lastHealthLogTick = GetTick();
 
@@ -102,8 +102,7 @@ void Watchdog() {
       g_App.benchComplete = false;
       for (int i = 0; i < 3; ++i)
         g_App.benchRates[i] = 0;
-      lastRateTime = now;
-      lastRateShaders = g_App.shaders;
+      rate.Reset(now, g_App.shaders);
       lastHealthLogTick = now;
     }
 
@@ -128,17 +127,11 @@ void Watchdog() {
       if (warmingUp) {
         if (now - runStart > 2000) {
           warmingUp = false;
-          lastRateTime = now;
-          lastRateShaders = g_App.shaders;
+          rate.Reset(now, g_App.shaders);
         }
-      } else if (now - lastRateTime >= 1000) {
-        uint64_t current = g_App.shaders;
-        uint64_t dt = now - lastRateTime;
-        uint64_t dShader = current - lastRateShaders;
-        if (dt > 0)
-          g_App.currentRate = (dShader * 1000) / dt;
-        lastRateTime = now;
-        lastRateShaders = current;
+      } else {
+        const uint64_t r = rate.Sample(now, g_App.shaders, RateWindowMs(g_App.mode == MODE_BENCHMARK));
+        if (rate.SpanMs() >= 1000) g_App.currentRate = r; // first reading after 1 s, as before
       }
 
       // Every reading (contiguous 1 s windows) is logged; power_measure.py

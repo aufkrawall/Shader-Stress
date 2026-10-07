@@ -34,6 +34,7 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
 | `Topology.h/.cpp` | Logical CPU enumeration, worker order, pinning, `DescribeLp` |
 | `RamStress.cpp` / `IoStress.cpp` / `AuxStress.h` | Verified RAM and storage testers, pattern helpers |
 | `Watchdog.cpp` | Rates, benchmark minutes/hash, max duration, health log every 60 s |
+| `RateMeter.h` | Live jobs/s display: sliding window (benchmark 10 s, other modes 2 s) over 250 ms watchdog samples; heavy-tailed job sizes made 1 s windows swing ~±6% (simulated). Scores use benchmark minutes, not this |
 | `Platform.cpp` | Power request + 1 ms timer (Windows), throttling opt-out, FTZ/DAZ, crash handlers |
 | `PowerMeasure.cpp` | LHM `PowerReader.exe` sampling of package power, effective clock, temperature, Vcore (Windows, admin); reader-line parser + `Power sample` log format |
 | `Cli.h`, `CliArgs.cpp`, `CliRun.cpp`, `ShaderStress.cpp` | CLI parsing/help/wizard, commands + dashboard, entry points |

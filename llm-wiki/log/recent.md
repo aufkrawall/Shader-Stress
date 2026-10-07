@@ -1,5 +1,15 @@
 # Recent Changes Log
 
+## 2026-10-07 — Jumpy jobs/s display fixed (RateMeter)
+
+- User report (cosmetic): rate very jumpy during the benchmark. Root
+  cause: 1 s completion windows over a heavy-tailed job mix
+  (`ComplexityForPair`: 1/16 up to +100k, 1/256 up to +400k). Fix:
+  `src/engine/RateMeter.h` sliding window (benchmark 10 s, else 2 s);
+  simulation of the job mix: ±6.4% -> ±2.2% (sd). Also fixed the CLI
+  "Avg Rate", which printed the last 1 s window. Self-test `rate meter:*`
+  (bursty input that the old 1 s window would fail).
+
 ## 2026-10-07 — V5 M6: code replicas for a real compiler's code footprint (P072, unmeasured)
 
 - User: benchmark validity across CPUs matters most; asked for a compact

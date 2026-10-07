@@ -4,6 +4,7 @@
 #include "app/Cli.h"
 #include "workloads/Decompress.h"
 #include "core/Topology.h"
+#include "engine/RateMeter.h"
 #include "engine/Verification.h"
 #include "workloads/Workloads.h"
 #include <cmath>
@@ -252,6 +253,33 @@ void TestKernels() {
         std::string(REALISTIC_V5_ACTIVE ? "V5" : "V3") + " expected " + Hex(expectSim) + ", got " + Hex(s1));
   Check(RunComputeWorkload(WL_SCALAR, 9, 2) == SynthKernel128(9, 2, nullptr),
         "dispatch uses the 128-bit kernel");
+}
+
+void TestRateMeter() {
+  // Heavy-tailed jobs: the display rate must average over its window instead
+  // of following per-second completion bursts (cosmetic "jumpy rate" report).
+  RateMeter m;
+  m.Reset(0, 0);
+  uint64_t jobs = 0, last = 0;
+  bool steady = true;
+  for (uint64_t t = 250; t <= 60000; t += 250) {
+    jobs += (t / 250) % 8 == 0 ? 800 : 0; // 400 jobs/s average, all in bursts every 2 s
+    last = m.Sample(t, jobs, 10000);
+    if (t >= 12000 && (last < 360 || last > 440)) steady = false;
+  }
+  Check(steady, "rate meter: 10 s window smooths 2 s completion bursts (360..440 of 400 jobs/s)",
+        std::to_string(last));
+  Check(m.SpanMs() >= 10000 && m.SpanMs() < 10250, "rate meter: window spans 10 s", std::to_string(m.SpanMs()));
+  RateMeter r;
+  r.Reset(1000, 50);
+  Check(r.Sample(1000, 50, 2000) == 0 && r.Sample(1500, 100, 2000) == 100 && r.Sample(2000, 150, 2000) == 100,
+        "rate meter: rate since reset until the window fills");
+  RateMeter big; // a window longer than the ring keeps the newest samples
+  big.Reset(0, 0);
+  uint64_t got = 0;
+  for (uint64_t t = 1; t <= 1000; ++t) got = big.Sample(t, t * 3, 1000000);
+  Check(got == 3000 && big.SpanMs() == RateMeter::kCap - 1, "rate meter: ring bound", std::to_string(got));
+  Check(RateWindowMs(true) == 10000 && RateWindowMs(false) == 2000, "rate meter: display windows");
 }
 
 void TestPreemption() {
@@ -591,6 +619,7 @@ int RunSelfTests() {
   TestSynthFarIndices();
   TestSynthFarGroups();
   TestRealisticV5();
+  TestRateMeter();
   TestFormatting();
   TestKernels();
   TestPreemption();
