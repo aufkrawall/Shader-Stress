@@ -11,7 +11,7 @@
 - Bug found while testing: ACO-style window sizes go to 0 at 10 waves
   (350 - 35w); clamped w to 4..8 (unit test caught it: no SMEM moved).
 - Tests: 201/201 (`--stress --sanitize`), self-test 94/94 on Zig/LLVM/MSVC
-  x64 and v3. Next: record the user's power reading in P071.
+  x64 and v3. User's manual reading: ~110 W, not regressed (P071, kept).
 
 ## 2026-10-07 — V5 is the default scalar-sim; V3 comparison build `x64-zig-v3-simv3`
 
