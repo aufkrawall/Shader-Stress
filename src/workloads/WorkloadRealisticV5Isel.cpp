@@ -32,24 +32,19 @@ Isel::Cls Isel::ClassOf(uint32_t i) const {
 
 // Sampler descriptor of a texture (cached per machine block).
 uint32_t Isel::Sampler(uint32_t handle) {
-  for (uint32_t k = 0; k < nsamp_; ++k)
-    if (samp_[k][0] == handle) return samp_[k][1];
+  if (const uint32_t *hit = sampMap_.Find(handle)) return *hit;
   const uint32_t t = NewTemp(kSgpr, 4);
   const uint32_t mi = Push(m_s_load_dwordx4, t, desc_);
   code_[mi].imm = (uint16_t)(0x200 + (handle & 31) * 16);
   code_[mi].flags = kMfOffset;
-  if (nsamp_ < 8) {
-    samp_[nsamp_][0] = handle;
-    samp_[nsamp_++][1] = OTemp(t);
-  }
+  sampMap_[handle] = OTemp(t);
   return OTemp(t);
 }
 
 // Resource descriptor (RADV: loaded from the descriptor set where it is used,
 // CSE'd within a block) instead of keeping 4-8 SGPRs live across the shader.
 uint32_t Isel::Desc(uint32_t handle) {
-  for (uint32_t k = 0; k < ndesc_; ++k)
-    if (desc2_[k][0] == handle) return desc2_[k][1];
+  if (const uint32_t *hit = descMap_.Find(handle)) return *hit;
   const Cls c = ClassOf(handle);
   const Node &n = f_.nodes[handle], &rg = f_.nodes[n.a];
   const uint32_t saved = node_;
@@ -60,10 +55,7 @@ uint32_t Isel::Desc(uint32_t handle) {
   code_[mi].imm = (uint16_t)((IsConst(rg) ? (uint32_t)rg.val & 63 : 0) * 32);
   code_[mi].flags = kMfOffset;
   node_ = saved;
-  if (ndesc_ < 16) {
-    desc2_[ndesc_][0] = handle;
-    desc2_[ndesc_++][1] = OTemp(d);
-  }
+  descMap_[handle] = OTemp(d);
   return OTemp(d);
 }
 

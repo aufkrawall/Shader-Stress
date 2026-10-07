@@ -4,8 +4,9 @@ Last verified: 2026-10-07. Stale-risk: medium — P058 128-bit far stream
 adopted (+3.0 W scalar); the accessed-bytes power model was corrected
 (P055); the pinned V3 realistic sim stays at ~110 W, the realistic V5 test
 build reaches 118.0 W (P065); its realism rewrite (milestone 1, P066)
-measures 114.3 W (−2.8 W, inside the user's ~115 W tolerance); V5 becomes the
-default scalar-sim (user decision, flip pending).
+measures 114.3 W; with all four realism milestones (P067–P069) V5 is at
+110.0 W (P069). V5 becomes the default scalar-sim (user decision, flip
+pending); whether to trade power for realism is open (user decides).
 
 Durable record of every power experiment (procedure and decision rules:
 [power-optimization.md](power-optimization.md)). Rules: one entry per experiment ID, one
@@ -193,6 +194,7 @@ heavier per-cycle current, matching the boost/backoff model).
 | P066 | workload | V5 realism milestone 1 (real DXIL op table, typed 4096-shader corpus without dead code, exact folding, real lowering passes) vs P065 | scalar-sim | 114.3 W vs 117.1 W (−2.8 ±0.5 W), jobs/s 1417 vs 1807; kept pending user decision (~115 W accepted) |
 | P067 | workload | V5 realism M2: instruction selection to GFX9-like machine code, machine liveness + linear-scan RA, phi/parallel-copy lowering, s_waitcnt insertion, real encoders (vs P066) | scalar-sim | 111.5 W vs 114.3 W (−2.8 ±1.0 W), jobs/s 665 vs 1467 |
 | P068 | workload | V5 realism M3: loop analysis + LICM + full unroll, exec-mask lowering of divergent CF (linear machine CFG), ACO-style machine optimizer (vs P066, with P067) | scalar-sim | 111.9 W vs 114.5 W (−2.6 ±0.3 W); M2 recheck 111.5 W (−3.0 ±0.6); jobs/s 601 |
+| P069 | workload | V5 realism M4: per-thread size-class heap, heap-allocated machine instructions (pointer lists), StringMap symbol tables, DenseMap caches + machine value numbering, SHA-1 pipeline/binary keys, per-thread pipeline-cache index (vs P066, with P068) | scalar-sim | 110.0 W vs 114.8 W (−4.7 ±0.7 W); M3 111.9 W; jobs/s 489 (M3 605) |
 | P058 | kernel | Production form of P056 s4n4 for 128-bit kernels only (single base pointer, constant offsets: 116 vs 126 loop instructions), confirm against base and the measured candidate | scalar | accepted (+3.0 ±2.1 W scalar, 139.5 W; AVX2 kernel instruction-identical) |
 
 ## Current disposition after P055–P058 (2026-10-06)
@@ -317,6 +319,40 @@ CPU/steady-only rankings as proof of a global optimum.
 ## Entries
 
 Newest first. Copy the template.
+
+### P069 — V5 realism M4: realistic memory (110.0 W)
+
+- Date: 2026-10-07. Type: workload (user milestone list, measured vs P066).
+- Change: `WorkloadRealisticV5Alloc.*`: per-thread lock-free size-class heap
+  (64 KiB pages per class, LIFO free lists, lazily reserved 32 MiB region,
+  system fallback), LLVM-style StringMap (heap entries with key bytes,
+  tombstones, rehash at 3/4), DenseMap32, FIPS 180-1 SHA-1. Used by: the
+  DXIL symbol table (StringMap per module), machine instructions as
+  individual 64-byte heap objects in `InstrList` pointer vectors (passes move
+  pointers like aco_ptr; ~1400 allocations per compile), per-block
+  descriptor/sampler caches and block-local machine value numbering with
+  renames (DenseMap32; 21 duplicates in the diag run, 932 in the corpus),
+  SHA-1 pipeline key -> hex StringMap pipeline-cache index (per thread,
+  FIFO 512, verification only: hits must reproduce the binary hash) and
+  SHA-1 of the final binary.
+- `--perf-stats` 5815 cycles/complexity (M3 5753): read 5.0%, lower 9.4%,
+  combine 19.0%, dom+cse 11.1%, dce 12.0%, schedule 5.8%, isel 11.4%,
+  regalloc 13.9%, emit 12.4%.
+- Command: `python scripts/power_measure.py --mode benchmark --isas scalar-sim --label P069-m4-memory --baseline P066-realism1 --exe audit/power-baselines/P066-realism1/ShaderStress.com,audit/power-baselines/P068-m3-loops-cf/ShaderStress.com,audit/power-baselines/P069-m4-memory/ShaderStress.com`.
+
+  | Candidate | W (SD) | dW (CI95) | Eff MHz | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|
+  | P069-m4-memory | 110.0 (0.5) | −4.7 ±0.7 | 4462 | 82.3 | 489 | worse (less power) |
+  | P068-m3-loops-cf | 111.9 (0.2) | −2.9 ±0.3 | 4451 | 82.9 | 605 | worse (less power) |
+  | P066-realism1 | 114.8 (0.2) | – | 4451 | 84.0 | 1448 | baseline |
+
+- Interpretation (unverified): single-thread cost barely changed but 16-thread
+  throughput fell 19% — pointer-chased, scattered instruction objects make
+  the 16-thread run memory-latency bound (stalls lower power). Candidate
+  recovery levers: keep the heap but allocate instructions in block-ordered
+  runs (ACO's monotonic buffer), or revert the per-instruction objects
+  while keeping StringMap/DenseMap/SHA-1. User decides.
+- Evidence: `audit/power-measurements/P069-m4-memory-20261007-152045-26124-00`.
 
 ### P068 — V5 realism M3: loops, divergent control flow, machine optimizer (111.9 W)
 

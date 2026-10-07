@@ -144,6 +144,14 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
   labels, inline constants, modifiers, bool round trips, lshl_add / add3 /
   mad combines, DCE, v_mac via allocation hint). Invariant: machine operand
   slots are positional (`nops` = last present slot + 1; loops skip kONone).
+  **M4 (P069, 110.0 W):** `..Alloc.*` (thread heap, StringMap, DenseMap32,
+  SHA-1), `InstrList` (heap-allocated machine instructions; rebuild passes
+  `take` pointers), StringMap symbol table, DenseMap descriptor caches,
+  machine value numbering (Mopt), per-thread pipeline-cache index (verify
+  only). Invariants: `Heap()` must be constructed before any thread_local
+  owner that frees into it (State() calls it first); nothing may depend on
+  addresses. Self-test: heap/StringMap/DenseMap/SHA-1 vectors; golden
+  `0xebb78b423639807d`.
 - LZ decompression: real decoder (overlapping matches, wild copies) + per-64-byte DIV in
   the verification hash. Targets the failure class of game-asset decompression crashes
   on degraded/unstable cores.

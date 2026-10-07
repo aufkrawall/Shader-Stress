@@ -155,6 +155,10 @@ struct SimV5Diag {
   uint64_t moptConsts = 0, moptMods = 0;        // machine optimizer: inline constants / source modifiers
   uint64_t moptCombines = 0, moptCopies = 0, moptDead = 0; // combined / propagated / removed
   uint64_t macConverted = 0;                    // v_mad_f32 encoded as v_mac_f32 (tied)
+  uint64_t nameRehashes = 0;                    // symbol-table StringMap growth
+  uint64_t vnHits = 0;                          // machine value numbering: duplicates removed
+  uint64_t cacheLookups = 0, cacheHits = 0, cacheMismatches = 0; // per-thread pipeline cache index
+  uint64_t heapAllocs = 0, heapPages = 0;       // thread heap activity (allocations / pages)
   uint64_t corpusValues = 0, corpusUnused = 0; // generated values / values without a use
   uint64_t phaseNs[kSimV5Phases] = {};  // wall time per phase
   bool aborted = false;
@@ -164,5 +168,7 @@ uint64_t RunRealisticCompilerSimV5Diag(uint64_t seed, int complexity, SimV5Diag 
 uint64_t RunRealisticCompilerSimV5AllShaders(SimV5Diag *diag);
 // Machine back end on hand-built code (encodings, s_waitcnt): failed-check bits.
 uint32_t RunRealisticCompilerSimV5MachineTest();
+// Thread heap, StringMap, DenseMap32 and SHA-1 on known inputs: failed-check bits.
+uint32_t RunRealisticCompilerSimV5AllocTest();
 // Marks the start of a job on the calling thread.
 void BeginJob(int workload, uint64_t seed, int complexity);

@@ -307,7 +307,8 @@ void Isel::Run() {
   for (uint32_t mbi = 0; mbi < m_.blocks.size(); ++mbi) {
     MBlock &mb = m_.blocks[mbi];
     cur_ = mbi;
-    nsamp_ = ndesc_ = 0;
+    sampMap_.Clear();
+    descMap_.Clear();
     mb.start = (uint32_t)code_.size();
     node_ = kNone;
     if (mb.flipOf != kNone) { // else lanes: exec = saved & ~exec, skip when none

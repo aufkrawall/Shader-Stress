@@ -1,6 +1,6 @@
 # Recent Changes Log
 
-## 2026-10-07 — V5 realism M2 (machine back end): 111.5 W (P067)
+## 2026-10-07 — V5 realism M2–M4 (machine back end, loops/CF, memory): 110.0 W (P069)
 
 - User: implement remaining milestones (ISel/waitcnt/encoders, loops +
   CF restructuring, allocator/hash maps/strings), measure each vs P066, make
@@ -17,9 +17,17 @@
 - M3 done (P068 **111.9 W**, −2.6 ±0.3 vs P066): loops (LICM/unroll),
   exec-mask lowering, machine optimizer. Bug found: positional operand slots
   (v_cndmask mask invisible to liveness in the P067 build).
-- Next: M4 (per-thread size-class heap, StringMap, DenseMap32, SHA-1 in
-  `WorkloadRealisticV5Alloc.*`, written, not yet built; machine value
-  numbering; pipeline-cache index), then default flip and compiler session.
+- M4 done (P069 **110.0 W**, −4.7 ±0.7 vs P066; jobs/s 489 vs M3 605):
+  thread heap, heap-allocated machine instructions, StringMap/DenseMap,
+  value numbering, SHA-1 keys, per-thread pipeline-cache index.
+- PAUSED here at the user's request (compact). Resume with, in order:
+  1. Report M2–M4 power to the user (114.3 -> 111.5 -> 111.9 -> 110.0 W);
+     optional recovery ideas in power-ledger P069 (user decides).
+  2. Flip V5 to the default scalar-sim in all builds, add a `-simv3`
+     comparison variant (build.py variant like `-simv5`), rename UI strings,
+     update run_tests simv5 checks, AGENTS.md V3-pin text, wiki/changelog.
+  3. Compiler session on V5: zig-v3 vs llvm-v3 vs msvc-v3 (baseline + 2,
+     5 runs), then the recommendation.
 
 ## 2026-10-07 — V5 realism milestone 1 committed: 114.3 W (P066)
 

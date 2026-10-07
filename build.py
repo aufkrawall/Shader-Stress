@@ -87,7 +87,7 @@ SRC_COMMON = [
     "src/workloads/WorkloadRealisticV5Fold.cpp",
     "src/workloads/WorkloadRealisticV5Lower.cpp",
     "src/workloads/WorkloadRealisticV5Back.cpp", "src/workloads/WorkloadRealisticV5Isel.cpp",
-    "src/workloads/WorkloadRealisticV5IselCf.cpp", "src/workloads/WorkloadRealisticV5Mopt.cpp",
+    "src/workloads/WorkloadRealisticV5IselCf.cpp", "src/workloads/WorkloadRealisticV5Mopt.cpp", "src/workloads/WorkloadRealisticV5Alloc.cpp",
     "src/workloads/WorkloadRealisticV5Ra.cpp", "src/workloads/WorkloadRealisticV5Asm.cpp",
     "src/workloads/Decompress.cpp",
     "src/engine/Verification.cpp", "src/engine/Worker.cpp", "src/engine/Scheduler.cpp",

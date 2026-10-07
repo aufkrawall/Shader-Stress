@@ -8,6 +8,7 @@
 // v_mad_f32 under the VOP3 operand rules. A backward sweep removes
 // instructions whose results lost all uses, then the code is compacted.
 #include "workloads/WorkloadRealisticV5Mach.h"
+#include "workloads/WorkloadRealisticV5Alloc.h"
 #ifdef SIMV5_DEAD_TRACE
 #include <cstdio>
 #endif
@@ -58,6 +59,10 @@ private:
   void Rewrite(MInst &mi, uint32_t op, uint32_t a, uint32_t b, uint32_t c, uint8_t mods);
   void Forward(uint32_t i);
   void Label(uint32_t i);
+  void ValueNumbering();
+  uint32_t Hash(const MInst &mi) const;
+  bool Same(const MInst &a, const MInst &b) const;
+  uint8_t *dead_ = nullptr;
   Fn &f_;
   Mach &m_;
   std::vector<uint64_t> &store_ = m_.liveOut; // borrowed storage for the label table
@@ -208,20 +213,82 @@ void Optimizer::Label(uint32_t i) {
   }
 }
 
+// Value numbering (ACO opt_value_numbering): exec is constant inside a block,
+// so a block-local hash map from opcode / operands / modifiers to the first
+// occurrence finds duplicates (repeated descriptor and constant-buffer loads,
+// conversions, address math); later uses are renamed to the first result.
+uint32_t Optimizer::Hash(const MInst &mi) const {
+  uint32_t h = mi.op * 0x9E3779B1u ^ mi.mods << 7 ^ mi.flags << 13 ^ mi.imm << 16;
+  for (uint32_t k = 0; k < mi.nops; ++k) {
+    const uint32_t o = mi.ops[k];
+    const uint32_t v = (o & kOKind) == kOLit ? m_.scratch[o & ~kOKind] ^ 0x5A5A5A5Au : o;
+    h = (h ^ v) * 0x01000193u;
+  }
+  return (h ^ (h >> 16)) & 0x7FFFFFFFu; // keys 0xFFFFFFFE / 0xFFFFFFFF are reserved
+}
+bool Optimizer::Same(const MInst &a, const MInst &b) const {
+  if (a.op != b.op || a.mods != b.mods || a.flags != b.flags || a.imm != b.imm || a.nops != b.nops) return false;
+  for (uint32_t k = 0; k < a.nops; ++k) {
+    const uint32_t x = a.ops[k], y = b.ops[k];
+    if ((x & kOKind) == kOLit && (y & kOKind) == kOLit) {
+      if (m_.scratch[x & ~kOKind] != m_.scratch[y & ~kOKind]) return false;
+    } else if (x != y) {
+      return false;
+    }
+  }
+  const MTemp &ta = m_.temps[TempOf(a.defs[0])], &tb = m_.temps[TempOf(b.defs[0])];
+  return ta.cls == tb.cls && ta.size == tb.size;
+}
+void Optimizer::ValueNumbering() {
+  DenseMap32 table, renames;
+  auto rename = [&](MInst &mi) {
+    for (uint32_t k = 0; k < mi.nops; ++k) {
+      if (!IsTempOp(mi.ops[k])) continue;
+      if (const uint32_t *r = renames.Find(TempOf(mi.ops[k]))) SetOp(mi, k, OTemp(*r, SubOf(mi.ops[k])));
+    }
+  };
+  for (const MBlock &mb : m_.blocks) {
+    table.Clear();
+    for (uint32_t i = mb.start; i < mb.end; ++i) {
+      MInst &mi = m_.code[i];
+      rename(mi);
+      const uint32_t fmt = kMOpInfo[mi.op].fmt;
+      const bool pure = fmt == kFSop1 || fmt == kFSop2 || fmt == kFSmem || fmt == kFVop1 || fmt == kFVop2 ||
+                        fmt == kFVop3 || fmt == kFVopc || fmt == kFVintrp;
+      if (!pure || mi.ndefs != 1 || !IsTempOp(mi.defs[0]) || MHas(mi.op, kMRScc)) continue;
+      const uint32_t h = Hash(mi);
+      uint32_t *slot = table.Find(h);
+      if (slot && Same(m_.code[*slot], mi)) {
+        renames[TempOf(mi.defs[0])] = TempOf(m_.code[*slot].defs[0]);
+        dead_[i] = 1;
+        for (uint32_t k = 0; k < mi.nops; ++k) Use(mi.ops[k], -1);
+        f_.st.vnHits++;
+        continue;
+      }
+      table[h] = i;
+    }
+  }
+  for (MInst &mi : m_.code) // back-edge phi operands defined after their phi
+    if (mi.op == m_p_phi) rename(mi);
+}
+
 void Optimizer::Run() {
   const uint32_t nt = (uint32_t)m_.temps.size(), n = (uint32_t)m_.code.size();
   store_.assign((nt + 1) * sizeof(Info) / 8 + 1, 0);
   info_ = reinterpret_cast<Info *>(store_.data());
+  std::vector<uint8_t> &dead = m_.bytes;
+  dead.assign(n, 0);
+  dead_ = dead.data();
+  ValueNumbering();
   for (uint32_t i = 0; i < n; ++i) {
+    if (dead[i]) continue;
     Forward(i);
     Label(i);
   }
   // Backward: drop instructions whose results are unused (no side effects).
-  std::vector<uint8_t> &dead = m_.bytes;
-  dead.assign(n, 0);
   for (uint32_t i = n; i-- > 0;) {
     const MInst &mi = m_.code[i];
-    if (mi.ndefs == 0 || MHas(mi.op, kMStore | kMBranch) || mi.op == m_p_startpgm) continue;
+    if (dead[i] || mi.ndefs == 0 || MHas(mi.op, kMStore | kMBranch) || mi.op == m_p_startpgm) continue;
     bool unused = true;
     for (uint32_t d = 0; d < mi.ndefs && unused; ++d)
       unused = IsTempOp(mi.defs[d]) && m_.temps[TempOf(mi.defs[d])].uses == 0;
@@ -245,7 +312,7 @@ void Optimizer::Run() {
     uint32_t term = kNone;
     for (uint32_t i = mb.start; i < mb.end; ++i) {
       if (i == mb.term) term = (uint32_t)m_.tmp.size();
-      if (!dead[i]) m_.tmp.push_back(m_.code[i]);
+      if (!dead[i]) m_.tmp.take(m_.code, i); // dead ones are freed with the old list
     }
     mb.start = start;
     mb.end = (uint32_t)m_.tmp.size();

@@ -9,6 +9,7 @@
 //    VOPC/VOP3, VINTRP, MUBUF, MIMG, EXP), VOP2/VOPC promoted to VOP3 when the
 //    operands require it, literal dwords, branch offsets from block layout,
 //    one encoder per opcode; the shader binary is hashed (cache key).
+#include "workloads/WorkloadRealisticV5Alloc.h"
 #include "workloads/WorkloadRealisticV5Mach.h"
 #include <array>
 
@@ -142,7 +143,7 @@ void Waitcnt::Block(uint32_t b, WaitState &s, bool emit) {
         s.out[c] = std::min(s.out[c], need[c]);
       }
     }
-    if (emit) m_.tmp.push_back(mi);
+    if (emit) m_.tmp.take(m_.code, i); // moves the instruction (mi stays valid)
     const uint16_t fl = kMOpInfo[mi.op].flags;
     if (fl & kMVmem) {
       Issue(s, kVm, 62);
@@ -318,11 +319,12 @@ uint64_t AssembleAndHash(Fn &f, Mach &m) {
   f.st.emittedBytes += words * 4;
   f.st.sgprPeak = std::max<uint64_t>(f.st.sgprPeak, m.sgprs);
   f.st.vgprPeak = std::max<uint64_t>(f.st.vgprPeak, m.vgprs);
-  uint64_t h = 0x243F6A8885A308D3ull ^ words;
-  for (size_t k = 0; k + 1 < words; k += 2)
-    h = Rotl64(h ^ ((uint64_t)buf[k] | (uint64_t)buf[k + 1] << 32), 29) * 0x9E3779B97F4A7C15ull;
-  if (words & 1) h = (h ^ buf[words - 1]) * 0x100000001b3ull;
-  return h;
+  // Shader cache key of the binary (Mesa disk cache: SHA-1 of the blob).
+  uint8_t digest[20];
+  Sha1(reinterpret_cast<const uint8_t *>(buf), words * 4, digest);
+  uint64_t h;
+  std::memcpy(&h, digest, 8);
+  return h ^ words;
 }
 } // namespace simv5
 

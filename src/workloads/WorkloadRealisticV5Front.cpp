@@ -2,6 +2,7 @@
 // reader (as in DXIL loaders: abbreviation tables, VBR fields, generic record
 // reader feeding a per-record-code IR builder) and SSA/CFG construction.
 #include "workloads/WorkloadRealisticV5.h"
+#include "workloads/WorkloadRealisticV5Alloc.h"
 #include "workloads/WorkloadRealisticV5Format.h"
 #ifdef SIMV5_VALIDATE_TRACE // -DSIMV5_VALIDATE_TRACE: report decode failures
 #include <cstdio>
@@ -142,11 +143,6 @@ inline int64_t DecodeSigned(uint64_t v) {
   return (v & 1) ? -(int64_t)(v >> 1) : (int64_t)(v >> 1);
 }
 
-struct NameEntry {
-  uint64_t hash; // 0 = empty
-  uint32_t pos, len;
-};
-
 // Pipeline-state constant of the given type from the driver's state key.
 uint64_t SpecValue(uint64_t v, uint32_t ty) {
   if (ty != kF32) return (uint32_t)v;
@@ -158,8 +154,7 @@ uint64_t SpecValue(uint64_t v, uint32_t ty) {
 
 class Builder {
 public:
-  Builder(Fn &f, const uint64_t *spec, Arena &ar, uint32_t *valueMap)
-      : f_(f), spec_(spec), ar_(ar), map_(valueMap) {}
+  Builder(Fn &f, const uint64_t *spec, uint32_t *valueMap) : f_(f), spec_(spec), map_(valueMap) {}
   bool Run(Cursor &c);
 
 private:
@@ -215,7 +210,6 @@ private:
 
   Fn &f_;
   const uint64_t *spec_;
-  Arena &ar_;
   uint32_t *map_; // value id -> node
   uint32_t node_ = 0, vid_ = 0, cur_ = 0, fixups_ = 0, cstType_ = kVoid;
   uint64_t vals_[kMaxVals];
@@ -277,17 +271,14 @@ bool Builder::ConstantsBlock(Cursor &c, unsigned width) {
 bool Builder::SymtabBlock(Cursor &c, unsigned width) {
   AbbrevTable t;
   uint32_t nvals;
-  // Name interning: open-addressed table over a text buffer.
-  const uint32_t size = std::bit_ceil(std::max(16u, f_.n / 16));
-  NameEntry *table = ar_.Take<NameEntry>(size);
-  char *text = ar_.Take<char>((size_t)size / 2 * kMaxVals + kMaxVals);
-  if (!table || !text) return false;
-  std::memset(table, 0, size * sizeof(NameEntry));
-  uint32_t textPos = 0, entries = 0;
+  // Name interning as LLVM's ValueSymbolTable: a StringMap whose entries
+  // (key bytes) live on the thread heap and die with the module.
+  StringMap names;
   for (;;) {
     const uint32_t abbrev = c.Read(width);
     if (abbrev == fmt::kEndBlock) {
       c.Align32();
+      f_.st.nameRehashes += names.rehashes;
       return true;
     }
     if (abbrev == fmt::kDefineAbbrev) {
@@ -305,22 +296,10 @@ bool Builder::SymtabBlock(Cursor &c, unsigned width) {
       h = (h ^ (unsigned char)name[k]) * 0x100000001b3ull;
     }
     h |= 1;
-    for (uint32_t slot = (uint32_t)h & (size - 1);; slot = (slot + 1) & (size - 1)) {
-      NameEntry &e = table[slot];
-      if (e.hash == 0) {
-        if (entries * 2 >= size) return false; // table sized for the symbol count
-        std::memcpy(text + textPos, name, len);
-        e = {h, textPos, len};
-        textPos += len;
-        ++entries;
-        break;
-      }
-      if (e.hash == h && e.len == len && std::memcmp(text + e.pos, name, len) == 0) {
-        f_.st.internHits++;
-        break;
-      }
-    }
-    f_.nodes[map_[vals_[0]]].name = (uint32_t)h & (size - 1); // home slot of the interned name
+    bool inserted = false;
+    const StringMap::Entry *e = names.Insert(name, len, names.Size(), &inserted);
+    if (!inserted) f_.st.internHits++;
+    f_.nodes[map_[vals_[0]]].name = e->value; // interned symbol id
     f_.names = Rotl64(f_.names ^ h, 13) + vals_[0];
   }
 }
@@ -494,7 +473,7 @@ bool ReadShader(const Corpus &corpus, const ShaderRef &s, const uint64_t *spec, 
   for (uint32_t b = 0; b < f.nblocks; ++b)
     f.blocks[b] = {0, 0, {kNone, kNone}, kNone, b ? kNone : 0, kNone, kNone, kNone, 0, 0, kNone};
   Cursor c(corpus.words, s.wordOffset);
-  Builder builder(f, spec, ar, valueMap);
+  Builder builder(f, spec, valueMap);
   if (!builder.Run(c)) return false;
   f.st.bitsRead += (uint64_t)(c.WordPos() - s.wordOffset) * 32;
   f.preds = ar.Take<uint32_t>((size_t)f.nblocks * kMaxSucc);

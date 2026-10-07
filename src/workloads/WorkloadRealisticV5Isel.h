@@ -2,6 +2,7 @@
 // WorkloadRealisticV5Isel.cpp: operations, WorkloadRealisticV5IselCf.cpp:
 // block layout, terminators and divergent control flow).
 #pragma once
+#include "workloads/WorkloadRealisticV5Alloc.h"
 #include "workloads/WorkloadRealisticV5Mach.h"
 
 namespace simv5 {
@@ -215,14 +216,13 @@ private:
 
   Fn &f_;
   Mach &m_;
-  std::vector<MInst> &code_;
+  InstrList &code_;
   uint32_t cur_ = 0, node_ = kNone;
   uint32_t desc_ = kONone, prim_ = kONone, grp_ = kONone, bary_[2] = {kONone, kONone};
   uint32_t tid_[3] = {kONone, kONone, kONone};
   bool compute_ = false;
   uint32_t exports_[4] = {kONone, kONone, kONone, kONone};
-  uint32_t samp_[8][2], desc2_[16][2];
-  uint32_t nsamp_ = 0, ndesc_ = 0;
+  DenseMap32 sampMap_, descMap_; // per machine block: handle node -> descriptor temporary
 };
 } // namespace isel
 } // namespace simv5

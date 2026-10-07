@@ -11,6 +11,7 @@
 // encodes the program with the real GFX9 instruction formats.
 #pragma once
 #include "workloads/WorkloadRealisticV5.h"
+#include "workloads/WorkloadRealisticV5Alloc.h"
 #include <vector>
 
 namespace simv5 {
@@ -166,6 +167,51 @@ struct MInst {
   uint32_t pad;
 };
 static_assert(sizeof(MInst) == 64, "machine instructions are one cache line");
+
+// Instruction list as in ACO (std::vector<aco_ptr<Instruction>>): every
+// instruction is its own heap object (64-byte size class of the thread heap);
+// passes that rebuild a block move the pointers (take), new instructions are
+// allocated, dropped ones go back to the heap when the old list is cleared.
+class InstrList {
+public:
+  InstrList() = default;
+  InstrList(const InstrList &) = delete;
+  InstrList &operator=(const InstrList &) = delete;
+  ~InstrList() { clear(); }
+  MInst &operator[](size_t i) { return *p_[i]; }
+  const MInst &operator[](size_t i) const { return *p_[i]; }
+  size_t size() const { return p_.size(); }
+  MInst &back() { return *p_.back(); }
+  void push_back(const MInst &x) {
+    MInst *n = static_cast<MInst *>(Heap().Alloc(sizeof(MInst)));
+    *n = x;
+    p_.push_back(n);
+  }
+  void take(InstrList &from, size_t i) { // move instruction i of `from` here
+    p_.push_back(from.p_[i]);
+    from.p_[i] = nullptr;
+  }
+  void clear() {
+    for (MInst *x : p_)
+      if (x) Heap().Free(x, sizeof(MInst));
+    p_.clear();
+  }
+  void swap(InstrList &o) { p_.swap(o.p_); }
+  class It {
+  public:
+    explicit It(MInst *const *p) : p_(p) {}
+    MInst &operator*() const { return **p_; }
+    It &operator++() { ++p_; return *this; }
+    bool operator!=(const It &o) const { return p_ != o.p_; }
+  private:
+    MInst *const *p_;
+  };
+  It begin() const { return It(p_.data()); }
+  It end() const { return It(p_.data() + p_.size()); }
+
+private:
+  std::vector<MInst *> p_;
+};
 constexpr uint8_t kMfOffset = 1, kMfOffen = 2, kMfDone = 4, kMfVm = 8, kMfGlc = 16;
 
 enum RegClass : uint8_t { kSgpr, kVgpr };
@@ -212,7 +258,7 @@ struct CfInfo {
 // Per-thread machine IR storage, reused across compiles (vectors keep their
 // capacity; every pass writes before it reads).
 struct Mach {
-  std::vector<MInst> code, tmp;
+  InstrList code, tmp;
   std::vector<MTemp> temps;
   std::vector<MBlock> blocks;
   std::vector<uint32_t> blockOf;     // IR block -> machine block (kNone: deleted)

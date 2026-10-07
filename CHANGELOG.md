@@ -52,6 +52,10 @@ Target version: 3.6.0 (`VERSION`).
   Loop optimizations (invariant code motion, full unrolling), GPU-style
   execution-mask handling of divergent branches and loops, and a machine
   code optimizer followed: 111.9 W, about the same as the previous step.
+  Realistic memory behavior (per-thread size-class allocator, instructions
+  as individual heap objects, string and hash maps, SHA-1 cache keys)
+  completes the upgrade at 110.0 W versus 114.8 W before the GPU back end
+  (same method; jobs per second about a third of the pre-upgrade build).
 
 - **Redundant job verification.** Every compute job is executed twice, normally on two different cores, and the results are compared. On a mismatch the job is re-run to name the faulty CPU, and the log gives a `--repro` command.
 - **Per-CPU error attribution** in the GUI, CLI dashboard, final results and log ("Error CPUs: CPU 6 (core 3) x2").

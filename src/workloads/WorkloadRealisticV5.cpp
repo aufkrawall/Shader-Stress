@@ -9,6 +9,7 @@
 // until its value budget is spent. Each compile uses fresh pipeline-state
 // constants (a pipeline variant), so folding, dead control flow, CSE and DCE
 // outcomes differ between compiles of the same shader.
+#include "workloads/WorkloadRealisticV5Alloc.h"
 #include "workloads/WorkloadRealisticV5Mach.h"
 #include <algorithm>
 #include <chrono>
@@ -47,11 +48,24 @@ template <class F> inline void RunPhase(int phase, Arena &ar, F &&body) {
   body();
 }
 
+// Per-thread pipeline cache index: drivers look a pipeline up by the SHA-1 of
+// its key before compiling (RADV, Mesa disk cache). Shared caches need locks,
+// so this model keeps one per thread and never reuses a result: lookups only
+// verify that a repeated pipeline compiles to the same binary. Always-new
+// pipelines mostly miss; FIFO eviction churns StringMap entries on the heap.
+struct PipelineCache {
+  static constexpr uint32_t kCap = 512;
+  StringMap index;
+  char keys[kCap][40];
+  uint32_t head = 0, count = 0;
+};
+
 struct ThreadState {
   std::unique_ptr<uint8_t[]> raw;
   uint8_t *arena = nullptr;
   size_t cap = 0;
   Mach mach; // machine IR buffers (grow to the largest shader, then reused)
+  PipelineCache cache;
 };
 
 // Upper bound of one function's arena use (all passes), from its sizes: node
@@ -62,6 +76,7 @@ size_t ArenaBound(const ShaderRef &s) {
 }
 
 ThreadState &State(const Corpus &corpus) {
+  Heap(); // constructed before (so destroyed after) the state that frees into it
   static thread_local ThreadState t;
   if (!t.arena) {
     size_t cap = 0;
@@ -121,6 +136,22 @@ uint64_t CompileShader(ThreadState &t, const Corpus &corpus, const ShaderRef &s,
                        const uint64_t *spec, uint64_t funcIndex, SimV5Diag &st, SimV5Diag *diag) {
   // Bump arena reset per function; the base slides like a real allocator's slabs.
   Arena ar{t.arena + ((funcIndex * 64 * 67) % kArenaSlide), 0, t.cap};
+  const uint64_t heapBefore = Heap().stats.allocs, pagesBefore = Heap().stats.pages;
+  // Pipeline key -> SHA-1 -> hex cache key (shader + pipeline-state constants).
+  char key[40];
+  {
+    uint8_t bytes[4 + 8 * kSpecConsts], digest[20];
+    std::memcpy(bytes, &s.wordOffset, 4);
+    std::memcpy(bytes + 4, spec, 8 * kSpecConsts);
+    Sha1(bytes, sizeof(bytes), digest);
+    for (uint32_t k = 0; k < 20; ++k) {
+      key[2 * k] = "0123456789abcdef"[digest[k] >> 4];
+      key[2 * k + 1] = "0123456789abcdef"[digest[k] & 15];
+    }
+  }
+  const StringMap::Entry *cached = t.cache.index.Find(key, 40);
+  const bool hit = cached != nullptr;
+  const uint32_t cachedValue = hit ? cached->value : 0;
   Fn f;
   f.st = st;
   f.diag = diag != nullptr;
@@ -209,6 +240,23 @@ uint64_t CompileShader(ThreadState &t, const Corpus &corpus, const ShaderRef &s,
   for (uint32_t i = 0; i < f.n; i += 61) // sample the analysis summaries
     acc = Rotl64(acc ^ f.nodes[i].val ^ f.nodes[i].op, 11) * 0x9E3779B97F4A7C15ull;
   clock.Lap(f.st, kPhaseEmit);
+  f.st.cacheLookups++;
+  if (hit) {
+    f.st.cacheHits++;
+    if (cachedValue != (uint32_t)acc) f.st.cacheMismatches++; // same pipeline, different binary: a bug
+  } else {
+    PipelineCache &pc = t.cache;
+    if (pc.count == PipelineCache::kCap) { // FIFO eviction
+      pc.index.Erase(pc.keys[pc.head], 40);
+      pc.count--;
+    }
+    std::memcpy(pc.keys[pc.head], key, 40);
+    pc.index.Insert(key, 40, (uint32_t)acc, nullptr);
+    pc.head = (pc.head + 1) % PipelineCache::kCap;
+    pc.count++;
+  }
+  f.st.heapAllocs += Heap().stats.allocs - heapBefore;
+  f.st.heapPages += Heap().stats.pages - pagesBefore;
   f.st.functions++;
   f.st.nodes += f.n;
   f.st.arenaPeak = std::max<uint64_t>(f.st.arenaPeak, ar.used);

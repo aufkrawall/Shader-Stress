@@ -287,7 +287,7 @@ private:
   void Sequence(Copy *c, uint32_t n);
   Fn &f_;
   Mach &m_;
-  std::vector<MInst> &out_;
+  InstrList &out_;
   uint32_t block_ = 0;
 };
 
@@ -395,7 +395,7 @@ void HwLowering::Run() {
           f_.st.copiesCoalesced++;
           break; // coalesced copy
         }
-        out_.push_back(mi);
+        out_.take(m_.code, i); // moves the instruction (mi stays valid)
         if (mi.op == m_v_mad_f32 && !mi.mods && mi.pdef[0] == mi.pop[2] && mi.pop[1] >= kRegVgpr &&
             mi.pop[2] >= kRegVgpr) { // v_mac_f32: dst is the addend (VOP2)
           MInst &mac = out_.back();
