@@ -8,8 +8,9 @@ Stale-risk: medium — the power model was corrected in P055 (new contiguous
 L2/L3 lines per block drive power, L1-hitting traffic does not; see
 [opt-audit.md](opt-audit.md)); unexplained run-to-run power variation remains.
 Scalar synthetic (139.5 W, P058) and avx2 (~151.5 W) targets are in band in
-one binary; the realistic target remains unmet inside the pinned V3 sim
-source, while the realistic V5 test build reaches 118.0 W (ledger P065).
+one binary. The realistic `scalar-sim` is V5 since 2026-10-07 (110.0 W after
+the realism upgrade, P069; V3 only in the `x64-zig-v3-simv3` comparison
+build, 110.0 W in P065).
 Cheap no-load gate before power runs: time two `--repro` processes pinned to
 SMT siblings (single core, seconds) to compare block rates of candidates.
 

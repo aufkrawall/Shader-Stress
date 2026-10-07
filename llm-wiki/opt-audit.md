@@ -81,8 +81,8 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
   compiles on all threads (108–115 W, user report 2026-10-06), but its shape
   does not: ~1 KB hot loop, AGU-bound dense bitvector loop (~65% of
   instructions), uniformly random opcodes (one mispredicted indirect jump per op).
-- **Realistic V5 (experimental, `src/workloads/WorkloadRealisticV5*.cpp`,
-  replaced V4):** DXIL-style shader-compiler model. Shared corpus of 72
+- **Realistic V5 (default `scalar-sim` since 2026-10-07,
+  `src/workloads/WorkloadRealisticV5*.cpp`, replaced V4):** DXIL-style shader-compiler model. Shared corpus of 72
   LLVM-bitstream shaders (abbreviations, VBR, relative ids, constants /
   function / symbol-table blocks; 512–16384 values, geometric size mix),
   each compiled per pipeline variant (8 specialization constants). Phases:
@@ -100,8 +100,10 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
   passes (new L2/L3 lines per unit of work); pointer-heavy schedule /
   regalloc work is least power-dense. P065: **118.0 W vs V3 110.0 W**
   (+7.9 ±0.9 W); jobs/s ~0.4× V3 (7/4 values per unit, all shader classes
-  fit benchmark jobs). Only `x64-zig-v3-simv5` (`-DSHADERSTRESS_REALISTIC_V5`)
-  runs it as `scalar-sim`; all builds self-test it (P065 golden
+  fit benchmark jobs). Since 2026-10-07 every build runs it as `scalar-sim`;
+  only the `x64-zig-v3-simv3` comparison build (`-DSHADERSTRESS_REALISTIC_V3`)
+  runs the pinned V3 (self-test `scalar-sim dispatches to the configured
+  realistic sim`). All builds self-test V5 (P065 golden
   `0x880cc0edc3288ba2`, identical on Zig/LLVM/MSVC/x64 baseline).
   Probe knobs (never in shipped builds): `SIMV5_PROBE_PHASE`/`_REPEAT`,
   `SIMV5_LOWER_PASSES`, `SIMV5_VALIDATE_TRACE`.

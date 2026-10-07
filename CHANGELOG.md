@@ -30,13 +30,16 @@ Target version: 3.6.0 (`VERSION`).
 
 ### New
 
-- **Experimental realistic V5 workload (test build only):** `python build.py
-  x64-zig-v3-simv5` builds a binary whose Realistic Compiler Sim runs a
-  DXIL-style shader-compiler model instead of the pinned V3 sim: a shared
+- **New realistic V5 workload, now the default Scalar (Realistic) load:**
+  every build's Realistic Compiler Sim now runs a DXIL-style shader-compiler
+  model instead of the V3 sim. Scalar (Realistic) benchmark scores and
+  hashes are not comparable with earlier versions; `python build.py
+  x64-zig-v3-simv3` builds an unpackaged comparison binary that still runs
+  the unchanged V3 sim. The model uses a shared
   corpus of LLVM-bitstream shaders compiled per pipeline variant, with
   bitstream reading, real-sized IR objects, a NIR-style lowering pipeline,
   combine/CSE/DCE optimization loop, divergence analysis, liveness,
-  scheduling, register allocation and emission. Release builds keep V3. On a
+  scheduling, register allocation and emission. In its first version, on a
   Ryzen 7 5700X it measured 118.0 W versus V3's 110.0 W (five paired 8 s +
   15 s benchmark windows, 16 threads); scores are not comparable with V3.
   It replaces the earlier V4 test build (105.6 W). A realism upgrade now
@@ -56,6 +59,8 @@ Target version: 3.6.0 (`VERSION`).
   as individual heap objects, string and hash maps, SHA-1 cache keys)
   completes the upgrade at 110.0 W versus 114.8 W before the GPU back end
   (same method; jobs per second about a third of the pre-upgrade build).
+  That matches V3's 110.0 W from the first comparison (separate sessions,
+  not a paired comparison).
 
 - **Redundant job verification.** Every compute job is executed twice, normally on two different cores, and the results are compared. On a mismatch the job is re-run to name the faulty CPU, and the log gives a `--repro` command.
 - **Per-CPU error attribution** in the GUI, CLI dashboard, final results and log ("Error CPUs: CPU 6 (core 3) x2").

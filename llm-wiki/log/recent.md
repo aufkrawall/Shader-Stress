@@ -1,5 +1,16 @@
 # Recent Changes Log
 
+## 2026-10-07 — V5 is the default scalar-sim; V3 comparison build `x64-zig-v3-simv3`
+
+- Handoff step 1 reported (M2–M4 trend; note: M4's 110.0 W equals P065's
+  V3 110.0 W from a separate session). Step 2 done: dispatch/labels flipped
+  (`SHADERSTRESS_REALISTIC_V3` replaces `SHADERSTRESS_REALISTIC_V5`;
+  `Common.h`, `Common.cpp`, `SynthKernels.cpp`), build variant `-simv3`,
+  run_tests flag checks, new self-test `scalar-sim dispatches to the
+  configured realistic sim` (passes on Zig/LLVM/MSVC and the simv3 build).
+  Old `bin/x64-zig-v3-simv5` output dirs are stale leftovers (git-ignored).
+- Next: step 3, compiler session on V5 (zig-v3 vs llvm-v3 vs msvc-v3).
+
 ## 2026-10-07 — V5 realism M2–M4 (machine back end, loops/CF, memory): 110.0 W (P069)
 
 - User: implement remaining milestones (ISel/waitcnt/encoders, loops +

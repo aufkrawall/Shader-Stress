@@ -192,7 +192,8 @@ def test_invalid_args(b):
 def test_invariant_realistic_unchanged(b):
     """RunRealisticCompilerSim_V3 is user-pinned. Only change: 3.6.0 masked the
     rotate's right-shift count (`>> 64` was UB when src2 & 63 == 0; found by
-    UBSan). Output is bit-identical (golden checksum 0x58b1a15ca01f7216)."""
+    UBSan). Output is bit-identical (golden checksum 0x58b1a15ca01f7216, now
+    checked on the `x64-zig-v3-simv3` comparison build)."""
     src = _read("src/workloads/WorkloadRealistic.cpp")
     actual = _stable_source_hash(_extract_function(src, "RunRealisticCompilerSim_V3"))
     check(actual == "02290c1a756fd7099c973a4ea1662617c8fb92200ac9f26fcf6c477c2ffb3270",
@@ -338,12 +339,12 @@ def test_build_comparisons(b):
           zen - base == {"-mtune=znver3"} and
           interleave1 - base == {"-mllvm", "-force-vector-interleave=1"} and
           not base - interleave1, "comparison flags vary one setting at a time")
-    simv5 = set(build.common_cxx_flags("bin/x64-zig-v3-simv5"))
+    simv3 = set(build.common_cxx_flags("bin/x64-zig-v3-simv3"))
     zig_base = set(build.common_cxx_flags("bin/x64-zig-v3"))
-    check(simv5 - zig_base == {"-DSHADERSTRESS_REALISTIC_V5"} and not zig_base - simv5 and
-          [c[1] for c in select_configs(["x64-zig-v3-simv5"])] == ["bin/x64-zig-v3-simv5"] and
-          all(c[1] != "bin/x64-zig-v3-simv5" for c in select_configs(["all"])),
-          "realistic V5 test build: one define, explicit-only, never packaged")
+    check(simv3 - zig_base == {"-DSHADERSTRESS_REALISTIC_V3"} and not zig_base - simv3 and
+          [c[1] for c in select_configs(["x64-zig-v3-simv3"])] == ["bin/x64-zig-v3-simv3"] and
+          all(c[1] != "bin/x64-zig-v3-simv3" for c in select_configs(["all"])),
+          "realistic V3 comparison build: one define, explicit-only, never packaged")
     check(any(c[0].endswith("-msvc") for c in select_configs(["all"])) and
           select_configs(["msvc"]) == select_configs(["x64-msvc-v3"]) and
           len(select_configs(["win-v3", "win-v3"])) == 1, "MSVC default/explicit targets and deduplication")
@@ -399,7 +400,7 @@ def test_default_build_is_best_variant(b):
                 "-fomit-frame-pointer", "-fno-math-errno"}
     forbidden = {"-ffast-math", "-fno-strict-aliasing", "-fno-unroll-loops",
                  "-funroll-all-loops", "-mtune=znver3", "-force-vector-interleave=1",
-                 "-DSHADERSTRESS_REALISTIC_V5"}
+                 "-DSHADERSTRESS_REALISTIC_V3", "-DSHADERSTRESS_REALISTIC_V5"}
     for out_dir in ("bin/x64-llvm", "bin/x64-llvm-v3", "bin/x64-zig", "bin/x64-zig-v3"):
         flags = set(build.common_cxx_flags(out_dir))
         check(accepted <= flags and not (flags & forbidden) and
@@ -574,6 +575,25 @@ def verify_golden_values(b):
         check(actual.get(isa) == value, f"golden checksum {isa}", f"expected {value} got {actual.get(isa)}")
 
 
+def verify_comparison_builds():
+    """Explicit-only comparison builds that change the workload (the pinned
+    realistic V3 sim in `x64-zig-v3-simv3`) keep their own golden values."""
+    if not os.path.exists(GOLDEN_FILE):
+        return
+    with open(GOLDEN_FILE) as f:
+        builds = json.load(f).get("comparison_builds", {})
+    for variant, expected in builds.items():
+        candidate = os.path.join(PROJECT_ROOT, "bin", variant, EXE)
+        if not os.path.exists(candidate):
+            print(f"  [SKIP] {variant} golden checksums (python build.py {variant})")
+            continue
+        for isa, value in expected.items():
+            ret, out, _ = _repro(candidate, isa, 1000)
+            m = re.search(r"Result: (0x[0-9a-f]{16})", out)
+            actual = m.group(1) if ret == 0 and m else f"fail:{ret}"
+            check(actual == value, f"{variant} golden checksum {isa}", f"expected {value} got {actual}")
+
+
 STRESS_TESTS = [
     test_repro_all_isas,
     test_smoke_steady,
@@ -658,6 +678,8 @@ def main():
                         print(f"\n--- Compiler comparison: {variant} ---")
                         test_self_test(candidate)
                         verify_golden_values(candidate)
+                print(f"\n--- Comparison builds ---")
+                verify_comparison_builds()
     else:
         print(f"\n  (use --stress to also run short smoke runs)")
 

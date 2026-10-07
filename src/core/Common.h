@@ -503,16 +503,17 @@ uint64_t RunHyperStress_Scalar(uint64_t seed, int complexity,
                                const StressConfig &config);
 uint64_t RunRealisticCompilerSim_V3(uint64_t seed, int complexity,
                                     const StressConfig &config);
-// Experimental shader-compiler model (WorkloadRealisticV5.cpp). Used for
-// scalar-sim only in -DSHADERSTRESS_REALISTIC_V5 test builds (`*-simv5`).
+// Shader-compiler model (WorkloadRealisticV5.cpp): the default scalar-sim
+// workload. -DSHADERSTRESS_REALISTIC_V3 comparison builds (`*-simv3`) run the
+// pinned V3 sim instead.
 uint64_t RunRealisticCompilerSim_V5(uint64_t seed, int complexity,
                                     const StressConfig &config);
-#ifdef SHADERSTRESS_REALISTIC_V5
-constexpr const wchar_t *REALISTIC_SIM_VERSION = L"V5 (test build)";
-constexpr bool REALISTIC_V5_ACTIVE = true;
-#else
-constexpr const wchar_t *REALISTIC_SIM_VERSION = L"V3";
+#ifdef SHADERSTRESS_REALISTIC_V3
+constexpr const wchar_t *REALISTIC_SIM_VERSION = L"V3 (comparison build)";
 constexpr bool REALISTIC_V5_ACTIVE = false;
+#else
+constexpr const wchar_t *REALISTIC_SIM_VERSION = L"V5";
+constexpr bool REALISTIC_V5_ACTIVE = true;
 #endif
 // Runs the compute workload of the given (resolved) type. Never inlined so all
 // callers share one compiled body (bit-identical results for verification).

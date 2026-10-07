@@ -194,10 +194,10 @@ def common_cxx_flags(out_dir):
         flags.append("-fno-strict-aliasing")
     if variant.endswith("-znver3"):
         flags.append("-mtune=znver3")
-    if variant.endswith("-simv5"):
-        # Test build: scalar-sim runs the experimental V5 shader-compiler model
-        # instead of the pinned V3 (a workload choice, not a power flag).
-        flags.append("-DSHADERSTRESS_REALISTIC_V5")
+    if variant.endswith("-simv3"):
+        # Comparison build: scalar-sim runs the pinned V3 sim instead of the
+        # default V5 shader-compiler model (a workload choice, not a power flag).
+        flags.append("-DSHADERSTRESS_REALISTIC_V3")
     if variant.endswith("-interleave1"):
         # P028: vectorizer interleave 1 for the pinned realistic sim (LTO/main
         # objects only; native kernel objects keep build_kernels.py flags).

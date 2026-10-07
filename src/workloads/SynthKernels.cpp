@@ -224,10 +224,10 @@ NOINLINE uint64_t RunComputeWorkload(WorkloadType type, uint64_t seed, int compl
   case WL_AVX2:
     return RunHyperStress_AVX2(seed, complexity, cfg);
   case WL_SCALAR_SIM:
-#ifdef SHADERSTRESS_REALISTIC_V5
-    return RunRealisticCompilerSim_V5(seed, complexity, cfg);
-#else
+#ifdef SHADERSTRESS_REALISTIC_V3
     return RunRealisticCompilerSim_V3(seed, complexity, cfg);
+#else
+    return RunRealisticCompilerSim_V5(seed, complexity, cfg);
 #endif
   case WL_SCALAR:
   default:
@@ -302,7 +302,7 @@ NOINLINE void RunPerfStats() {
     printf("\n");
     fflush(stdout);
   }
-  // Realistic V5 (experimental; the scalar-sim workload only in *-simv5 builds).
+  // Realistic V5 (the scalar-sim workload except in *-simv3 comparison builds).
   RunRealisticCompilerSimV5Diag(42, 10, nullptr);
   SimV5Diag d;
   const int simComplexity = 40 * complexity; // several typical benchmark jobs

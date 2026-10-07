@@ -127,7 +127,7 @@ std::string SimV5Stats(const SimV5Diag &d) {
 }
 
 void TestRealisticV5() {
-  // Experimental V5 compiler model (scalar-sim only in *-simv5 builds); a few
+  // V5 compiler model (scalar-sim except in *-simv3 builds); a few
   // ms single-threaded. The fixed checksum pins cross-compiler bit identity,
   // the pass statistics guard against a degenerate (non-compiler-like) mix.
   const uint64_t a = RunRealisticCompilerSimV5Diag(7, 300, nullptr);
@@ -226,6 +226,12 @@ void TestKernels() {
   uint64_t s1 = RunComputeWorkload(WL_SCALAR_SIM, 42, 100);
   uint64_t s2 = RunComputeWorkload(WL_SCALAR_SIM, 42, 100);
   Check(s1 == s2, "realistic sim deterministic");
+  // Default builds dispatch scalar-sim to V5; only *-simv3 builds run V3.
+  const uint64_t expectSim = REALISTIC_V5_ACTIVE
+                                 ? RunRealisticCompilerSimV5Diag(42, 100, nullptr)
+                                 : RunRealisticCompilerSim_V3(42, 100, GetVerifyConfig());
+  Check(s1 == expectSim, "scalar-sim dispatches to the configured realistic sim",
+        std::string(REALISTIC_V5_ACTIVE ? "V5" : "V3") + " expected " + Hex(expectSim) + ", got " + Hex(s1));
   Check(RunComputeWorkload(WL_SCALAR, 9, 2) == SynthKernel128(9, 2, nullptr),
         "dispatch uses the 128-bit kernel");
 }

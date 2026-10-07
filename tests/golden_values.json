@@ -4,8 +4,13 @@
   "checksums": {
     "x64": {
       "scalar": "0x93b76b8c19837de7",
-      "scalar-sim": "0x58b1a15ca01f7216",
+      "scalar-sim": "0xebb78b423639807d",
       "avx2": "0x658323a86c4d6bbd"
+    }
+  },
+  "comparison_builds": {
+    "x64-zig-v3-simv3": {
+      "scalar-sim": "0x58b1a15ca01f7216"
     }
   }
 }

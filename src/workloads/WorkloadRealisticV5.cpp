@@ -1,8 +1,8 @@
 // WorkloadRealisticV5.cpp - Realistic V5 shader-compiler workload: job driver.
 //
-// Opt-in test workload: the `*-simv5` build variant (-DSHADERSTRESS_REALISTIC_V5)
-// runs it for `scalar-sim`; every other build keeps the pinned V3
-// (WorkloadRealistic.cpp) and only compiles V5 for --self-test / --perf-stats.
+// The default `scalar-sim` workload. Only the `*-simv3` comparison build
+// (-DSHADERSTRESS_REALISTIC_V3) runs the pinned V3 sim (WorkloadRealistic.cpp)
+// instead.
 // Pipeline and design: WorkloadRealisticV5.h.
 //
 // A job compiles shaders from the shared corpus (thousands of unique shaders)
