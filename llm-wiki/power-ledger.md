@@ -321,7 +321,7 @@ CPU/steady-only rankings as proof of a global optimum.
 
 Newest first. Copy the template.
 
-### P072 — V5 M6: 8 code replicas of the hot workers (pending)
+### P072 — V5 M6: 8 code replicas of the hot workers (~110 W, user reading)
 
 - Date: 2026-10-07. Type: workload realism (benchmark validity: real
   compilers' instruction-cache / op-cache / BTB footprint), user tests
@@ -334,7 +334,9 @@ Newest first. Copy the template.
   runs each; absolute values were inflated in that run, ratio only).
 - Expected: somewhat lower power (front-end stalls lower IPC), lower
   scores. Baseline snapshot: `audit/power-baselines/P071-m5`.
-- Result: not measured yet. Record the user's reading here.
+- Result (2026-10-07, user's manual test, not the 5-run CI procedure):
+  **~110 W, unchanged** vs P071 (~110 W). Kept; user: "very typical vs.
+  real compile workloads on the CPU".
 
 ### P071 — V5 M5: ACO instruction buffer + register demand / load scheduler (~110 W, user reading)
 

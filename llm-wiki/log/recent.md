@@ -5,7 +5,8 @@
 - User: benchmark validity across CPUs matters most; asked for a compact
   fix of the code-footprint gap (V5 235 KiB vs real compilers' MBs).
 - Done: templated replicas of the hot workers (opt-audit M6), golden
-  unchanged, V5 code 722 KiB, single-thread +7-9%. First attempt (flatten
+  unchanged, V5 code 722 KiB, single-thread +7-9%. User reading ~110 W
+  (unchanged, kept). Code side considered complete by the review. First attempt (flatten
   per-block lambdas) gave almost no footprint; replaced.
 - Open (from the benchmark-validity review): correlate V5 scores with real
   compile times on other CPUs (incl. ARM); ARM64 bit identity untested on
