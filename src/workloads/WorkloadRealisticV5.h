@@ -305,6 +305,7 @@ bool RunDeadCf(Fn &f, Arena &ar);
 void BuildDominators(Fn &f, Arena &ar);
 bool RunCse(Fn &f, Arena &ar);
 bool RunDce(Fn &f, Arena &ar);
+bool RunLoopPasses(Fn &f, Arena &ar); // loop analysis, LICM, full unrolling (WorkloadRealisticV5Loop.cpp)
 void Replace(Fn &f, uint32_t from, uint32_t to); // RAUW + erase
 void MakeConst(Fn &f, uint32_t i, uint64_t bits); // node becomes a constant
 // Lower (WorkloadRealisticV5Lower.cpp)

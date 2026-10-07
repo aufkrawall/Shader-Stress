@@ -192,6 +192,7 @@ heavier per-cycle current, matching the boost/backoff model).
 | P065 | workload | Final V5 (P064 + IR validator fixes) vs current V3 | scalar-sim | 118.0 W vs 110.0 W (+7.9 ±0.9 W) |
 | P066 | workload | V5 realism milestone 1 (real DXIL op table, typed 4096-shader corpus without dead code, exact folding, real lowering passes) vs P065 | scalar-sim | 114.3 W vs 117.1 W (−2.8 ±0.5 W), jobs/s 1417 vs 1807; kept pending user decision (~115 W accepted) |
 | P067 | workload | V5 realism M2: instruction selection to GFX9-like machine code, machine liveness + linear-scan RA, phi/parallel-copy lowering, s_waitcnt insertion, real encoders (vs P066) | scalar-sim | 111.5 W vs 114.3 W (−2.8 ±1.0 W), jobs/s 665 vs 1467 |
+| P068 | workload | V5 realism M3: loop analysis + LICM + full unroll, exec-mask lowering of divergent CF (linear machine CFG), ACO-style machine optimizer (vs P066, with P067) | scalar-sim | 111.9 W vs 114.5 W (−2.6 ±0.3 W); M2 recheck 111.5 W (−3.0 ±0.6); jobs/s 601 |
 | P058 | kernel | Production form of P056 s4n4 for 128-bit kernels only (single base pointer, constant offsets: 116 vs 126 loop instructions), confirm against base and the measured candidate | scalar | accepted (+3.0 ±2.1 W scalar, 139.5 W; AVX2 kernel instruction-identical) |
 
 ## Current disposition after P055–P058 (2026-10-06)
@@ -316,6 +317,40 @@ CPU/steady-only rankings as proof of a global optimum.
 ## Entries
 
 Newest first. Copy the template.
+
+### P068 — V5 realism M3: loops, divergent control flow, machine optimizer (111.9 W)
+
+- Date: 2026-10-07. Type: workload (user milestone list, measured vs P066).
+- Change: (1) `WorkloadRealisticV5Loop.cpp` in the NIR opt loop: natural
+  loops (back edge, dominating head, dedicated preheader), LICM of pure ALU
+  instructions with outside operands, full unroll of single-block counted
+  loops (constant trip <= 16, <= 128 cloned instructions). (2) Exec-mask
+  lowering (`..IselCf.cpp`): post-dominators find divergent-if merges;
+  s_and_saveexec_b64 / s_cbranch_execz / exec flip blocks (s_andn2_b64) /
+  restore (s_or_b64); divergent loops save exec in the preheader, drop
+  exiting lanes at the latch (s_and_b64 exec) and loop while lanes remain
+  (s_cbranch_execnz); liveness/RA/waits on the linear CFG, phis on logical
+  predecessors. (3) `..Mopt.cpp`: ssa_info labels, inline constants,
+  fneg/fabs to VOP3 modifiers, bool round trips, v_lshl_add_u32 / v_add3_u32
+  / v_mad_f32 combines, DCE; v_mad_f32 with a dying addend becomes v_mac_f32.
+  Fixed on the way: operand slots were counted, not positional — the
+  v_cndmask lane mask (slot 3) was invisible to use counts and liveness
+  (affected the P067 build; the validator now checks slots beyond `nops`).
+- Stats (diag run): 28 divergent ifs, 17 divergent loops, 0 fallbacks, 837
+  LICM hoists; corpus: 84 loops unrolled, spills 1.2% of machine instructions.
+  `--perf-stats` 5753 cycles/complexity: read 5.1%, lower 10.0%, combine
+  19.9%, dom+cse(+loops) 11.8%, dce 12.5%, schedule 5.8%, isel(+mopt) 9.5%,
+  regalloc 14.5%, emit 10.9%.
+- Command: `python scripts/power_measure.py --mode benchmark --isas scalar-sim --label P068-m3-loops-cf --baseline P066-realism1 --exe audit/power-baselines/P066-realism1/ShaderStress.com,audit/power-baselines/P067-m2-isel/ShaderStress.com,audit/power-baselines/P068-m3-loops-cf/ShaderStress.com`.
+
+  | Candidate | W (SD) | dW (CI95) | Eff MHz | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|
+  | P068-m3-loops-cf | 111.9 (0.9) | −2.6 ±0.3 | 4453 | 82.9 | 601 | worse (less power) |
+  | P067-m2-isel | 111.5 (0.9) | −3.0 ±0.6 | 4454 | 83.1 | 657 | worse (less power) |
+  | P066-realism1 | 114.5 (0.9) | – | 4453 | 83.6 | 1448 | baseline |
+
+- Decision: kept (realism milestones; M3 ~ M2 + 0.4 W). Evidence:
+  `audit/power-measurements/P068-m3-loops-cf-20261007-150027-29208-00`.
 
 ### P067 — V5 realism M2: machine code back end (111.5 W)
 

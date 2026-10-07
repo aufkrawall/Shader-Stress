@@ -49,6 +49,9 @@ Target version: 3.6.0 (`VERSION`).
   classes, register allocation, phi copy lowering, memory wait counters and
   real binary encodings. Measured 111.5 W versus 114.3 W before this step
   (same method; less than half the jobs per second, more work per job).
+  Loop optimizations (invariant code motion, full unrolling), GPU-style
+  execution-mask handling of divergent branches and loops, and a machine
+  code optimizer followed: 111.9 W, about the same as the previous step.
 
 - **Redundant job verification.** Every compute job is executed twice, normally on two different cores, and the results are compared. On a mismatch the job is re-run to name the faulty CPU, and the log gives a `--repro` command.
 - **Per-CPU error attribution** in the GUI, CLI dashboard, final results and log ("Error CPUs: CPU 6 (core 3) x2").

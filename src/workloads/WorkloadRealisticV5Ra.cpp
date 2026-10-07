@@ -23,6 +23,22 @@ void Liveness(Fn &f, Mach &m) {
   m.live.resize(words);
   m.order.resize(nb);
   m.heap.assign(nb, 0); // queued flags
+  // Phi operands are live out of the logical predecessor (copies run there).
+  m.phiUseFirst.assign(nb + 1, 0);
+  auto forPhiOps = [&](auto &&body) {
+    for (uint32_t s = 0; s < nb; ++s) {
+      const MBlock &sb = m.blocks[s];
+      for (uint32_t i = sb.start; i < sb.end && m.code[i].op == m_p_phi; ++i)
+        for (uint32_t k = 0; k < m.code[i].nops && k < sb.nlpred; ++k)
+          if (IsTempOp(m.code[i].ops[k])) body(sb.lpred[k], TempOf(m.code[i].ops[k]));
+    }
+  };
+  forPhiOps([&](uint32_t p, uint32_t) { m.phiUseFirst[p + 1]++; });
+  for (uint32_t b = 0; b < nb; ++b) m.phiUseFirst[b + 1] += m.phiUseFirst[b];
+  m.phiUse.resize(m.phiUseFirst[nb]);
+  m.order.assign(m.phiUseFirst.begin(), m.phiUseFirst.end() - 1); // fill cursors
+  forPhiOps([&](uint32_t p, uint32_t t) { m.phiUse[m.order[p]++] = t; });
+  m.order.resize(nb);
   uint32_t sp = 0;
   for (uint32_t b = 0; b < nb; ++b) { // pops in reverse layout order
     m.order[sp++] = b;
@@ -35,15 +51,12 @@ void Liveness(Fn &f, Mach &m) {
     f.st.liveVisits++;
     const MBlock &mb = m.blocks[b];
     std::fill(live, live + words, 0);
-    for (uint32_t s : mb.succ) {
+    for (uint32_t s : mb.succ) { // linear successors
       if (s == kNone) continue;
       const uint64_t *in = &m.liveIn[(size_t)s * words];
       for (uint32_t w = 0; w < words; ++w) live[w] |= in[w];
-      const MBlock &sb = m.blocks[s];
-      const uint32_t k = sb.pred[0] == b ? 0 : 1;
-      for (uint32_t i = sb.start; i < sb.end && m.code[i].op == m_p_phi; ++i)
-        if (k < m.code[i].nops && IsTempOp(m.code[i].ops[k])) SetB(live, TempOf(m.code[i].ops[k]));
     }
+    for (uint32_t k = m.phiUseFirst[b]; k < m.phiUseFirst[b + 1]; ++k) SetB(live, m.phiUse[k]);
     std::copy(live, live + words, &m.liveOut[(size_t)b * words]);
     for (uint32_t i = mb.end; i-- > mb.start;) {
       const MInst &mi = m.code[i];
@@ -332,7 +345,7 @@ void HwLowering::Run() {
     for (uint32_t s = 0; s < nb; ++s) {
       const MBlock &sb = m_.blocks[s];
       for (uint32_t i = sb.start; i < sb.end && m_.code[i].op == m_p_phi; ++i)
-        for (uint32_t k = 0; k < m_.code[i].nops; ++k) body(sb.pred[k], m_.code[i], k);
+        for (uint32_t k = 0; k < m_.code[i].nops && k < sb.nlpred; ++k) body(sb.lpred[k], m_.code[i], k);
     }
   };
   forPhis([&](uint32_t p, const MInst &, uint32_t) { first[p + 1]++; });
@@ -383,6 +396,14 @@ void HwLowering::Run() {
           break; // coalesced copy
         }
         out_.push_back(mi);
+        if (mi.op == m_v_mad_f32 && !mi.mods && mi.pdef[0] == mi.pop[2] && mi.pop[1] >= kRegVgpr &&
+            mi.pop[2] >= kRegVgpr) { // v_mac_f32: dst is the addend (VOP2)
+          MInst &mac = out_.back();
+          mac.op = m_v_mac_f32;
+          mac.ops[2] = kONone;
+          mac.nops = 2;
+          f_.st.macConverted++;
+        }
       }
     }
     if (term == kNone) {
@@ -413,7 +434,9 @@ uint32_t ValidateMachine(const Fn &f, const Mach &m) {
     if (mb.start > mb.term || mb.term > mb.end || (b && mb.start != m.blocks[b - 1].end)) errors++;
     for (uint32_t i = mb.start; i < mb.end; ++i) {
       const MInst &mi = m.code[i];
-      if (mi.op == m_p_phi && mi.nops != std::min<uint32_t>(mb.npred, 2)) errors++;
+      if (mi.op == m_p_phi && mi.nops != mb.nlpred) errors++;
+      for (uint32_t k = mi.nops; k < 4; ++k) // operands beyond nops would be invisible to liveness
+        if (mi.ops[k] != kONone) errors++;
       for (uint32_t k = 0; k < mi.nops; ++k) {
         if (!IsTempOp(mi.ops[k])) continue;
         const uint32_t t = TempOf(mi.ops[k]);

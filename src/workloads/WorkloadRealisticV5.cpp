@@ -153,14 +153,16 @@ uint64_t CompileShader(ThreadState &t, const Corpus &corpus, const ShaderRef &s,
     Validate(f, "dead cf");
     BuildDominators(f, ar);
     progress |= RunCse(f, ar);
+    progress |= RunLoopPasses(f, ar); // nir_opt_licm / nir_opt_loop_unroll (dominators still valid)
     clock.Lap(f.st, kPhaseCse);
-    Validate(f, "cse");
+    Validate(f, "cse + loops");
     progress |= RunDce(f, ar);
     clock.Lap(f.st, kPhaseDce);
     Validate(f, "dce");
     f.st.optIters++;
     if (!progress) break;
   }
+  BuildDominators(f, ar); // the loop may stop right after a CFG change (unroll)
   RunPhase(kPhaseLower, ar, [&] { RunLateLowering(f); });
   Validate(f, "late lowering");
   OptConstantFolding(f); // late algebraic: clean up after lowering
@@ -179,7 +181,10 @@ uint64_t CompileShader(ThreadState &t, const Corpus &corpus, const ShaderRef &s,
   clock.Lap(f.st, kPhaseSchedule);
   Validate(f, "schedule");
   Mach &m = t.mach;
-  RunPhase(kPhaseIsel, ar, [&] { SelectInstructions(f, m); });
+  RunPhase(kPhaseIsel, ar, [&] {
+    SelectInstructions(f, m);
+    OptimizeMachine(f, m);
+  });
   clock.Lap(f.st, kPhaseIsel);
   if (f.diag) {
     const uint32_t errors = ValidateMachine(f, m);

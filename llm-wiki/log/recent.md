@@ -14,10 +14,12 @@
   the checksum compiler-dependent; sequenced, rule documented in Isel.cpp.
   (3) A test thread without `SetFpuFlushMode()` folded denormals differently
   (not a product bug: workers set FTZ/DAZ).
-- Next: M3 (loop analysis/LICM/unroll in `WorkloadRealisticV5Loop.cpp`,
-  written, not yet built; exec-mask lowering of divergent CF with a linear
-  machine CFG; ACO-style machine peephole optimizer), then M4, then default
-  flip and compiler session.
+- M3 done (P068 **111.9 W**, −2.6 ±0.3 vs P066): loops (LICM/unroll),
+  exec-mask lowering, machine optimizer. Bug found: positional operand slots
+  (v_cndmask mask invisible to liveness in the P067 build).
+- Next: M4 (per-thread size-class heap, StringMap, DenseMap32, SHA-1 in
+  `WorkloadRealisticV5Alloc.*`, written, not yet built; machine value
+  numbering; pipeline-cache index), then default flip and compiler session.
 
 ## 2026-10-07 — V5 realism milestone 1 committed: 114.3 W (P066)
 

@@ -115,7 +115,13 @@ std::string SimV5Stats(const SimV5Diag &d) {
          " swaps=" + std::to_string(d.swaps) + " waitcnts=" + std::to_string(d.waitcnts) +
          " sgprs=" + std::to_string(d.sgprPeak) + " vgprs=" + std::to_string(d.vgprPeak) +
          " unselected=" + std::to_string(d.unselected) + " machErrors=" + std::to_string(d.machErrors) +
-         " bytes=" + std::to_string(d.emittedBytes);
+         " bytes=" + std::to_string(d.emittedBytes) + " loops=" + std::to_string(d.loops) +
+         " licm=" + std::to_string(d.licmHoisted) + " unrolled=" + std::to_string(d.loopsUnrolled) +
+         "/" + std::to_string(d.unrolledNodes) + " divIfs=" + std::to_string(d.divergentIfs) +
+         " divLoops=" + std::to_string(d.divergentLoops) + " cfFallback=" + std::to_string(d.cfFallback) +
+         " mopt=" + std::to_string(d.moptConsts) + "/" + std::to_string(d.moptMods) + "/" +
+         std::to_string(d.moptCombines) + "/" + std::to_string(d.moptCopies) + "/" + std::to_string(d.moptDead) +
+         " mac=" + std::to_string(d.macConverted);
 }
 
 void TestRealisticV5() {
@@ -143,7 +149,7 @@ void TestRealisticV5() {
   Check(a != RunRealisticCompilerSimV5Diag(8, 300, nullptr), "realistic V5 seed-sensitive");
   Check(a != RunRealisticCompilerSimV5Diag(7, 301, nullptr), "realistic V5 complexity-sensitive");
   const uint64_t golden = RunRealisticCompilerSimV5Diag(42, 1000, nullptr);
-  Check(golden == 0x6fb7f76a8ceefd6cull, "realistic V5 golden checksum (all compilers)", Hex(golden));
+  Check(golden == 0xe20196bb1285f432ull, "realistic V5 golden checksum (all compilers)", Hex(golden));
   const uint32_t mt = RunRealisticCompilerSimV5MachineTest();
   Check(mt == 0, "realistic V5 machine code: GFX9 encodings (MUBUF/VOP2/VOP3/SOPP), s_waitcnt vmcnt(0)",
         "failed checks " + std::to_string(mt));

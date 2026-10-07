@@ -148,6 +148,13 @@ struct SimV5Diag {
   uint64_t waitcnts = 0, waitIters = 0;         // s_waitcnt inserted / wait-state sweeps
   uint64_t sgprPeak = 0, vgprPeak = 0;          // registers per shader (max)
   uint64_t machErrors = 0;                      // ValidateMachine findings (diag; must stay 0)
+  uint64_t loops = 0, licmHoisted = 0;          // natural loops analyzed / invariant instructions hoisted
+  uint64_t loopsUnrolled = 0, unrolledNodes = 0; // fully unrolled loops / cloned body instructions
+  uint64_t divergentIfs = 0, divergentLoops = 0; // exec-mask lowered branches / loops
+  uint64_t cfFallback = 0;                      // divergent branches without structure (any-lane branch)
+  uint64_t moptConsts = 0, moptMods = 0;        // machine optimizer: inline constants / source modifiers
+  uint64_t moptCombines = 0, moptCopies = 0, moptDead = 0; // combined / propagated / removed
+  uint64_t macConverted = 0;                    // v_mad_f32 encoded as v_mac_f32 (tied)
   uint64_t corpusValues = 0, corpusUnused = 0; // generated values / values without a use
   uint64_t phaseNs[kSimV5Phases] = {};  // wall time per phase
   bool aborted = false;

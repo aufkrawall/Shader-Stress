@@ -181,13 +181,32 @@ struct MTemp {
   uint32_t pad;
 };
 
+// Machine blocks form the linear CFG (what executes: both sides of a
+// divergent branch run under exec masks); phis use the logical predecessors.
 struct MBlock {
-  uint32_t ir;          // IR block (kNone: split critical edge)
+  uint32_t ir;          // IR block (kNone: split critical edge or exec flip block)
   uint32_t start, term, end; // instruction range; [term, end) terminator
-  uint32_t succ[2];
-  uint32_t pred[2], npred;
+  uint32_t succ[2];     // linear successors
+  uint32_t pred[4], npred;   // linear predecessors
+  uint32_t lpred[2], nlpred; // logical predecessors (phi operand order)
   uint32_t offset;      // code offset in dwords (assembler)
-  uint32_t phiFrom[2];  // edge block only: phi copies for (from IR block, to IR block)
+  uint32_t phiFrom[2];  // edge block: phi copies for (from IR block, to IR block)
+  uint32_t flipOf;      // exec flip block of the divergent if at this IR block (kNone)
+};
+// Divergent control flow per IR block (exec-mask lowering, ACO style).
+enum CfKind : uint8_t { kCfNone, kCfDivIf, kCfDivLatch };
+struct CfInfo {
+  uint8_t kind, flip;   // flip: an else side runs (else region or phi copies)
+  uint32_t merge;       // divergent if: immediate post-dominator
+  uint32_t thenEnd;     // divergent if: logical predecessor of merge on the then side
+  uint32_t header, exit, preheader; // divergent latch
+  uint32_t flipBefore;  // IR block whose layout position the flip block precedes
+  uint32_t teOf;        // this block ends a then side: the divergent if (kNone)
+  uint32_t flipFor;     // a flip block precedes this block: the divergent if (kNone)
+  uint32_t preheaderOf; // this block is the preheader of a divergent loop: its latch
+  uint32_t saved;       // exec mask saved at the if / preheader (temp operand)
+  uint32_t restore[2];  // exec masks to restore at this block's start (merge / loop exit)
+  uint8_t restoreLoop[2];
 };
 
 // Per-thread machine IR storage, reused across compiles (vectors keep their
@@ -197,14 +216,18 @@ struct Mach {
   std::vector<MTemp> temps;
   std::vector<MBlock> blocks;
   std::vector<uint32_t> blockOf;     // IR block -> machine block (kNone: deleted)
+  std::vector<CfInfo> cf;            // per IR block
+  std::vector<uint32_t> ipdom;       // immediate post-dominators (IR blocks)
   std::vector<uint64_t> liveIn, liveOut, live;
-  std::vector<uint32_t> work, order, heap, scratch;
+  std::vector<uint32_t> work, order, heap, scratch, scratch2;
+  std::vector<uint32_t> phiUseFirst, phiUse; // per block: temporaries read by successor phis
   std::vector<uint8_t> waitState, bytes;
   uint32_t liveWords = 0;
   uint32_t sgprs = 0, vgprs = 0;     // registers used (shader resource descriptor)
 };
 
 void SelectInstructions(Fn &f, Mach &m);  // IR (scheduled) -> machine code on temporaries
+void OptimizeMachine(Fn &f, Mach &m);     // labels, constants / modifiers, combines, DCE
 void AllocateRegisters(Fn &f, Mach &m);   // liveness + linear scan
 void LowerToHw(Fn &f, Mach &m);           // phis / parallel copies / pseudos -> moves
 void InsertWaitcnt(Fn &f, Mach &m);       // s_waitcnt from outstanding counters

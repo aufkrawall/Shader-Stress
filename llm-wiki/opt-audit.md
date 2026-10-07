@@ -136,6 +136,14 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
   fresh-thread large compile vs warm thread, machine statistics bounds,
   golden `0x6fb7f76a8ceefd6c`. Trace knob `SIMV5_HISTORY_TRACE`: per-stage IR
   hashes and per-compile machine summaries (find history-dependent passes).
+  **M3 (P068, 111.9 W):** `..Loop.cpp` (natural loops, LICM, full unroll of
+  single-block counted loops, inside the opt loop; dominators rebuilt after
+  the loop), `..IselCf.cpp` (post-dominators, exec-mask lowering: saveexec /
+  execz / flip blocks / restore, divergent loop masks; machine blocks carry
+  linear `pred`/`succ` and logical `lpred` for phis), `..Mopt.cpp` (ssa_info
+  labels, inline constants, modifiers, bool round trips, lshl_add / add3 /
+  mad combines, DCE, v_mac via allocation hint). Invariant: machine operand
+  slots are positional (`nops` = last present slot + 1; loops skip kONone).
 - LZ decompression: real decoder (overlapping matches, wild copies) + per-64-byte DIV in
   the verification hash. Targets the failure class of game-asset decompression crashes
   on degraded/unstable cores.
