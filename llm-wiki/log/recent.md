@@ -1,5 +1,24 @@
 # Recent Changes Log
 
+## 2026-10-07 — V5 realism M2 (machine back end): 111.5 W (P067)
+
+- User: implement remaining milestones (ISel/waitcnt/encoders, loops +
+  CF restructuring, allocator/hash maps/strings), measure each vs P066, make
+  V5 default with a V3 comparison build, then the compiler session.
+- M2 done: GFX9-like ISel / RA / copies / s_waitcnt / encoders replace IR
+  liveness+RA+emit. P067 **111.5 W vs P066 114.3 W (−2.8 ±1.0)**, jobs/s 665.
+- Bugs found: (1) `const MTemp &` held across `NewTemp()` (vector growth) →
+  benchmark crash 0xC0000005 in large shaders, not in the small self-test
+  shaders; ASan + fresh-thread regression test. (2) MSVC evaluates call
+  arguments right to left: two code-emitting operand helpers in one call made
+  the checksum compiler-dependent; sequenced, rule documented in Isel.cpp.
+  (3) A test thread without `SetFpuFlushMode()` folded denormals differently
+  (not a product bug: workers set FTZ/DAZ).
+- Next: M3 (loop analysis/LICM/unroll in `WorkloadRealisticV5Loop.cpp`,
+  written, not yet built; exec-mask lowering of divergent CF with a linear
+  machine CFG; ACO-style machine peephole optimizer), then M4, then default
+  flip and compiler session.
+
 ## 2026-10-07 — V5 realism milestone 1 committed: 114.3 W (P066)
 
 User decisions (2026-10-07): **V5 becomes the default scalar-sim and will

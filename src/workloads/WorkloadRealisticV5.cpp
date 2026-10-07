@@ -9,11 +9,11 @@
 // until its value budget is spent. Each compile uses fresh pipeline-state
 // constants (a pipeline variant), so folding, dead control flow, CSE and DCE
 // outcomes differ between compiles of the same shader.
-#include "workloads/WorkloadRealisticV5.h"
+#include "workloads/WorkloadRealisticV5Mach.h"
 #include <algorithm>
 #include <chrono>
 #include <memory>
-#ifdef SIMV5_VALIDATE_TRACE
+#if defined(SIMV5_VALIDATE_TRACE) || defined(SIMV5_HISTORY_TRACE)
 #include <cstdio>
 #endif
 
@@ -51,6 +51,7 @@ struct ThreadState {
   std::unique_ptr<uint8_t[]> raw;
   uint8_t *arena = nullptr;
   size_t cap = 0;
+  Mach mach; // machine IR buffers (grow to the largest shader, then reused)
 };
 
 // Upper bound of one function's arena use (all passes), from its sizes: node
@@ -96,6 +97,16 @@ private:
 // Diagnostic runs validate the IR after every stage (nir_validate in Mesa
 // debug builds); -DSIMV5_VALIDATE_TRACE names the stage of each finding.
 inline void Validate(Fn &f, const char *stage) {
+#ifdef SIMV5_HISTORY_TRACE
+  uint64_t h = 0;
+  for (uint32_t i = 0; i < f.n; ++i) {
+    const Node &n = f.nodes[i];
+    if (IsDead(n)) continue;
+    h = Rotl64(h ^ n.op ^ (uint64_t)n.a << 8 ^ (uint64_t)n.b << 24 ^ (uint64_t)n.c << 40 ^ n.val ^ (uint64_t)n.imm << 20 ^
+                   (uint64_t)n.next << 33 ^ n.numUses, 13) * 0x9E3779B97F4A7C15ull;
+  }
+  std::fprintf(stderr, "hist: stage %s n %u hash %016llx%c", stage, f.n, (unsigned long long)h, 10);
+#endif
   if (!f.diag) return;
   const uint32_t errors = ValidateIr(f);
   f.st.irErrors += errors;
@@ -161,21 +172,35 @@ uint64_t CompileShader(ThreadState &t, const Corpus &corpus, const ShaderRef &s,
   GatherInfo(f);
   clock.Lap(f.st, kPhaseLower);
   Validate(f, "middle end");
-  RunPhase(kPhaseLiveness, ar, [&] {
+  RunPhase(kPhaseSchedule, ar, [&] {
     Linearize(f, ar);
-    RunLiveness(f, ar);
+    Schedule(f, ar);
   });
-  clock.Lap(f.st, kPhaseLiveness);
-  RunPhase(kPhaseSchedule, ar, [&] { Schedule(f, ar); });
   clock.Lap(f.st, kPhaseSchedule);
-  RunPhase(kPhaseRegAlloc, ar, [&] {
-    BuildRanges(f, ar);
-    RunRegAlloc(f, ar);
-  });
-  clock.Lap(f.st, kPhaseRegAlloc);
   Validate(f, "schedule");
+  Mach &m = t.mach;
+  RunPhase(kPhaseIsel, ar, [&] { SelectInstructions(f, m); });
+  clock.Lap(f.st, kPhaseIsel);
+  if (f.diag) {
+    const uint32_t errors = ValidateMachine(f, m);
+    f.st.machErrors += errors;
+#ifdef SIMV5_VALIDATE_TRACE
+    if (errors) std::fprintf(stderr, "validate: %u machine findings after isel%c", errors, 10);
+#endif
+  }
+  RunPhase(kPhaseRegAlloc, ar, [&] { AllocateRegisters(f, m); });
+  clock.Lap(f.st, kPhaseRegAlloc);
   uint64_t acc = 0;
-  RunPhase(kPhaseEmit, ar, [&] { acc = f.names ^ EmitAndHash(f, ar); });
+  RunPhase(kPhaseEmit, ar, [&] {
+    LowerToHw(f, m);
+    InsertWaitcnt(f, m);
+    acc = f.names ^ AssembleAndHash(f, m);
+  });
+#ifdef SIMV5_HISTORY_TRACE
+  std::fprintf(stderr, "hist: fn %llu n %u blocks %zu minsts %zu temps %zu sg %u vg %u bytes %zu acc %016llx%c",
+               (unsigned long long)funcIndex, f.n, m.blocks.size(), m.code.size(), m.temps.size(), m.sgprs, m.vgprs,
+               m.bytes.size(), (unsigned long long)acc, 10);
+#endif
   for (uint32_t i = 0; i < f.n; i += 61) // sample the analysis summaries
     acc = Rotl64(acc ^ f.nodes[i].val ^ f.nodes[i].op, 11) * 0x9E3779B97F4A7C15ull;
   clock.Lap(f.st, kPhaseEmit);

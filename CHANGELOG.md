@@ -44,6 +44,11 @@ Target version: 3.6.0 (`VERSION`).
   compute shaders without dead code, exact constant folding and real driver
   lowering passes; measured 114.3 W versus 117.1 W before the upgrade (same
   method), with about 22% fewer jobs per second (more work per shader).
+  The back end now compiles to GPU machine code like a real driver: AMD
+  GCN (GFX9)-style instruction selection with scalar/vector register
+  classes, register allocation, phi copy lowering, memory wait counters and
+  real binary encodings. Measured 111.5 W versus 114.3 W before this step
+  (same method; less than half the jobs per second, more work per job).
 
 - **Redundant job verification.** Every compute job is executed twice, normally on two different cores, and the results are compared. On a mismatch the job is re-run to name the faulty CPU, and the log gives a `--repro` command.
 - **Per-CPU error attribution** in the GUI, CLI dashboard, final results and log ("Error CPUs: CPU 6 (core 3) x2").

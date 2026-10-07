@@ -20,8 +20,11 @@
 //            bits / float range analysis (WorkloadRealisticV5Fold.cpp), dead
 //            control flow, dominators (Cooper-Harvey-Kennedy), scoped EarlyCSE,
 //            dead-code elimination.
-//  Back    - dense-bitset liveness, list scheduling, linear-scan register
-//            allocation, encoders, and a hash of the binary (shader cache key).
+//  Back    - list scheduling (IR), instruction selection to GFX9-like machine
+//            code (WorkloadRealisticV5Isel.cpp), machine liveness and linear-scan
+//            register allocation, phi / parallel-copy lowering (..Ra.cpp),
+//            s_waitcnt insertion and real binary encodings (..Asm.cpp), and a
+//            hash of the binary (shader cache key).
 // Power design (5700X, ledger P062-P064): real-sized IR objects and many
 // streaming instruction-list passes keep package power high; both mirror
 // production GPU compilers.
@@ -310,11 +313,7 @@ void RunLateLowering(Fn &f);
 void RunDivergence(Fn &f);   // uniform / divergent values (needs dominators)
 void GatherInfo(Fn &f);
 uint32_t ValidateIr(const Fn &f); // number of use-list / instruction-list inconsistencies
-// Back
+// Back (machine code: WorkloadRealisticV5Mach.h)
 void Linearize(Fn &f, Arena &ar);
-void RunLiveness(Fn &f, Arena &ar);
 void Schedule(Fn &f, Arena &ar);
-void BuildRanges(Fn &f, Arena &ar);
-void RunRegAlloc(Fn &f, Arena &ar);
-uint64_t EmitAndHash(Fn &f, Arena &ar);
 } // namespace simv5

@@ -191,6 +191,7 @@ heavier per-cycle current, matching the boost/backoff model).
 | P064 | workload | NIR-style lowering pipeline: 24/48/64/96 filtered list passes + divergence + gather_info | scalar-sim | accepted 48 (+5.0 ±1.1 W, 117.6/118.7 W); 64/96 no conclusive gain |
 | P065 | workload | Final V5 (P064 + IR validator fixes) vs current V3 | scalar-sim | 118.0 W vs 110.0 W (+7.9 ±0.9 W) |
 | P066 | workload | V5 realism milestone 1 (real DXIL op table, typed 4096-shader corpus without dead code, exact folding, real lowering passes) vs P065 | scalar-sim | 114.3 W vs 117.1 W (−2.8 ±0.5 W), jobs/s 1417 vs 1807; kept pending user decision (~115 W accepted) |
+| P067 | workload | V5 realism M2: instruction selection to GFX9-like machine code, machine liveness + linear-scan RA, phi/parallel-copy lowering, s_waitcnt insertion, real encoders (vs P066) | scalar-sim | 111.5 W vs 114.3 W (−2.8 ±1.0 W), jobs/s 665 vs 1467 |
 | P058 | kernel | Production form of P056 s4n4 for 128-bit kernels only (single base pointer, constant offsets: 116 vs 126 loop instructions), confirm against base and the measured candidate | scalar | accepted (+3.0 ±2.1 W scalar, 139.5 W; AVX2 kernel instruction-identical) |
 
 ## Current disposition after P055–P058 (2026-10-06)
@@ -315,6 +316,42 @@ CPU/steady-only rankings as proof of a global optimum.
 ## Entries
 
 Newest first. Copy the template.
+
+### P067 — V5 realism M2: machine code back end (111.5 W)
+
+- Date: 2026-10-07. Type: workload (user: implement the remaining realism
+  milestones, each measured against P066).
+- Change: IR liveness / IR register allocation / IR emission replaced by an
+  ACO-like machine back end: instruction selection to a GFX9-like ISA on
+  virtual SGPR/VGPR temporaries (divergence picks SALU vs VALU, uniform
+  booleans in SGPRs, lane masks for divergent ones, operand legalization:
+  VOP2 src1 VGPR, one constant-bus read, no VOP3 literal, one SALU literal;
+  descriptors rematerialized per block like RADV; vector results split into
+  coalescable component copies), machine liveness (dense bitsets) and
+  linear-scan RA with alignment / precolored inputs / phi affinity, phis as
+  parallel copies on split critical edges (swap cycles), s_waitcnt from
+  per-register outstanding vmcnt/lgkmcnt/expcnt (block dataflow to a fixed
+  point), real GFX9 encodings (SOP*/SMEM/VOP1/2/C/3/VINTRP/MUBUF/MIMG/EXP)
+  with branch offsets. 64-byte machine instructions in per-thread reused
+  buffers. Fixed on the way: a reference into the growing temporaries vector
+  (benchmark crash 0xC0000005 in large shaders; ASan/fresh-thread self-test
+  added); MSVC right-to-left argument evaluation made selection
+  compiler-dependent (sequenced; checksum now identical on Zig/LLVM/MSVC).
+- `--perf-stats`: 5002 cycles/complexity (P066: 3150); time shares read 5.8%,
+  lower 10.7%, combine 15.5%, dom+cse 6.7%, dce 9.6%, schedule 6.3%, isel 7.0%,
+  regalloc 15.1%, emit (copies + waitcnt + assembler) 23.1%.
+- Command: `python scripts/power_measure.py --mode benchmark --isas scalar-sim --label P067-m2-isel --baseline P066-realism1 --exe audit/power-baselines/P066-realism1/ShaderStress.com,audit/power-baselines/P067-m2-isel/ShaderStress.com`.
+
+  | Candidate | W (SD) | dW (CI95) | Eff MHz | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|
+  | P067-m2-isel | 111.5 (0.7) | −2.8 ±1.0 | 4455 | 83.1 | 665 | worse (less power) |
+  | P066-realism1 | 114.3 (0.9) | – | 4453 | 83.6 | 1467 | baseline |
+
+- Interpretation: the machine passes work on compact, register-file-sized
+  state (bitmaps, per-register wait state) — high IPC, fewer new cache lines
+  per unit of work than IR liveness over 128-byte nodes. Kept (realism is the
+  goal; the user decides on the power trade-off). Evidence:
+  `audit/power-measurements/P067-m2-isel-20261007-143526-11052-00`.
 
 ### P066 — V5 realism milestone 1 (114.3 W)
 

@@ -116,11 +116,11 @@ bool StopRequested();
 
 // Realistic V5 diagnostics (self-test / perf-stats only; nullptr in jobs).
 enum SimV5Phase {
-  kPhaseRead, kPhaseLower, kPhaseCombine, kPhaseCse, kPhaseDce, kPhaseLiveness, kPhaseSchedule,
+  kPhaseRead, kPhaseLower, kPhaseCombine, kPhaseCse, kPhaseDce, kPhaseSchedule, kPhaseIsel,
   kPhaseRegAlloc, kPhaseEmit, kSimV5Phases
 };
 constexpr const char *kSimV5PhaseNames[kSimV5Phases] = {
-    "read", "lower", "combine", "dom+cse", "dce", "liveness", "schedule", "regalloc", "emit"};
+    "read", "lower", "combine", "dom+cse", "dce", "schedule", "isel", "regalloc", "emit"};
 struct SimV5Diag {
   uint64_t functions = 0, nodes = 0;    // compiled shaders / SSA values (incl. constants)
   uint64_t blocks = 0, phis = 0;        // basic blocks / phi nodes read
@@ -142,6 +142,12 @@ struct SimV5Diag {
   uint64_t irErrors = 0;                // ValidateIr findings (diagnostic runs; must stay 0)
   uint64_t arenaPeak = 0, arenaCap = 0, arenaOverflows = 0;
   uint64_t corpusShaders = 0;
+  uint64_t machInsts = 0, unselected = 0;       // selected machine instructions / IR ops without a pattern
+  uint64_t literals = 0, copies = 0;            // literal constants / copies from phis and vectors
+  uint64_t copiesCoalesced = 0, swaps = 0;      // copies removed by allocation / swap cycles
+  uint64_t waitcnts = 0, waitIters = 0;         // s_waitcnt inserted / wait-state sweeps
+  uint64_t sgprPeak = 0, vgprPeak = 0;          // registers per shader (max)
+  uint64_t machErrors = 0;                      // ValidateMachine findings (diag; must stay 0)
   uint64_t corpusValues = 0, corpusUnused = 0; // generated values / values without a use
   uint64_t phaseNs[kSimV5Phases] = {};  // wall time per phase
   bool aborted = false;
@@ -149,5 +155,7 @@ struct SimV5Diag {
 uint64_t RunRealisticCompilerSimV5Diag(uint64_t seed, int complexity, SimV5Diag *diag);
 // Compiles every corpus shader once (self-test: decode and arena-bound check).
 uint64_t RunRealisticCompilerSimV5AllShaders(SimV5Diag *diag);
+// Machine back end on hand-built code (encodings, s_waitcnt): failed-check bits.
+uint32_t RunRealisticCompilerSimV5MachineTest();
 // Marks the start of a job on the calling thread.
 void BeginJob(int workload, uint64_t seed, int complexity);

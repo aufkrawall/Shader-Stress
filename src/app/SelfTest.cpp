@@ -8,6 +8,7 @@
 #include "workloads/Workloads.h"
 #include <cmath>
 #include <cstring>
+#include <thread>
 
 namespace {
 int g_pass = 0, g_fail = 0;
@@ -108,7 +109,13 @@ std::string SimV5Stats(const SimV5Diag &d) {
          " divIters=" + std::to_string(d.divIters) +
          " branchesFolded=" + std::to_string(d.branchesFolded) +
          " readErrors=" + std::to_string(d.readErrors) + " irErrors=" + std::to_string(d.irErrors) +
-         " arena=" + std::to_string(d.arenaPeak) + "/" + std::to_string(d.arenaCap);
+         " arena=" + std::to_string(d.arenaPeak) + "/" + std::to_string(d.arenaCap) +
+         " minsts=" + std::to_string(d.machInsts) + " literals=" + std::to_string(d.literals) +
+         " copies=" + std::to_string(d.copies) + " coalesced=" + std::to_string(d.copiesCoalesced) +
+         " swaps=" + std::to_string(d.swaps) + " waitcnts=" + std::to_string(d.waitcnts) +
+         " sgprs=" + std::to_string(d.sgprPeak) + " vgprs=" + std::to_string(d.vgprPeak) +
+         " unselected=" + std::to_string(d.unselected) + " machErrors=" + std::to_string(d.machErrors) +
+         " bytes=" + std::to_string(d.emittedBytes);
 }
 
 void TestRealisticV5() {
@@ -123,10 +130,23 @@ void TestRealisticV5() {
   RunRealisticCompilerSimV5Diag(99, 30000, nullptr);
   Check(x == RunRealisticCompilerSimV5Diag(1234, 20000, nullptr),
         "realistic V5 independent of the thread's previous jobs");
+  // Regression: a fresh thread starts with empty machine-IR buffers that grow
+  // during large compiles (a reference into a growing vector once crashed the
+  // benchmark; ASan builds flag such reads). Results must match a warm thread.
+  uint64_t fresh = 0;
+  std::thread([&] { // like a worker thread: FTZ/DAZ first (folding is IEEE-exact under that mode)
+    SetFpuFlushMode();
+    fresh = RunRealisticCompilerSimV5Diag(5, 16000, nullptr);
+  }).join();
+  Check(fresh == RunRealisticCompilerSimV5Diag(5, 16000, nullptr),
+        "realistic V5 large compile on a fresh thread matches a warm thread");
   Check(a != RunRealisticCompilerSimV5Diag(8, 300, nullptr), "realistic V5 seed-sensitive");
   Check(a != RunRealisticCompilerSimV5Diag(7, 301, nullptr), "realistic V5 complexity-sensitive");
   const uint64_t golden = RunRealisticCompilerSimV5Diag(42, 1000, nullptr);
-  Check(golden == 0x3b44fe5e0fa74778ull, "realistic V5 golden checksum (all compilers)", Hex(golden));
+  Check(golden == 0x6fb7f76a8ceefd6cull, "realistic V5 golden checksum (all compilers)", Hex(golden));
+  const uint32_t mt = RunRealisticCompilerSimV5MachineTest();
+  Check(mt == 0, "realistic V5 machine code: GFX9 encodings (MUBUF/VOP2/VOP3/SOPP), s_waitcnt vmcnt(0)",
+        "failed checks " + std::to_string(mt));
   SimV5Diag d;
   RunRealisticCompilerSimV5Diag(11, 4000, &d);
   const double n = d.nodes ? (double)d.nodes : 1.0;
@@ -140,7 +160,12 @@ void TestRealisticV5() {
                     d.schedMoved > 0 && d.optIters >= 2 * d.functions &&
                     d.liveVisits >= d.blocks && d.emittedBytes > d.nodes &&
                     d.lowered / n > 0.001 && d.lowered / n < 0.20 && d.uniform > 0 &&
-                    d.uniform / n < 0.5 && d.divIters >= 2 * d.functions;
+                    d.uniform / n < 0.5 && d.divIters >= 2 * d.functions &&
+                    // machine code (GFX9-like): selection, waits, copies, registers
+                    d.machErrors == 0 && d.unselected == 0 && d.machInsts > d.nodes / 2 &&
+                    d.waitcnts > 0 && d.literals > 0 && d.copies > 0 && d.swaps > 0 &&
+                    d.vgprPeak > 8 && d.sgprPeak > 8 && d.sgprPeak <= 101 && d.vgprPeak <= 256 &&
+                    d.spills * 100 < d.machInsts;
   Check(sane, "realistic V5 pass statistics are compiler-like", SimV5Stats(d));
   std::cout << "[INFO] realistic V5 statistics: " << SimV5Stats(d) << "\n";
   // Every corpus shader decodes and fits the arena bound (overflow = memory
@@ -149,7 +174,7 @@ void TestRealisticV5() {
   RunRealisticCompilerSimV5AllShaders(&all);
   Check(all.readErrors == 0 && all.irErrors == 0 && all.arenaOverflows == 0 && all.arenaPeak <= all.arenaCap &&
             all.functions >= all.corpusShaders / 32 && all.corpusShaders >= 4000 &&
-            all.branchesFolded > 0 && all.deadBlocks > 0,
+            all.branchesFolded > 0 && all.deadBlocks > 0 && all.machErrors == 0 && all.unselected == 0,
         "realistic V5 corpus: every shader decodes, IR validates, arena bound holds, spec constants fold branches",
         SimV5Stats(all));
   // Regression: the generator once dropped values (pending overflow, if-arm

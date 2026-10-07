@@ -123,6 +123,19 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
   `SIMV5_VALIDATE_TRACE` (decode/generator/validator findings, `unused:`
   values), `SIMV5_DEAD_TRACE` (`deadop alg|dce|cf <op>` per erased node;
   histogram with `sort | uniq -c`). Trace builds go to `bin/<target>-tuning`.
+  **M2 (P067, 111.5 W):** machine back end — `WorkloadRealisticV5Mach.h`
+  (GFX9-like op table with formats/encodings, 64-byte `MInst`, temporaries,
+  per-thread reused `Mach` buffers), `..Isel.cpp` (selection, operand
+  legalization, per-block descriptor rematerialization, split critical edges
+  into phi blocks), `..Ra.cpp` (machine liveness, linear scan, parallel
+  copies), `..Asm.cpp` (s_waitcnt dataflow, encoders, hand-built machine
+  self-test). Invariants: never hold a reference into `Mach` vectors or call
+  two code-emitting helpers (`Val`/`V`/`S`/`Mask`) in one argument list
+  (MSVC evaluates right to left); every thread runs `SetFpuFlushMode()`
+  (folding results depend on FTZ/DAZ). Self-tests: machine encodings/waitcnt,
+  fresh-thread large compile vs warm thread, machine statistics bounds,
+  golden `0x6fb7f76a8ceefd6c`. Trace knob `SIMV5_HISTORY_TRACE`: per-stage IR
+  hashes and per-compile machine summaries (find history-dependent passes).
 - LZ decompression: real decoder (overlapping matches, wild copies) + per-64-byte DIV in
   the verification hash. Targets the failure class of game-asset decompression crashes
   on degraded/unstable cores.
