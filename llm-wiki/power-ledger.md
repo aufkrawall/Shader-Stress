@@ -5,8 +5,9 @@ adopted (+3.0 W scalar); the accessed-bytes power model was corrected
 (P055); the pinned V3 realistic sim stays at ~110 W, the realistic V5 test
 build reaches 118.0 W (P065); its realism rewrite (milestone 1, P066)
 measures 114.3 W; with all four realism milestones (P067–P069) V5 is at
-110.0 W (P069). V5 becomes the default scalar-sim (user decision, flip
-pending); whether to trade power for realism is open (user decides).
+110.0 W (P069). V5 is the default scalar-sim since commit 2af75b4 (V3 only
+in `x64-zig-v3-simv3`); Zig/LLVM/MSVC tie on V5 at 108–109 W (P070, Zig
+recommended); whether to trade power for realism is open (user decides).
 
 Durable record of every power experiment (procedure and decision rules:
 [power-optimization.md](power-optimization.md)). Rules: one entry per experiment ID, one
@@ -319,6 +320,27 @@ CPU/steady-only rankings as proof of a global optimum.
 ## Entries
 
 Newest first. Copy the template.
+
+### P070 — V5 default: compiler comparison Zig vs LLVM vs MSVC (tie, 108–109 W)
+
+- Date: 2026-10-07. Type: toolchain comparison (user request: recommend a
+  compiler for V5). Commit 2af75b4 (V5 default `scalar-sim`); identical
+  source, `python build.py` default flags per toolchain (LTO, -O3, unroll;
+  MSVC /O2 native comparison build). Golden 0xebb78b423639807d on all three.
+- Command: `python scripts/power_measure.py --mode benchmark --isas scalar-sim --label P070-v5-compilers --baseline P070-v5-zig --exe audit/power-baselines/P070-v5-zig/ShaderStress.com,audit/power-baselines/P070-v5-llvm/ShaderStress.com,audit/power-baselines/P070-v5-msvc/ShaderStress.com`.
+
+  | Candidate | W (SD) | dW (CI95) | Eff MHz | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|
+  | P070-v5-msvc | 108.5 (0.3) | −0.4 ±1.3 | 4461 | 82.4 | 436 | inconclusive (within noise) |
+  | P070-v5-llvm | 108.0 (1.9) | −0.9 ±3.1 | 4470 | 82.3 | 466 | inconclusive (within noise) |
+  | P070-v5-zig | 108.9 (0.9) | – | 4464 | 82.4 | 479 | baseline |
+
+- Decision: no toolchain draws measurably more power on V5. Recommendation
+  Zig (x64-zig-v3): highest mean power and throughput (+3% jobs/s vs LLVM,
+  +10% vs MSVC), the toolchain all V5 milestones were measured with, and
+  the cross-platform release toolchain. LLVM had one low outlier run
+  (106.5 W). Zig 108.9 W vs P069 110.0 W (same code) is session drift.
+- Evidence: `audit/power-measurements/P070-v5-compilers-20261007-185553-32716-00`.
 
 ### P069 — V5 realism M4: realistic memory (110.0 W)
 

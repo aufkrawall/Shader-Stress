@@ -9,7 +9,10 @@
   run_tests flag checks, new self-test `scalar-sim dispatches to the
   configured realistic sim` (passes on Zig/LLVM/MSVC and the simv3 build).
   Old `bin/x64-zig-v3-simv5` output dirs are stale leftovers (git-ignored).
-- Next: step 3, compiler session on V5 (zig-v3 vs llvm-v3 vs msvc-v3).
+- Step 3 done (P070): Zig 108.9 W / LLVM 108.0 W / MSVC 108.5 W, all
+  within noise (CI ±1.3–3.1 W); jobs/s 479 / 466 / 436. Recommendation:
+  Zig. All three handoff steps complete; open: power/realism trade-off
+  (recovery ideas in power-ledger P069), user decides.
 
 ## 2026-10-07 — V5 realism M2–M4 (machine back end, loops/CF, memory): 110.0 W (P069)
 
