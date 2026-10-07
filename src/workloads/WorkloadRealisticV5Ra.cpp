@@ -14,7 +14,9 @@ namespace {
 inline void SetB(uint64_t *s, uint32_t k) { s[k >> 6] |= 1ull << (k & 63); }
 inline void ClrB(uint64_t *s, uint32_t k) { s[k >> 6] &= ~(1ull << (k & 63)); }
 
-void Liveness(Fn &f, Mach &m) {
+} // namespace
+
+void MachineLiveness(Fn &f, Mach &m) {
   const uint32_t nt = (uint32_t)m.temps.size(), nb = (uint32_t)m.blocks.size();
   const uint32_t words = std::max(1u, (nt + 63) / 64);
   m.liveWords = words;
@@ -79,6 +81,8 @@ void Liveness(Fn &f, Mach &m) {
   f.st.liveBits += (uint64_t)nb * words * 64;
 }
 
+namespace {
+
 // Register file bitmaps: SGPR codes 0..127, VGPR 0..255.
 struct Files {
   uint64_t s[2], v[4];
@@ -134,8 +138,10 @@ uint16_t Code(const Mach &m, uint32_t o, uint32_t &literal) {
 }
 } // namespace
 
+// Needs MachineLiveness of the current code (ComputeRegisterDemand; the
+// machine scheduler only moves instructions within blocks, so block live sets
+// stay valid).
 void AllocateRegisters(Fn &f, Mach &m) {
-  Liveness(f, m);
   const uint32_t nt = (uint32_t)m.temps.size(), words = m.liveWords;
   // Intervals: definition to last use; live-out extends to the block end.
   for (uint32_t t = 0; t < nt; ++t) {

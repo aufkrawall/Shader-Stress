@@ -1,5 +1,18 @@
 # Recent Changes Log
 
+## 2026-10-07 — V5 M5: ACO instruction buffer, register demand, load scheduler (P071, unmeasured)
+
+- User asked for "one big change" covering realism and power, then tests
+  `bin/x64-zig-v3` manually. Chosen: instruction pool (monotonic buffer),
+  register demand + occupancy, SMEM/VMEM scheduler (opt-audit M5). Not
+  chosen: known-bits (already in Fold.cpp), multi-stage VS+PS pipelines
+  (large generator change; adds compiles, not power per unit of work),
+  interference-graph RA (ACO itself uses SSA linear assignment).
+- Bug found while testing: ACO-style window sizes go to 0 at 10 waves
+  (350 - 35w); clamped w to 4..8 (unit test caught it: no SMEM moved).
+- Tests: 201/201 (`--stress --sanitize`), self-test 94/94 on Zig/LLVM/MSVC
+  x64 and v3. Next: record the user's power reading in P071.
+
 ## 2026-10-07 — V5 is the default scalar-sim; V3 comparison build `x64-zig-v3-simv3`
 
 - Handoff step 1 reported (M2–M4 trend; note: M4's 110.0 W equals P065's

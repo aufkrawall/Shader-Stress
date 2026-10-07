@@ -51,6 +51,31 @@ void ThreadHeap::Free(void *p, size_t n) {
   free_[c] = p;
 }
 
+void *MonotonicBuffer::Alloc(size_t n, size_t align) {
+  for (;;) {
+    if (cur_ < chunks_.size()) {
+      Chunk &c = chunks_[cur_];
+      const size_t at = (off_ + align - 1) & ~(align - 1);
+      if (at + n <= c.size) {
+        off_ = at + n;
+        used_ += n;
+        return c.base + at;
+      }
+      ++cur_; // next retained chunk
+      off_ = 0;
+      continue;
+    }
+    size_t size = chunks_.empty() ? kFirstChunk : chunks_.back().size * 2;
+    if (size > kMaxChunk) size = kMaxChunk;
+    if (size < n + align) size = n + align;
+    Chunk c;
+    c.mem.reset(new uint8_t[size + 64]); // never zero-filled; 64-byte aligned base
+    c.base = reinterpret_cast<uint8_t *>((reinterpret_cast<uintptr_t>(c.mem.get()) + 63u) & ~uintptr_t(63u));
+    c.size = size;
+    chunks_.push_back(std::move(c));
+  }
+}
+
 // --- StringMap -----------------------------------------------------------------
 namespace {
 StringMap::Entry *const kTombEntry = reinterpret_cast<StringMap::Entry *>(uintptr_t(1));
@@ -299,6 +324,17 @@ uint32_t RunRealisticCompilerSimV5AllocTest() {
     if (m.Find(3) || m.Size() != 5000) fail |= 128;
     m.Clear();
     if (m.Find(7919u) || m.Size() != 0) fail |= 256;
+  }
+  {
+    // Monotonic buffer: creation order, aligned, chunk growth, Release() reuse.
+    MonotonicBuffer pool;
+    uint8_t *p0 = static_cast<uint8_t *>(pool.Alloc(64, 64));
+    uint8_t *p1 = static_cast<uint8_t *>(pool.Alloc(64, 64));
+    if (p1 != p0 + 64 || (reinterpret_cast<uintptr_t>(p0) & 63) != 0) fail |= 1024;
+    pool.Alloc(MonotonicBuffer::kFirstChunk, 64); // does not fit: next chunk
+    if (pool.Chunks() != 2 || pool.Used() != 128 + MonotonicBuffer::kFirstChunk) fail |= 2048;
+    pool.Release();
+    if (pool.Alloc(64, 64) != p0 || pool.Used() != 64 || pool.Chunks() != 2) fail |= 4096;
   }
   void *a = Heap().Alloc(40); // 48-byte class: LIFO reuse of the freed block
   Heap().Free(a, 40);

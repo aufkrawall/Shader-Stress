@@ -123,7 +123,11 @@ std::string SimV5Stats(const SimV5Diag &d) {
          std::to_string(d.moptCombines) + "/" + std::to_string(d.moptCopies) + "/" + std::to_string(d.moptDead) +
          " mac=" + std::to_string(d.macConverted) + " vn=" + std::to_string(d.vnHits) +
          " cache=" + std::to_string(d.cacheLookups) + "/" + std::to_string(d.cacheHits) + "/" +
-         std::to_string(d.cacheMismatches) + " heap=" + std::to_string(d.heapAllocs) + "/" + std::to_string(d.heapPages);
+         std::to_string(d.cacheMismatches) + " heap=" + std::to_string(d.heapAllocs) + "/" + std::to_string(d.heapPages) +
+         " pool=" + std::to_string(d.instPoolPeak) + " demand=" + std::to_string(d.demandSgprPeak) + "/" +
+         std::to_string(d.demandVgprPeak) + " waves=" + std::to_string(d.wavesSum) +
+         " msched=" + std::to_string(d.mschedMoved) + "/" + std::to_string(d.mschedDistance) + "/" +
+         std::to_string(d.mschedScanned);
 }
 
 void TestRealisticV5() {
@@ -151,13 +155,16 @@ void TestRealisticV5() {
   Check(a != RunRealisticCompilerSimV5Diag(8, 300, nullptr), "realistic V5 seed-sensitive");
   Check(a != RunRealisticCompilerSimV5Diag(7, 301, nullptr), "realistic V5 complexity-sensitive");
   const uint64_t golden = RunRealisticCompilerSimV5Diag(42, 1000, nullptr);
-  Check(golden == 0xebb78b423639807dull, "realistic V5 golden checksum (all compilers)", Hex(golden));
+  Check(golden == 0xe595f2d2a7ac91f4ull, "realistic V5 golden checksum (all compilers)", Hex(golden));
   const uint32_t at = RunRealisticCompilerSimV5AllocTest();
-  Check(at == 0, "realistic V5 thread heap, StringMap, DenseMap32, SHA-1 (FIPS 180-1 vectors)",
+  Check(at == 0, "realistic V5 thread heap, monotonic buffer, StringMap, DenseMap32, SHA-1 (FIPS 180-1 vectors)",
         "failed checks " + std::to_string(at));
   const uint32_t mt = RunRealisticCompilerSimV5MachineTest();
   Check(mt == 0, "realistic V5 machine code: GFX9 encodings (MUBUF/VOP2/VOP3/SOPP), s_waitcnt vmcnt(0)",
         "failed checks " + std::to_string(mt));
+  const uint32_t sc = RunRealisticCompilerSimV5SchedTest();
+  Check(sc == 0, "realistic V5 register demand + scheduler: SMEM/VMEM hoisting, dependencies, exec, occupancy limit",
+        "failed checks " + std::to_string(sc));
   SimV5Diag d;
   RunRealisticCompilerSimV5Diag(11, 4000, &d);
   const double n = d.nodes ? (double)d.nodes : 1.0;
@@ -176,7 +183,13 @@ void TestRealisticV5() {
                     d.machErrors == 0 && d.unselected == 0 && d.machInsts > d.nodes / 2 &&
                     d.waitcnts > 0 && d.literals > 0 && d.copies > 0 && d.swaps > 0 &&
                     d.vgprPeak > 8 && d.sgprPeak > 8 && d.sgprPeak <= 101 && d.vgprPeak <= 256 &&
-                    d.spills * 100 < d.machInsts;
+                    d.spills * 100 < d.machInsts &&
+                    // ACO-style back end: demand-bounded load scheduling, occupancy, instruction pool
+                    // (instructions no longer come from the thread heap: P069 scattered them)
+                    d.mschedMoved > 0 && d.mschedScanned >= d.mschedDistance &&
+                    d.wavesSum >= d.functions && d.wavesSum <= 10 * d.functions &&
+                    d.demandVgprPeak > 8 && d.instPoolPeak >= 64 * d.machInsts / d.functions / 2 &&
+                    d.heapAllocs < d.machInsts / 4;
   Check(sane, "realistic V5 pass statistics are compiler-like", SimV5Stats(d));
   std::cout << "[INFO] realistic V5 statistics: " << SimV5Stats(d) << "\n";
   // Every corpus shader decodes and fits the arena bound (overflow = memory

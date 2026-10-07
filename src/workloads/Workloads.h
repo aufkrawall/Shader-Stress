@@ -117,10 +117,10 @@ bool StopRequested();
 // Realistic V5 diagnostics (self-test / perf-stats only; nullptr in jobs).
 enum SimV5Phase {
   kPhaseRead, kPhaseLower, kPhaseCombine, kPhaseCse, kPhaseDce, kPhaseSchedule, kPhaseIsel,
-  kPhaseRegAlloc, kPhaseEmit, kSimV5Phases
+  kPhaseMSched, kPhaseRegAlloc, kPhaseEmit, kSimV5Phases
 };
 constexpr const char *kSimV5PhaseNames[kSimV5Phases] = {
-    "read", "lower", "combine", "dom+cse", "dce", "schedule", "isel", "regalloc", "emit"};
+    "read", "lower", "combine", "dom+cse", "dce", "schedule", "isel", "msched", "regalloc", "emit"};
 struct SimV5Diag {
   uint64_t functions = 0, nodes = 0;    // compiled shaders / SSA values (incl. constants)
   uint64_t blocks = 0, phis = 0;        // basic blocks / phi nodes read
@@ -159,6 +159,10 @@ struct SimV5Diag {
   uint64_t vnHits = 0;                          // machine value numbering: duplicates removed
   uint64_t cacheLookups = 0, cacheHits = 0, cacheMismatches = 0; // per-thread pipeline cache index
   uint64_t heapAllocs = 0, heapPages = 0;       // thread heap activity (allocations / pages)
+  uint64_t instPoolPeak = 0;                    // largest instruction pool use of one compile (bytes)
+  uint64_t demandSgprPeak = 0, demandVgprPeak = 0; // register demand (max over shaders, dwords)
+  uint64_t wavesSum = 0;                        // occupancy (waves per SIMD) summed over shaders
+  uint64_t mschedMoved = 0, mschedDistance = 0, mschedScanned = 0; // machine scheduler: loads moved / slots / visited
   uint64_t corpusValues = 0, corpusUnused = 0; // generated values / values without a use
   uint64_t phaseNs[kSimV5Phases] = {};  // wall time per phase
   bool aborted = false;
@@ -168,6 +172,8 @@ uint64_t RunRealisticCompilerSimV5Diag(uint64_t seed, int complexity, SimV5Diag 
 uint64_t RunRealisticCompilerSimV5AllShaders(SimV5Diag *diag);
 // Machine back end on hand-built code (encodings, s_waitcnt): failed-check bits.
 uint32_t RunRealisticCompilerSimV5MachineTest();
+// Register demand and machine scheduler on hand-built code: failed-check bits.
+uint32_t RunRealisticCompilerSimV5SchedTest();
 // Thread heap, StringMap, DenseMap32 and SHA-1 on known inputs: failed-check bits.
 uint32_t RunRealisticCompilerSimV5AllocTest();
 // Marks the start of a job on the calling thread.

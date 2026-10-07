@@ -321,6 +321,22 @@ CPU/steady-only rankings as proof of a global optimum.
 
 Newest first. Copy the template.
 
+### P071 — V5 M5: ACO instruction buffer + register demand / load scheduler (pending)
+
+- Date: 2026-10-07. Type: workload (user: "one big change" for realism
+  without losing power; the user measures manually with
+  `bin/x64-zig-v3`). Several changes in one step at the user's request.
+- Change: (1) machine instructions from a per-compile monotonic buffer
+  (ACO instruction_buffer) instead of individual thread-heap objects
+  (P069's suspected latency cause); (2) per-instruction register demand +
+  GFX9 occupancy; (3) ACO-style SMEM / VMEM hoisting bounded by the
+  occupancy (see opt-audit M5). Golden `0xe595f2d2a7ac91f4`.
+- `--perf-stats` (single thread): 6135 cycles/complexity vs 5815 (M4);
+  read 4.9%, lower 9.3%, combine 18.4%, dom+cse 11.1%, dce 11.3%,
+  schedule 5.3%, isel 10.2%, msched 6.4%, regalloc 10.7%, emit 12.4%.
+- Result: not measured yet (baseline for comparison: P070-v5-zig 108.9 W /
+  P069 110.0 W). Record the user's reading here.
+
 ### P070 — V5 default: compiler comparison Zig vs LLVM vs MSVC (tie, 108–109 W)
 
 - Date: 2026-10-07. Type: toolchain comparison (user request: recommend a

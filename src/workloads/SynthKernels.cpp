@@ -334,6 +334,12 @@ NOINLINE void RunPerfStats() {
   for (uint64_t ns : d.phaseNs) phaseTotal += ns;
   for (int k = 0; k < kSimV5Phases; ++k)
     printf(" %s=%.1f%%", kSimV5PhaseNames[k], phaseTotal ? 100.0 * d.phaseNs[k] / phaseTotal : 0.0);
-  printf("\n");
+  const double fns = d.functions ? (double)d.functions : 1.0;
+  printf("\n              machine: insts/shader=%.0f msched moved/shader=%.1f avg-distance=%.1f "
+         "scanned/shader=%.0f waves avg=%.2f demand peak s/v=%llu/%llu inst-pool peak=%llu KiB\n",
+         d.machInsts / fns, d.mschedMoved / fns,
+         d.mschedMoved ? (double)d.mschedDistance / d.mschedMoved : 0.0, d.mschedScanned / fns,
+         d.wavesSum / fns, (unsigned long long)d.demandSgprPeak, (unsigned long long)d.demandVgprPeak,
+         (unsigned long long)(d.instPoolPeak >> 10));
   fflush(stdout);
 }

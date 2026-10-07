@@ -26,7 +26,7 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
 | `SynthKernels.cpp` | Shared kernel helpers, 128-bit kernel (SSE2 / NEON / scalar), `RunComputeWorkload` dispatcher, `--perf-stats`, job context |
 | `SynthKernelsX86.cpp` | AVX2/FMA and AVX-512 kernels (Clang/GCC: function target attributes; MSVC: `/arch:AVX2` + explicit intrinsics) |
 | `WorkloadRealistic.cpp` | `RunRealisticCompilerSim_V3` (user-pinned, source-hash tested) |
-| `WorkloadRealisticV5*.cpp` | DXIL shader-compiler model V5, the default `scalar-sim` (Ops.h op table, Corpus generator + Gen.h program types, Encode bitstream/corpus storage, Front, Lower, Fold, Opt, Back); V3 only in the `x64-zig-v3-simv3` comparison build, self-tested everywhere ([opt-audit.md](opt-audit.md)) |
+| `WorkloadRealisticV5*.cpp` | DXIL shader-compiler model V5, the default `scalar-sim` (Ops.h op table, Corpus generator + Gen.h program types, Encode bitstream/corpus storage, Front, Lower, Fold, Opt, Back, Isel/Mopt/Sched/Ra/Asm machine back end, Alloc memory); V3 only in the `x64-zig-v3-simv3` comparison build, self-tested everywhere ([opt-audit.md](opt-audit.md)) |
 | `Decompress.h/.cpp` | LZ77 codec, data generator, `HashBytes`, self-verifying decompression job |
 | `Verification.h/.cpp` | Job stream (pair ids), `PairTable`, error accounting per source/CPU, stats |
 | `Worker.cpp` | Worker thread loop, compute job + pairing + golden checks, decompress job |

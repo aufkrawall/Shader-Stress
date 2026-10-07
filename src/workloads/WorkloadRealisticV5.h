@@ -21,8 +21,9 @@
 //            control flow, dominators (Cooper-Harvey-Kennedy), scoped EarlyCSE,
 //            dead-code elimination.
 //  Back    - list scheduling (IR), instruction selection to GFX9-like machine
-//            code (WorkloadRealisticV5Isel.cpp), machine liveness and linear-scan
-//            register allocation, phi / parallel-copy lowering (..Ra.cpp),
+//            code (WorkloadRealisticV5Isel.cpp) with a machine optimizer
+//            (..Mopt.cpp), register demand / occupancy and SMEM / VMEM load
+//            scheduling (..Sched.cpp), linear-scan register allocation, phi / parallel-copy lowering (..Ra.cpp),
 //            s_waitcnt insertion and real binary encodings (..Asm.cpp), and a
 //            hash of the binary (shader cache key).
 // Power design (5700X, ledger P062-P064): real-sized IR objects and many

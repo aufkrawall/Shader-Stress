@@ -132,6 +132,17 @@ inline void Validate(Fn &f, const char *stage) {
 #endif
 }
 
+inline void ValidateMach(Fn &f, const Mach &m, const char *stage) {
+  if (!f.diag) return;
+  const uint32_t errors = ValidateMachine(f, m);
+  f.st.machErrors += errors;
+#ifdef SIMV5_VALIDATE_TRACE
+  if (errors) std::fprintf(stderr, "validate: %u machine findings after %s%c", errors, stage, 10);
+#else
+  (void)stage;
+#endif
+}
+
 uint64_t CompileShader(ThreadState &t, const Corpus &corpus, const ShaderRef &s,
                        const uint64_t *spec, uint64_t funcIndex, SimV5Diag &st, SimV5Diag *diag) {
   // Bump arena reset per function; the base slides like a real allocator's slabs.
@@ -213,17 +224,20 @@ uint64_t CompileShader(ThreadState &t, const Corpus &corpus, const ShaderRef &s,
   Validate(f, "schedule");
   Mach &m = t.mach;
   RunPhase(kPhaseIsel, ar, [&] {
+    BeginCompile(m); // releases the previous compile's instruction pool
     SelectInstructions(f, m);
     OptimizeMachine(f, m);
   });
   clock.Lap(f.st, kPhaseIsel);
-  if (f.diag) {
-    const uint32_t errors = ValidateMachine(f, m);
-    f.st.machErrors += errors;
-#ifdef SIMV5_VALIDATE_TRACE
-    if (errors) std::fprintf(stderr, "validate: %u machine findings after isel%c", errors, 10);
-#endif
-  }
+  ValidateMach(f, m, "isel");
+  // ACO order: register demand (live_var_analysis), scheduling within the
+  // occupancy the demand allows, then register allocation on that liveness.
+  RunPhase(kPhaseMSched, ar, [&] {
+    ComputeRegisterDemand(f, m);
+    ScheduleMachine(f, m);
+  });
+  clock.Lap(f.st, kPhaseMSched);
+  ValidateMach(f, m, "machine scheduling");
   RunPhase(kPhaseRegAlloc, ar, [&] { AllocateRegisters(f, m); });
   clock.Lap(f.st, kPhaseRegAlloc);
   uint64_t acc = 0;
@@ -257,6 +271,7 @@ uint64_t CompileShader(ThreadState &t, const Corpus &corpus, const ShaderRef &s,
   }
   f.st.heapAllocs += Heap().stats.allocs - heapBefore;
   f.st.heapPages += Heap().stats.pages - pagesBefore;
+  f.st.instPoolPeak = std::max<uint64_t>(f.st.instPoolPeak, m.pool.Used());
   f.st.functions++;
   f.st.nodes += f.n;
   f.st.arenaPeak = std::max<uint64_t>(f.st.arenaPeak, ar.used);

@@ -3,7 +3,9 @@
 // (WorkloadRealisticV5Isel.cpp) turns the IR into machine instructions on
 // virtual temporaries (SGPR / VGPR classes, 1-8 dwords), split by the
 // divergence analysis into scalar (SALU / SMEM) and vector (VALU / VMEM)
-// code. WorkloadRealisticV5Ra.cpp computes machine liveness, allocates
+// code. WorkloadRealisticV5Sched.cpp computes the register demand and hoists
+// memory loads within the occupancy it allows. WorkloadRealisticV5Ra.cpp
+// computes machine liveness, allocates
 // registers (linear scan with alignment, precolored inputs, phi affinity) and
 // lowers pseudo instructions (phis on split critical edges, parallel copies
 // with swap cycles). WorkloadRealisticV5Asm.cpp inserts s_waitcnt from the
@@ -169,21 +171,21 @@ struct MInst {
 static_assert(sizeof(MInst) == 64, "machine instructions are one cache line");
 
 // Instruction list as in ACO (std::vector<aco_ptr<Instruction>>): every
-// instruction is its own heap object (64-byte size class of the thread heap);
-// passes that rebuild a block move the pointers (take), new instructions are
-// allocated, dropped ones go back to the heap when the old list is cleared.
+// instruction is its own object from the compile's monotonic buffer (ACO's
+// instruction_buffer), so instructions lie in creation order; passes that
+// rebuild a block move the pointers (take), new instructions are allocated,
+// dropped ones stay in the buffer until the next compile releases it.
 class InstrList {
 public:
-  InstrList() = default;
+  explicit InstrList(MonotonicBuffer &pool) : pool_(&pool) {}
   InstrList(const InstrList &) = delete;
   InstrList &operator=(const InstrList &) = delete;
-  ~InstrList() { clear(); }
   MInst &operator[](size_t i) { return *p_[i]; }
   const MInst &operator[](size_t i) const { return *p_[i]; }
   size_t size() const { return p_.size(); }
   MInst &back() { return *p_.back(); }
   void push_back(const MInst &x) {
-    MInst *n = static_cast<MInst *>(Heap().Alloc(sizeof(MInst)));
+    MInst *n = static_cast<MInst *>(pool_->Alloc(sizeof(MInst), 64));
     *n = x;
     p_.push_back(n);
   }
@@ -191,12 +193,9 @@ public:
     p_.push_back(from.p_[i]);
     from.p_[i] = nullptr;
   }
-  void clear() {
-    for (MInst *x : p_)
-      if (x) Heap().Free(x, sizeof(MInst));
-    p_.clear();
-  }
+  void clear() { p_.clear(); } // memory returns with the pool's Release()
   void swap(InstrList &o) { p_.swap(o.p_); }
+  MInst **data() { return p_.data(); } // scheduler: moves pointers in place
   class It {
   public:
     explicit It(MInst *const *p) : p_(p) {}
@@ -210,6 +209,7 @@ public:
   It end() const { return It(p_.data() + p_.size()); }
 
 private:
+  MonotonicBuffer *pool_;
   std::vector<MInst *> p_;
 };
 constexpr uint8_t kMfOffset = 1, kMfOffen = 2, kMfDone = 4, kMfVm = 8, kMfGlc = 16;
@@ -256,9 +256,11 @@ struct CfInfo {
 };
 
 // Per-thread machine IR storage, reused across compiles (vectors keep their
-// capacity; every pass writes before it reads).
+// capacity; every pass writes before it reads). The instruction pool is
+// released when a compile starts (BeginCompile), never while lists use it.
 struct Mach {
-  InstrList code, tmp;
+  MonotonicBuffer pool;              // declared first: the lists allocate from it
+  InstrList code{pool}, tmp{pool};
   std::vector<MTemp> temps;
   std::vector<MBlock> blocks;
   std::vector<uint32_t> blockOf;     // IR block -> machine block (kNone: deleted)
@@ -268,13 +270,24 @@ struct Mach {
   std::vector<uint32_t> work, order, heap, scratch, scratch2;
   std::vector<uint32_t> phiUseFirst, phiUse; // per block: temporaries read by successor phis
   std::vector<uint8_t> waitState, bytes;
+  std::vector<uint32_t> demand;      // per instruction: SGPR | VGPR << 16 dwords live there
   uint32_t liveWords = 0;
+  uint32_t demandS = 0, demandV = 0; // program maximum (occupancy)
+  uint32_t waves = 0;                // waves per SIMD the register demand allows
   uint32_t sgprs = 0, vgprs = 0;     // registers used (shader resource descriptor)
 };
 
+inline void BeginCompile(Mach &m) { // drop the previous compile's instructions
+  m.code.clear();
+  m.tmp.clear();
+  m.pool.Release();
+}
 void SelectInstructions(Fn &f, Mach &m);  // IR (scheduled) -> machine code on temporaries
 void OptimizeMachine(Fn &f, Mach &m);     // labels, constants / modifiers, combines, DCE
-void AllocateRegisters(Fn &f, Mach &m);   // liveness + linear scan
+void MachineLiveness(Fn &f, Mach &m);     // block live-in / live-out bitsets (linear CFG)
+void ComputeRegisterDemand(Fn &f, Mach &m); // liveness + per-instruction demand + occupancy
+void ScheduleMachine(Fn &f, Mach &m);     // ACO-style SMEM / VMEM hoisting within the demand limit
+void AllocateRegisters(Fn &f, Mach &m);   // linear scan (needs MachineLiveness)
 void LowerToHw(Fn &f, Mach &m);           // phis / parallel copies / pseudos -> moves
 void InsertWaitcnt(Fn &f, Mach &m);       // s_waitcnt from outstanding counters
 uint64_t AssembleAndHash(Fn &f, Mach &m); // GFX9 encodings, branch offsets, hash

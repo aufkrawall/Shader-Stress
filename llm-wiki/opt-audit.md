@@ -154,6 +154,26 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
   owner that frees into it (State() calls it first); nothing may depend on
   addresses. Self-test: heap/StringMap/DenseMap/SHA-1 vectors; golden
   `0xebb78b423639807d`.
+  **M5 (P071, power pending the user's manual test):** ACO-style back-end
+  memory and scheduling. (1) `MonotonicBuffer` (`..Alloc.*`, ACO's
+  instruction_buffer): `Mach::pool` owns all machine instructions of a
+  compile in creation order; `BeginCompile()` releases it before isel (the
+  only release point; `InstrList::clear` no longer frees). Replaces M4's
+  per-instruction thread-heap objects (LIFO free lists scattered them; P069
+  suspected latency stalls). (2) `..Sched.cpp`: `ComputeRegisterDemand`
+  (liveness + backward per-instruction SGPR/VGPR demand, GFX9 occupancy
+  `WavesFor`) and `ScheduleMachine` (SMEM / VMEM loads hoisted up their
+  block; stop at operand defs, stores / exports / branches, same-kind loads,
+  exec writes for VMEM, window / move budgets 350-35w / 1024-64w /
+  64-4w / 256-16w with w clamped to 4..8, and the occupancy limit with
+  8-register headroom; defs renumbered). Phase `msched`; `AllocateRegisters`
+  reuses that liveness (intra-block moves keep block live sets). Effects
+  (self-test corpus): waitcnts −17%, spills +2% (allocator intervals are
+  coarser than demand), avg move 14 instructions, `--perf-stats` 6135
+  cycles/complexity (M4 5815; msched 6.4%). Self-test: scheduler unit test
+  (`RunRealisticCompilerSimV5SchedTest`), monotonic-buffer vectors, stats
+  (`heap < minsts/4` guards against scattered instructions); golden
+  `0xe595f2d2a7ac91f4` (Zig/LLVM/MSVC, x64 and v3).
 - LZ decompression: real decoder (overlapping matches, wild copies) + per-64-byte DIV in
   the verification hash. Targets the failure class of game-asset decompression crashes
   on degraded/unstable cores.

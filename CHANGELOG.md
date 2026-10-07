@@ -60,7 +60,14 @@ Target version: 3.6.0 (`VERSION`).
   completes the upgrade at 110.0 W versus 114.8 W before the GPU back end
   (same method; jobs per second about a third of the pre-upgrade build).
   That matches V3's 110.0 W from the first comparison (separate sessions,
-  not a paired comparison).
+  not a paired comparison). The back end now also works like AMD's ACO
+  compiler in two more ways: all machine instructions of a compile come
+  from one growing buffer in creation order (instead of scattered heap
+  blocks), and a scheduler moves memory loads earlier so their latency
+  overlaps other work, without letting register use cut the number of
+  waves the GPU could run (about 17% fewer memory waits in the generated
+  code). Scalar (Realistic) results and scores change again; power not yet
+  measured.
 
 - **Redundant job verification.** Every compute job is executed twice, normally on two different cores, and the results are compared. On a mismatch the job is re-run to name the faulty CPU, and the log gives a `--repro` command.
 - **Per-CPU error attribution** in the GUI, CLI dashboard, final results and log ("Error CPUs: CPU 6 (core 3) x2").

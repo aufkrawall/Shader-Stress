@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <vector>
 
 namespace simv5 {
 struct SimV5HeapStats {
@@ -39,6 +40,32 @@ private:
   uint8_t *bump_[kClasses] = {}, *bumpEnd_[kClasses] = {};
 };
 ThreadHeap &Heap(); // this thread's heap
+
+// Monotonic buffer (std::pmr::monotonic_buffer_resource; ACO allocates every
+// Instruction of a Program from one): bump allocation in chunks that double
+// from 64 KiB to 1 MiB, nothing is freed individually. Release() rewinds to
+// the first chunk and keeps the memory, so each compile lays its instructions
+// out again in creation (block) order, like a fresh resource on reused pages.
+class MonotonicBuffer {
+public:
+  static constexpr size_t kFirstChunk = 64 * 1024, kMaxChunk = 1024 * 1024;
+  MonotonicBuffer() = default;
+  MonotonicBuffer(const MonotonicBuffer &) = delete;
+  MonotonicBuffer &operator=(const MonotonicBuffer &) = delete;
+  void *Alloc(size_t n, size_t align);
+  void Release() { cur_ = off_ = used_ = 0; }
+  size_t Used() const { return used_; }  // bytes handed out since Release()
+  size_t Chunks() const { return chunks_.size(); }
+
+private:
+  struct Chunk {
+    std::unique_ptr<uint8_t[]> mem;
+    uint8_t *base;
+    size_t size;
+  };
+  std::vector<Chunk> chunks_;
+  size_t cur_ = 0, off_ = 0, used_ = 0;
+};
 
 // LLVM StringMap: entries {hash, length, value, key bytes} on the heap.
 class StringMap {

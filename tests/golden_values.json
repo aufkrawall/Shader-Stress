@@ -4,7 +4,7 @@
   "checksums": {
     "x64": {
       "scalar": "0x93b76b8c19837de7",
-      "scalar-sim": "0xebb78b423639807d",
+      "scalar-sim": "0xe595f2d2a7ac91f4",
       "avx2": "0x658323a86c4d6bbd"
     }
   },
