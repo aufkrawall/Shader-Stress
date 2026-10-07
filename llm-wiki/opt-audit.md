@@ -81,18 +81,30 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
   compiles on all threads (108–115 W, user report 2026-10-06), but its shape
   does not: ~1 KB hot loop, AGU-bound dense bitvector loop (~65% of
   instructions), uniformly random opcodes (one mispredicted indirect jump per op).
-- **Realistic V4 (experimental, `src/workloads/WorkloadRealisticV4.cpp`):**
-  optimizing-compiler model — 256 combine + 256 emit handlers (~217 KB code,
-  Zig v3) via indirect calls, skewed opcodes rotated per function, SSA graph
-  with use lists in a sliding bump arena (1024–16384 nodes/function), passes:
-  interning, build, worklist combine, CSE + second combine, DCE, linear-scan
-  allocation (31 registers, spill furthest end), variable-length emission.
-  Typical stats: folded ~12–15%, CSE ~4%, dead ~18%, spills ~2–3%, ~3.5 B/node.
-  7/4 nodes per complexity unit matches V3 single-thread job time. Only the
-  `x64-zig-v3-simv4` test build (`-DSHADERSTRESS_REALISTIC_V4`) runs it as
-  `scalar-sim`; all builds self-test it (golden `0x79d79ad453b38391`, identical
-  on Zig/LLVM/MSVC/baseline). P059: **105.6 W vs V3 110.4 W** (−4.7 ±0.7 W),
-  jobs/s +32% under SMT (front-end-heavy code scales better on SMT).
+- **Realistic V5 (experimental, `src/workloads/WorkloadRealisticV5*.cpp`,
+  replaced V4):** DXIL-style shader-compiler model. Shared corpus of 72
+  LLVM-bitstream shaders (abbreviations, VBR, relative ids, constants /
+  function / symbol-table blocks; 512–16384 values, geometric size mix),
+  each compiled per pipeline variant (8 specialization constants). Phases:
+  bitstream reader + IR build (128-byte nodes with co-allocated doubly linked
+  operand uses, per-block instruction lists, parent/type/name), 24 early +
+  24 late generated lowering passes (filtered list walks, in-place
+  rewrites), opt loop (worklist combine with 256 generated handlers and
+  trivially-dead erasure, dead CF, CHK dominators, scoped EarlyCSE) until no
+  progress, DCE, divergence analysis, gather_info, dense-bitset liveness,
+  windowed list scheduling (ACO-style window 24), linear scan (63 regs),
+  256 per-opcode encoders, binary hash. Diagnostic runs validate the IR
+  (`ValidateIr`, nir_validate-style). Stats (`--perf-stats`): dead ~22%,
+  CSE ~1.2%, lowered ~23%, uniform ~7.6%, spills ~0.1%, live-in avg 47.
+  Power levers found (P062–P064): real-sized IR nodes and many streaming
+  passes (new L2/L3 lines per unit of work); pointer-heavy schedule /
+  regalloc work is least power-dense. P065: **118.0 W vs V3 110.0 W**
+  (+7.9 ±0.9 W); jobs/s ~0.4× V3 (7/4 values per unit, all shader classes
+  fit benchmark jobs). Only `x64-zig-v3-simv5` (`-DSHADERSTRESS_REALISTIC_V5`)
+  runs it as `scalar-sim`; all builds self-test it (golden
+  `0x880cc0edc3288ba2`, identical on Zig/LLVM/MSVC/x64 baseline).
+  Probe knobs (never in shipped builds): `SIMV5_PROBE_PHASE`/`_REPEAT`,
+  `SIMV5_LOWER_PASSES`, `SIMV5_VALIDATE_TRACE`.
 - LZ decompression: real decoder (overlapping matches, wild copies) + per-64-byte DIV in
   the verification hash. Targets the failure class of game-asset decompression crashes
   on degraded/unstable cores.

@@ -9,7 +9,7 @@ Target version: 3.6.0 (`VERSION`).
 - **Synthetic buffer tuning:** prevent out-of-bounds far-vector loads and stores
   at supported non-power-of-two sizes such as 768 KiB. The default 512 KiB
   mapping and all existing golden checksums stay unchanged.
-- **Power measurement workflow:** use the GUI benchmark job mix with only compiler-sim compute workers in bounded windows (8-second warm-up plus 15-second measurement), with no decompression, RAM or I/O. The new CLI `--power-window` stops after at most 23 seconds without producing a benchmark score/hash; the normal GUI benchmark remains 180 seconds. There is deliberately no batch/load budget — the per-run 8+15 s bound is the only timing rule (longer individual runs are a waste of time); explicitly requested legacy steady-mode measurements are labeled as unsuitable for GUI benchmark claims.
+- **Power measurement workflow:** use the GUI benchmark job mix with only compiler-sim compute workers in bounded windows (8-second warm-up plus 15-second measurement), with no decompression, RAM or I/O. The new CLI `--power-window` stops after at most 23 seconds without producing a benchmark score/hash; the normal GUI benchmark remains 180 seconds. A conclusive comparison is five paired runs per build judged by a 95% confidence interval; one session compares a baseline with at most two candidates (the tool refuses longer sessions unless explicitly overridden). Runs where other processes used more than 10% CPU during the window are repeated automatically (measured per window via a Windows job object) instead of failing the session. Explicitly requested legacy steady-mode measurements are labeled as unsuitable for GUI benchmark claims.
 - **Profile-guided builds:** keep native synthetic ISA kernels independent of host-specific profiles. Training on an AVX2 host no longer marks the unsupported AVX-512 kernel cold against its explicit hot annotation; the main program and realistic workload retain profiling.
 - **Synthetic AVX2/AVX-512/SSE2 kernels no longer run on infinity.** Their values overflowed to `inf` within the first ~0.05-0.16% of every job, so the FMA units spent >99.8% of the run on constant data (minimal switching) and computation errors were absorbed instead of detected. The scalar kernel's integer chains also collapsed to zero. The new kernels stay bounded with full-entropy mantissas (verified by `--self-test` and `--perf-stats`).
 - **Most work was never checked for errors.** Only ~1% of compute jobs were compared against golden values; decompression, RAM and I/O results were not checked at all.
@@ -30,13 +30,16 @@ Target version: 3.6.0 (`VERSION`).
 
 ### New
 
-- **Experimental realistic V4 workload (test build only):** `python build.py
-  x64-zig-v3-simv4` builds a binary whose Realistic Compiler Sim runs a new
-  optimizing-shader-compiler model (large handler code footprint, skewed
-  opcodes, SSA graph with use lists, combine/CSE/DCE/register-allocation/
-  emission passes) instead of the pinned V3 sim. Release builds keep V3. On a
-  Ryzen 7 5700X it measured 105.6 W versus V3's 110.4 W (five paired 8 s +
+- **Experimental realistic V5 workload (test build only):** `python build.py
+  x64-zig-v3-simv5` builds a binary whose Realistic Compiler Sim runs a
+  DXIL-style shader-compiler model instead of the pinned V3 sim: a shared
+  corpus of LLVM-bitstream shaders compiled per pipeline variant, with
+  bitstream reading, real-sized IR objects, a NIR-style lowering pipeline,
+  combine/CSE/DCE optimization loop, divergence analysis, liveness,
+  scheduling, register allocation and emission. Release builds keep V3. On a
+  Ryzen 7 5700X it measured 118.0 W versus V3's 110.0 W (five paired 8 s +
   15 s benchmark windows, 16 threads); scores are not comparable with V3.
+  It replaces the earlier V4 test build (105.6 W).
 
 - **Redundant job verification.** Every compute job is executed twice, normally on two different cores, and the results are compared. On a mismatch the job is re-run to name the faulty CPU, and the log gives a `--repro` command.
 - **Per-CPU error attribution** in the GUI, CLI dashboard, final results and log ("Error CPUs: CPU 6 (core 3) x2").

@@ -1,5 +1,25 @@
 # Recent Changes Log
 
+## 2026-10-07 — Realistic V5 shader-compiler model: 118.0 W (P060–P065)
+
+- User request: a workload that is both realistic DXBC/DXIL compile load and
+  high power. V4 test model replaced by V5 (`WorkloadRealisticV5*.cpp`,
+  `x64-zig-v3-simv5`); V3 stays pinned/default. P065: **V5 118.0 W vs V3
+  110.0 W** (+7.9 ±0.9 W) on the 5700X; details in power-ledger P060–P065.
+- Levers: 128-byte LLVM-style IR nodes (+4.5 W, P063) and a 48-pass
+  NIR-style lowering pipeline (+5.0 W, P064); more passes saturate.
+- Bugs found and fixed on the way: stale `liveOut` of deleted blocks made
+  results depend on earlier arena contents (cross-core mismatch, exit 5);
+  the new IR validator found combine's constant-right operand swap not moving
+  uses, folded constants left in instruction lists and stale list heads.
+  Regression coverage: V5 self-tests (thread-history independence, IR
+  validation in diagnostic and all-shader runs, statistics bounds, golden
+  `0x880cc0edc3288ba2`).
+- Measurement procedure (user, 2026-10-07): 5 paired runs per binary, CI
+  verdict, at most baseline + 2 candidates per session (<= 345 s, enforced);
+  foreign CPU > 10% per window auto-repeated (job-object accounting).
+- Open: user decision whether V5 replaces V3 (score continuity, V3 pin).
+
 ## 2026-10-06 — Realistic V4 test build (P059)
 
 - User context: real driver shader compiles on all 16 threads of the 5700X

@@ -1,13 +1,15 @@
 # Power Optimization Runbook ("continue power draw optimization")
 
 Last verified: 2026-10-06. User constraints: benchmark job mix, compiler-sim
-threads only, 8 s warm-up + 15 s measurement per run (capped at 23 s); no
-batch/load budget — the per-run bound is the only timing rule (2026-10-06).
+threads only, 8 s warm-up + 15 s measurement per run (capped at 23 s);
+conclusive = 5 paired runs, at most baseline + 2 candidates per session
+(<= 345 s planned load, enforced; 2026-10-07).
 Stale-risk: medium — the power model was corrected in P055 (new contiguous
 L2/L3 lines per block drive power, L1-hitting traffic does not; see
 [opt-audit.md](opt-audit.md)); unexplained run-to-run power variation remains.
 Scalar synthetic (139.5 W, P058) and avx2 (~151.5 W) targets are in band in
-one binary; the realistic target remains unmet inside the pinned sim source.
+one binary; the realistic target remains unmet inside the pinned V3 sim
+source, while the realistic V5 test build reaches 118.0 W (ledger P065).
 Cheap no-load gate before power runs: time two `--repro` processes pinned to
 SMT siblings (single core, seconds) to compare block rates of candidates.
 
@@ -122,12 +124,21 @@ reduces thermal/ambient drift) with a Student-t 95% CI:
   (user instruction 2026-10-06: always 8 s warm-up + 15 s test run — anything
   longer is a waste of time); never keep a workload running longer than their
   23 s sum. No steady proxy or fixed-job replacement. No extra preheat by default.
-- **No batch/load budget (user instruction, 2026-10-06).** The per-run 8+15 s
-  bound is the only timing rule. The former 600 s planned-load budget and the
-  tool's refusal are removed (superseding the 2026-10-04 "no hour-long tests /
-  ten-minute batches" rule); `power_measure.py` still reports planned load as
-  information. Pick the repeat count for statistical resolution instead of
-  cutting comparisons short, and never run longer individual runs to compensate.
+- **Session procedure (user instruction, 2026-10-07; supersedes the
+  2026-10-06 "no batch/load budget" rule).** A conclusive result is 5 paired
+  runs per binary, judged by the paired 95% CI (`verdict()`); no single-run
+  screening and no fixed watt tolerance (the user rejected a 2 W one). One
+  session compares a baseline plus at most 2 candidates: 3 x 5 x 23 s = 345 s
+  planned load. `power_measure.py` refuses larger plans before UAC unless
+  `--allow-long-session` (only on explicit user request). A 7-binary x 5-run
+  probe batch (~20 min, P061) was "total overkill": split such work into
+  several small sessions and drop candidates that look unpromising.
+- **Background load during the window.** Each run executes in a job object;
+  `ForeignCpuPct` = CPU time outside the workload's process tree during the
+  15 s window. Above `--max-foreign-load` (10%) the run is kept as evidence
+  and repeated (`--foreign-retries` 4); the pre-run quiet wait lasts up to
+  `--quiet-timeout` (600 s). Clean full-load runs on the 5700X show 3–7%
+  (interrupt/DPC time not attributed to any process), so 2% was unusable.
 - **One change per experiment.** A candidate differs from its baseline in exactly one
   thing (one code idea, one flag, one compiler, one knob value). Never bundle "a few small
   tweaks" — effects can have opposite signs and the sum hides both. A multi-arm session
@@ -199,7 +210,7 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
    ```
 
    Defaults are benchmark job mix, `scalar-sim`, five repeats, all logical CPUs,
-   8+15 s windows, no preheat, no batch/load budget. Select the affected ISA
+   8+15 s windows, no preheat, 5 paired runs, baseline + at most 2 candidates per session. Select the affected ISA
    explicitly. Five bounded A/B pairs take roughly five minutes. Old snapshots
    without CLI `--power-window` support must be rebuilt from their saved patch;
    do not silently fall back to steady mode or a long benchmark.
@@ -235,7 +246,8 @@ must not change any golden checksum — if they do, the build broke bit-reproduc
   `--isas`, `--threads` (0 = all), `--sweep --targets --buffers --rounds`, `--snapshot LABEL [--snapshot-source DIR]`, `--summarize CSV [--baseline NAME]`,
   `--max-background-load` (10%), `--temp-limit` (90), `--no-elevate`.
   Per-run bounds are enforced in `parse_args` (warm-up <= 8 s, measurement <=
-  15 s, preheat <= 23 s); there is no batch/load budget (2026-10-06).
+  15 s, preheat <= 23 s); planned session load <= 345 s unless
+  `--allow-long-session`; foreign CPU per window <= 10% (2026-10-07).
 - `workload_args()` passes `--mode benchmark --power-window <seconds>` and
   `--no-decompress --no-ram --no-io`. `CliRunDurationSeconds()` and
   `ApplyCliDefaults()` enforce the bounded duration and compute-only roles;

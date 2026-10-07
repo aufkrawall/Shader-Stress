@@ -33,8 +33,8 @@ BUILD_CONFIGS = [
     ("x86_64-windows-gnu", "bin/x64-zig-v3-nounroll", "x86_64_v3", True, "", True),
     ("x86_64-windows-gnu", "bin/x64-llvm-v3-interleave1", "x86_64_v3", True, "", True),
     ("x86_64-windows-gnu", "bin/x64-zig-v3-interleave1", "x86_64_v3", True, "", True),
-    # Test build: scalar-sim runs the experimental realistic V4 model
-    ("x86_64-windows-gnu", "bin/x64-zig-v3-simv4", "x86_64_v3", True, "", True),
+    # Test build: scalar-sim runs the experimental realistic V5 model
+    ("x86_64-windows-gnu", "bin/x64-zig-v3-simv5", "x86_64_v3", True, "", True),
 ]
 
 # Each comparison changes a single compiler setting; never package experiments.
@@ -99,7 +99,7 @@ def print_help():
     print("  zig-v3        - Windows Zig-built x86_64_v3 only")
     print("  msvc / msvc-v3 - Native MSVC x64 AVX2 comparison (auto-detected by all)")
     print("  win-v3-{nounroll,znver3,nolto,strictalias-off,slp,interleave1} - One-setting comparisons")
-    print("  x64-zig-v3-simv4 - Test build: scalar-sim runs the realistic V4 model")
+    print("  x64-zig-v3-simv5 - Test build: scalar-sim runs the realistic V5 model")
     print("  native        - Best target this machine can run")
     print("  experimental  - Comparison builds (win-v3-nounroll, zig-v3-nounroll)")
     print("Options:")

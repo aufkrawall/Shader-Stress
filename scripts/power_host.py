@@ -7,7 +7,10 @@
   UAC set to elevate administrators without prompting
   (ConsentPromptBehaviorAdmin=0) this needs no interaction; otherwise Windows
   shows one consent prompt.
-- Background-load check: measurements on a busy system are confounded.
+- Background-load checks: measurements on a busy system are confounded. Before
+  a run, wait_for_quiet_system(); during the measurement window, the workload
+  runs in a job object (TrackedProcess) and foreign_percent() reports the CPU
+  share taken by everything else.
 
 Unit tests exercise the pure helpers only; they never elevate or load the CPU.
 """
@@ -180,3 +183,85 @@ def wait_for_quiet_system(max_percent, window=3.0, attempts=10, times=system_tim
     raise RuntimeError(f"background CPU load {load:.1f}% stayed above {max_percent}% for "
                        f"{attempts * window:.0f} s; close other workloads (measurements would "
                        "be confounded) or raise --max-background-load")
+
+
+def foreign_percent(sys_before, sys_after, own_before, own_after):
+    """System CPU % used outside the measured process tree between two readings.
+
+    sys_*: system_times() tuples; own_*: TrackedProcess.cpu_time() values (100 ns).
+    With every logical CPU loaded by the workload, foreign work displaces it, so
+    this share is what confounds a measurement (background spikes up to 100%).
+    """
+    idle = sys_after[0] - sys_before[0]
+    total = (sys_after[1] - sys_before[1]) + (sys_after[2] - sys_before[2])
+    if total <= 0:
+        return 0.0
+    foreign = total - idle - (own_after - own_before)
+    return max(0.0, min(100.0, 100.0 * foreign / total))
+
+
+CREATE_SUSPENDED = 0x4
+JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1
+
+if sys.platform == "win32":
+    class JOBOBJECT_BASIC_ACCOUNTING_INFORMATION(ctypes.Structure):
+        _fields_ = [("TotalUserTime", ctypes.c_longlong), ("TotalKernelTime", ctypes.c_longlong),
+                    ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+                    ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+                    ("TotalPageFaultCount", wintypes.DWORD), ("TotalProcesses", wintypes.DWORD),
+                    ("ActiveProcesses", wintypes.DWORD),
+                    ("TotalTerminatedProcesses", wintypes.DWORD)]
+
+
+class TrackedProcess:
+    """A command started suspended inside a job object (Windows).
+
+    The job accounts the CPU time of the whole tree (ShaderStress.com launches
+    ShaderStress.exe, which inherits the job), so foreign_percent() can separate
+    background load from the workload. Assigning before resuming closes the race
+    in which the launcher could spawn the workload outside the job.
+    """
+
+    def __init__(self, command, cwd, stdout):
+        self._k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._k32.CreateJobObjectW.restype = wintypes.HANDLE
+        self._k32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+        self._k32.QueryInformationJobObject.argtypes = (
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD))
+        self._k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        ntdll = ctypes.WinDLL("ntdll")
+        ntdll.NtResumeProcess.argtypes = (wintypes.HANDLE,)
+        self.job = self._k32.CreateJobObjectW(None, None)
+        if not self.job:
+            raise OSError(f"CreateJobObjectW failed (error {ctypes.get_last_error()})")
+        self.proc = None
+        try:
+            self.proc = subprocess.Popen(command, cwd=cwd, stdout=stdout,
+                                         stderr=subprocess.STDOUT,
+                                         creationflags=CREATE_SUSPENDED)
+            handle = int(self.proc._handle)
+            if not self._k32.AssignProcessToJobObject(self.job, handle):
+                raise OSError(f"AssignProcessToJobObject failed (error {ctypes.get_last_error()})")
+            status = ntdll.NtResumeProcess(handle)
+            if status != 0:
+                raise OSError(f"NtResumeProcess failed (NTSTATUS 0x{status & 0xFFFFFFFF:08x})")
+        except BaseException:
+            if self.proc is not None:
+                self.proc.kill()
+                self.proc.wait()
+            self.close()
+            raise
+
+    def cpu_time(self):
+        """User + kernel time of every process that ran in the job, 100 ns units."""
+        info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION()
+        if not self._k32.QueryInformationJobObject(self.job, JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
+                                                   ctypes.byref(info), ctypes.sizeof(info), None):
+            raise OSError(f"QueryInformationJobObject failed (error {ctypes.get_last_error()})")
+        return info.TotalUserTime + info.TotalKernelTime
+
+    def close(self):
+        if self.job:
+            self._k32.CloseHandle(self.job)
+            self.job = None

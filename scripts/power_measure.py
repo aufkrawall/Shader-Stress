@@ -5,13 +5,15 @@ via UAC when needed (PawnIO sensors). Workflow and decision rules:
 llm-wiki/power-optimization.md; results ledger: llm-wiki/power-ledger.md.
 
     # GUI-equivalent A/B: 16/all compiler-sim compute threads, no auxiliary work.
-    # Default: benchmark job mix, 8 s warmup + 15 s window, five paired repeats.
+    # Default: benchmark job mix, 8 s warmup + 15 s window, five paired repeats
+    # (conclusive); at most baseline + 2 candidates per session (<= 345 s load).
     python scripts/power_measure.py --snapshot P001-base
     python scripts/power_measure.py --isas avx2 --label P001-my-change \\
         --exe audit/power-baselines/P001-base/ShaderStress.com,bin/x64-llvm-v3/ShaderStress.com
     # Steady-mode short data are historical screening, not GUI benchmark evidence.
     # The only timing rule is per run: <= 8 s warmup + <= 15 s measurement, nothing
-    # longer (user rule 2026-10-06); there is no batch/load budget.
+    # longer (user rule 2026-10-06). Sessions stay short (2026-10-07): <= 345 s
+    # planned load unless --allow-long-session.
     python scripts/power_measure.py --mode benchmark --label P001-confirm
     # Buffer x rounds x compiler sweep (isolated -tuning builds)
     python scripts/power_measure.py --sweep --targets win-v3 --isas avx2 --buffers 128,512 --rounds 1
@@ -53,19 +55,24 @@ SAMPLE = re.compile(r"^\[\d{2}:\d{2}:\d{2}\.\d{3}\] Power sample: "
 T95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306,
        9: 2.262, 10: 2.228}
 MIN_POWER_DELTA_W = 1.0      # smaller power deltas are never acted on
+# Session size (user instruction 2026-10-07): conclusive = 5 paired runs, and a
+# session compares at most a baseline + 2 candidates (3 x 5 x 23 s = 345 s).
+# Twenty-minute sessions are overkill; larger plans need --allow-long-session.
+MAX_SESSION_LOAD_SECONDS = 345
 MIN_CLOCK_DELTA_MHZ = 15.0   # smaller clock deltas never decide a tie
 # Per mode: ShaderStress run, warmup, measurement window, repeats, preheat.
 # "benchmark" uses the GUI's job mix, bounded by the CLI power-window option.
 # "short" retains the legacy steady job mix, never evidence for this goal.
 # Per-run timing rule (user instruction 2026-10-06): warm-up 8 s, measurement
-# 15 s, anything longer is a waste of time; no batch/load budget exists.
+# 15 s, anything longer is a waste of time; sessions <= MAX_SESSION_LOAD_SECONDS.
 MODE_DEFAULTS = {"short": {"warmup": 8, "measure": 15, "repeats": 5, "preheat": 0},
                  "benchmark": {"warmup": 8, "measure": 15, "repeats": 5, "preheat": 0}}
 MAX_POWER_WINDOW_SECONDS = 23
 NUMERIC = {"BufKiB": int, "Rounds": int, "Repeat": int, "Threads": int, "Samples": int,
            "Watts": float, "StdDevW": float, "MinW": float, "MaxW": float,
            "JobsPerSecond": float, "EffMHz": float, "TempMeanC": float, "TempMaxC": float,
-           "VcoreV": float, "BackgroundLoadPct": float}
+           "VcoreV": float, "BackgroundLoadPct": float, "ForeignCpuPct": float,
+           "Attempts": int}
 
 
 def sensor(value):
@@ -199,34 +206,91 @@ def git(*args):
     return r.stdout.decode("utf-8", errors="replace") if r.returncode == 0 else None
 
 
-def run_workload(exe, mode, seconds, isa, threads, run_dir):
+def run_workload(exe, mode, seconds, isa, threads, run_dir, window=None):
+    """Runs one workload; returns (exit code, ShaderStress.log text, foreign CPU %).
+
+    window = (start, end) seconds after launch: on Windows the foreign CPU share
+    (all processes outside the workload's job) is measured over it, else None.
+    """
     command = [str(exe.resolve(strict=True)), *workload_args(mode, seconds, isa, threads)]
+    foreign = None
     with (run_dir / "console.log").open("wb") as output:
-        try:
-            result = subprocess.run(command, cwd=run_dir, stdout=output,
-                                    stderr=subprocess.STDOUT, timeout=seconds + 120)
-        except subprocess.TimeoutExpired as error:
-            raise RuntimeError(f"workload timed out; evidence: {run_dir}") from error
+        if sys.platform != "win32" or window is None:
+            try:
+                result = subprocess.run(command, cwd=run_dir, stdout=output,
+                                        stderr=subprocess.STDOUT, timeout=seconds + 120)
+            except subprocess.TimeoutExpired as error:
+                raise RuntimeError(f"workload timed out; evidence: {run_dir}") from error
+            code = result.returncode
+        else:
+            tracked = power_host.TrackedProcess(command, run_dir, output)
+            try:
+                start = time.monotonic()
+                readings = []
+                for mark in window:
+                    # The wait is the measurement interval; it returns early
+                    # only when the workload exits (then no foreign reading).
+                    try:
+                        tracked.proc.wait(timeout=max(0.0, start + mark - time.monotonic()))
+                        break
+                    except subprocess.TimeoutExpired:
+                        readings.append((power_host.system_times(), tracked.cpu_time()))
+                if len(readings) == 2:
+                    foreign = round(power_host.foreign_percent(readings[0][0], readings[1][0],
+                                                               readings[0][1], readings[1][1]), 2)
+                try:
+                    code = tracked.proc.wait(timeout=max(1.0, start + seconds + 120 - time.monotonic()))
+                except subprocess.TimeoutExpired as error:
+                    tracked.proc.kill()
+                    tracked.proc.wait()
+                    raise RuntimeError(f"workload timed out; evidence: {run_dir}") from error
+            finally:
+                tracked.close()
     log_path = run_dir / "ShaderStress.log"
     log = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
-    return result.returncode, log
+    if foreign is not None:
+        (run_dir / "foreign-cpu.txt").write_text(f"{foreign}\n", encoding="utf-8")
+    return code, log, foreign
 
 
-def measure(exe, options, isa, session, label, repeat):
-    parent = Path(session)
-    run_dir = None
+def wait_quiet(options, limit=None):
+    """Waits (up to --quiet-timeout) for a quiet system: other activity on the
+    host can occupy the CPU for minutes, which is no reason to abort a session."""
+    attempts = max(1, math.ceil(options.quiet_timeout / 3.0))
+    return power_host.wait_for_quiet_system(
+        options.max_background_load if limit is None else limit, attempts=attempts)
+
+
+def new_run_dir(parent, label, isa, repeat):
     for attempt in range(100):
         candidate = parent / f"run-{label}-{isa}-r{repeat}-{attempt:02d}"
         try:
             candidate.mkdir()
         except FileExistsError:
             continue
-        run_dir = candidate
-        break
-    if run_dir is None:
-        raise FileExistsError(f"no usable run directory name under {parent}")
+        return candidate
+    raise FileExistsError(f"no usable run directory name under {parent}")
+
+
+def measure(exe, options, isa, session, label, repeat, run=None, quiet=None):
+    """One accepted measurement; runs whose window saw more than
+    --max-foreign-load of foreign CPU are kept as evidence and repeated."""
+    run = run or run_workload
+    quiet = quiet or (lambda limit: wait_quiet(options, limit))
     seconds = run_seconds(options.mode, options.warmup, options.measure)
-    code, log = run_workload(exe, options.mode, seconds, isa, options.threads, run_dir)
+    window = (options.warmup, options.warmup + options.measure)
+    for attempt in range(options.foreign_retries + 1):
+        run_dir = new_run_dir(Path(session), label, isa, repeat)
+        code, log, foreign = run(exe, options.mode, seconds, isa, options.threads, run_dir, window)
+        if foreign is None or foreign <= options.max_foreign_load:
+            break
+        print(f"  rejected: foreign CPU load {foreign}% > {options.max_foreign_load}% during the "
+              f"window (attempt {attempt + 1}); evidence: {run_dir}", flush=True)
+        if attempt < options.foreign_retries:
+            quiet(options.max_background_load)
+    else:
+        raise RuntimeError(f"foreign CPU load stayed above {options.max_foreign_load}% in "
+                           f"{options.foreign_retries + 1} attempts; last evidence: {run_dir}")
     try:
         summary = summarize_samples(log, options.warmup, options.measure, code,
                                     options.sample_interval, options.max_gap)
@@ -235,7 +299,7 @@ def measure(exe, options, isa, session, label, repeat):
     return {"ISA": isa, "Mode": options.mode, "Threads": options.threads or os.cpu_count(),
             "RunSeconds": seconds, "Warmup": options.warmup, "Measure": options.measure,
             "Executable": str(exe.resolve()), "SHA256": binary_sha256(exe), **summary,
-            "Evidence": str(run_dir)}
+            "ForeignCpuPct": foreign, "Attempts": attempt + 1, "Evidence": str(run_dir)}
 
 
 def preheat(exe, options, session):
@@ -246,7 +310,7 @@ def preheat(exe, options, session):
     seconds = options.preheat
     print(f"Preheat: {exe.parent.name} {isa}, {options.mode}, {seconds} s (not recorded)",
           flush=True)
-    code, _ = run_workload(exe, options.mode, seconds, isa, options.threads, run_dir)
+    code, _, _ = run_workload(exe, options.mode, seconds, isa, options.threads, run_dir)
     if code != 0:
         raise RuntimeError(f"preheat run exited with code {code}; evidence: {run_dir}")
 
@@ -407,9 +471,19 @@ def parse_args(argv=None):
     parser.add_argument("--csv", default=None, help="default: <session>/results.csv")
     parser.add_argument("--max-background-load", type=float, default=10.0,
                         help="max system CPU %% before each run")
+    parser.add_argument("--quiet-timeout", type=float, default=600.0,
+                        help="seconds to wait for --max-background-load before giving up")
+    parser.add_argument("--max-foreign-load", type=float, default=10.0,
+                        help="max CPU %% not used by the workload during the measurement window "
+                             "(includes ~3-4%% interrupt/DPC time under full load on the 5700X; "
+                             "a busy logical CPU of 16 is 6.25%%); higher runs are repeated")
+    parser.add_argument("--foreign-retries", type=int, default=4,
+                        help="repeats of a run rejected for foreign load before giving up")
     parser.add_argument("--temp-limit", type=float, default=90.0,
                         help="CPU max temperature (C); runs within 1 C are flagged")
     parser.add_argument("--no-elevate", action="store_true", help="fail instead of using UAC")
+    parser.add_argument("--allow-long-session", action="store_true",
+                        help=f"permit more than {MAX_SESSION_LOAD_SECONDS} s planned load")
     parser.add_argument("--snapshot", metavar="LABEL",
                         help="copy --snapshot-source to audit/power-baselines/LABEL and exit")
     parser.add_argument("--snapshot-source", default="bin/x64-llvm-v3")
@@ -427,7 +501,11 @@ def parse_args(argv=None):
         parser.error("warmup must be >= 3 s and the measurement window >= 5 s")
     if args.warmup > 8 or args.measure > 15 or args.preheat > MAX_POWER_WINDOW_SECONDS:
         parser.error("power runs are bounded per run: warmup <= 8 s, measurement <= 15 s, "
-                     "preheat <= 23 s (no batch budget)")
+                     "preheat <= 23 s")
+    if args.quiet_timeout < 3:
+        parser.error("--quiet-timeout must be >= 3 s")
+    if not 0 < args.max_foreign_load <= 100 or args.foreign_retries < 0:
+        parser.error("--max-foreign-load must be in (0, 100], --foreign-retries >= 0")
     if args.threads < 0 or args.repeats < 1 or args.preheat < 0:
         parser.error("threads must be >= 0 (0 = all), repeats positive, preheat >= 0")
     if not (0 < args.sample_interval <= args.max_gap):
@@ -506,7 +584,7 @@ def run_session(options, argv):
     stop_file = Path(options.stop_file) if options.stop_file else None
     rows, stopped = [], False
     if options.preheat:
-        power_host.wait_for_quiet_system(options.max_background_load)
+        wait_quiet(options)
         preheat(options.exe[0], options, session)
     # Every repeat visits all candidates in a newly shuffled order so drift
     # (temperature, background) hits all of them alike. Tuning binaries are
@@ -531,7 +609,7 @@ def run_session(options, argv):
                 if stop_file and stop_file.exists():
                     stopped = True
                     break
-                load = power_host.wait_for_quiet_system(options.max_background_load)
+                load = wait_quiet(options)
                 print(f"Measuring {exe.parent.name}: {isa}, buffer={buf}, rounds={rounds}, "
                       f"repeat={repeat} (background load {load}%)", flush=True)
                 row = {"Label": options.label, "Build": exe.parent.name, "BufKiB": buf,
@@ -539,7 +617,8 @@ def run_session(options, argv):
                        **measure(exe, options, isa, session, exe.parent.name, repeat)}
                 rows.append(row)
                 write_rows(csv_path, rows)  # each completed run survives later failures
-                print(f"  {row['Watts']} W (SD {row['StdDevW']} W, {row['Samples']} samples), "
+                print(f"  {row['Watts']} W (SD {row['StdDevW']} W, {row['Samples']} samples, "
+                      f"foreign CPU {row['ForeignCpuPct']}%), "
                       f"eff {row['EffMHz']} MHz, Tmax {row['TempMaxC']} C, "
                       f"Vcore {row['VcoreV']} V", flush=True)
             if stopped:
@@ -579,8 +658,14 @@ def main(argv=None):
         missing = [str(e) for e in options.exe if not e.exists()]
         if missing:
             raise RuntimeError("executable not found: " + ", ".join(missing))
-    # Per-run bounds (warmup/measure/preheat) are enforced in parse_args; there is
-    # deliberately no batch/load budget (user instruction 2026-10-06).
+    # Per-run bounds (warmup/measure/preheat) are enforced in parse_args; the
+    # session size before elevation (user instruction 2026-10-07).
+    planned = planned_load_seconds(options)
+    if planned > MAX_SESSION_LOAD_SECONDS and not options.allow_long_session:
+        raise RuntimeError(f"planned load {planned} s exceeds {MAX_SESSION_LOAD_SECONDS} s "
+                           "(conclusive = 5 paired runs of a baseline + at most 2 candidates); "
+                           "split the comparison or pass "
+                           "--allow-long-session")
     if not power_host.is_admin():
         if options.no_elevate or options.elevated_child:
             raise RuntimeError("sensor readout needs an elevated process (omit --no-elevate "

@@ -224,8 +224,8 @@ NOINLINE uint64_t RunComputeWorkload(WorkloadType type, uint64_t seed, int compl
   case WL_AVX2:
     return RunHyperStress_AVX2(seed, complexity, cfg);
   case WL_SCALAR_SIM:
-#ifdef SHADERSTRESS_REALISTIC_V4
-    return RunRealisticCompilerSim_V4(seed, complexity, cfg);
+#ifdef SHADERSTRESS_REALISTIC_V5
+    return RunRealisticCompilerSim_V5(seed, complexity, cfg);
 #else
     return RunRealisticCompilerSim_V3(seed, complexity, cfg);
 #endif
@@ -302,20 +302,38 @@ NOINLINE void RunPerfStats() {
     printf("\n");
     fflush(stdout);
   }
-  // Realistic V4 (experimental; the scalar-sim workload only in *-simv4 builds).
-  RunRealisticCompilerSimV4Diag(42, 10, nullptr);
-  SimV4Diag d;
+  // Realistic V5 (experimental; the scalar-sim workload only in *-simv5 builds).
+  RunRealisticCompilerSimV5Diag(42, 10, nullptr);
+  SimV5Diag d;
+  const int simComplexity = 40 * complexity; // several typical benchmark jobs
   const uint64_t t0 = ReadCycleCounter();
-  const uint64_t result = RunRealisticCompilerSimV4Diag(42, complexity, &d);
+  const uint64_t result = RunRealisticCompilerSimV5Diag(42, simComplexity, &d);
   const uint64_t total = ReadCycleCounter() - t0;
   const double nodes = d.nodes ? (double)d.nodes : 1.0;
   printf("  %-10s: %llu (%llu/complexity), result=%016llx%s\n"
-         "              functions=%llu nodes=%llu folded=%.1f%% peephole=%.1f%% cse=%.1f%% "
-         "dead=%.1f%% spills=%.1f%% intern-hits=%llu bytes/node=%.2f\n",
-         "sim-v4", (unsigned long long)total, (unsigned long long)(total / complexity),
-         (unsigned long long)result, REALISTIC_V4_ACTIVE ? " (active scalar-sim)" : "",
-         (unsigned long long)d.functions, (unsigned long long)d.nodes, 100.0 * d.folded / nodes,
-         100.0 * d.peepholes / nodes, 100.0 * d.cseHits / nodes, 100.0 * d.dead / nodes,
-         100.0 * d.spills / nodes, (unsigned long long)d.internHits, d.emittedBytes / nodes);
+         "              shaders=%llu values=%llu blocks=%llu phis=%llu bits/value=%.1f "
+         "folded=%.1f%% peephole=%.1f%% cse=%.1f%% dead=%.1f%% spills=%.1f%% moved=%.1f%% "
+         "lowered=%.1f%% uniform=%.1f%% div-iters/shader=%.2f\n"
+         "              intern-hits=%llu bytes/value=%.2f dom-iters=%llu live-visits/block=%.2f "
+         "live-bits=%llu live-in avg/peak=%.1f/%llu read-errors=%llu ir-errors=%llu arena=%llu/%llu KiB\n              time:",
+         "sim-v5", (unsigned long long)total, (unsigned long long)(total / simComplexity),
+         (unsigned long long)result, REALISTIC_V5_ACTIVE ? " (active scalar-sim)" : "",
+         (unsigned long long)d.functions, (unsigned long long)d.nodes,
+         (unsigned long long)d.blocks, (unsigned long long)d.phis, d.bitsRead / nodes,
+         100.0 * d.folded / nodes, 100.0 * d.peepholes / nodes, 100.0 * d.cseHits / nodes,
+         100.0 * d.dead / nodes, 100.0 * d.spills / nodes, 100.0 * d.schedMoved / nodes,
+         100.0 * d.lowered / nodes, 100.0 * d.uniform / nodes,
+         d.functions ? (double)d.divIters / d.functions : 0.0,
+         (unsigned long long)d.internHits, d.emittedBytes / nodes,
+         (unsigned long long)d.domIters, d.blocks ? (double)d.liveVisits / d.blocks : 0.0,
+         (unsigned long long)d.liveBits, d.blocks ? (double)d.liveInSum / d.blocks : 0.0,
+         (unsigned long long)d.livePeak, (unsigned long long)d.readErrors,
+         (unsigned long long)d.irErrors,
+         (unsigned long long)(d.arenaPeak >> 10), (unsigned long long)(d.arenaCap >> 10));
+  uint64_t phaseTotal = 0;
+  for (uint64_t ns : d.phaseNs) phaseTotal += ns;
+  for (int k = 0; k < kSimV5Phases; ++k)
+    printf(" %s=%.1f%%", kSimV5PhaseNames[k], phaseTotal ? 100.0 * d.phaseNs[k] / phaseTotal : 0.0);
+  printf("\n");
   fflush(stdout);
 }

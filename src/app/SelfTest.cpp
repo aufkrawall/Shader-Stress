@@ -98,28 +98,59 @@ void TestSynthFarGroups() {
         "synthetic far groups: 512 KiB SSE2 stream positions");
 }
 
-void TestRealisticV4() {
-  // Experimental V4 compiler model (scalar-sim only in *-simv4 builds); a few
+std::string SimV5Stats(const SimV5Diag &d) {
+  return "functions=" + std::to_string(d.functions) + " nodes=" + std::to_string(d.nodes) +
+         " blocks=" + std::to_string(d.blocks) + " phis=" + std::to_string(d.phis) +
+         " folded=" + std::to_string(d.folded) + " cse=" + std::to_string(d.cseHits) +
+         " dead=" + std::to_string(d.dead) + " spills=" + std::to_string(d.spills) +
+         " moved=" + std::to_string(d.schedMoved) + " optIters=" + std::to_string(d.optIters) +
+         " lowered=" + std::to_string(d.lowered) + " uniform=" + std::to_string(d.uniform) +
+         " divIters=" + std::to_string(d.divIters) +
+         " branchesFolded=" + std::to_string(d.branchesFolded) +
+         " readErrors=" + std::to_string(d.readErrors) + " irErrors=" + std::to_string(d.irErrors) +
+         " arena=" + std::to_string(d.arenaPeak) + "/" + std::to_string(d.arenaCap);
+}
+
+void TestRealisticV5() {
+  // Experimental V5 compiler model (scalar-sim only in *-simv5 builds); a few
   // ms single-threaded. The fixed checksum pins cross-compiler bit identity,
   // the pass statistics guard against a degenerate (non-compiler-like) mix.
-  const uint64_t a = RunRealisticCompilerSimV4Diag(7, 300, nullptr);
-  Check(a == RunRealisticCompilerSimV4Diag(7, 300, nullptr), "realistic V4 deterministic");
-  Check(a != RunRealisticCompilerSimV4Diag(8, 300, nullptr), "realistic V4 seed-sensitive");
-  Check(a != RunRealisticCompilerSimV4Diag(7, 301, nullptr), "realistic V4 complexity-sensitive");
-  const uint64_t golden = RunRealisticCompilerSimV4Diag(42, 1000, nullptr);
-  Check(golden == 0x79d79ad453b38391ull, "realistic V4 golden checksum (all compilers)", Hex(golden));
-  SimV4Diag d;
-  RunRealisticCompilerSimV4Diag(11, 4000, &d);
+  const uint64_t a = RunRealisticCompilerSimV5Diag(7, 300, nullptr);
+  Check(a == RunRealisticCompilerSimV5Diag(7, 300, nullptr), "realistic V5 deterministic");
+  // Regression: results must not depend on what the thread compiled before
+  // (stale arena memory); paired cross-core verification relies on it.
+  const uint64_t x = RunRealisticCompilerSimV5Diag(1234, 20000, nullptr);
+  RunRealisticCompilerSimV5Diag(99, 30000, nullptr);
+  Check(x == RunRealisticCompilerSimV5Diag(1234, 20000, nullptr),
+        "realistic V5 independent of the thread's previous jobs");
+  Check(a != RunRealisticCompilerSimV5Diag(8, 300, nullptr), "realistic V5 seed-sensitive");
+  Check(a != RunRealisticCompilerSimV5Diag(7, 301, nullptr), "realistic V5 complexity-sensitive");
+  const uint64_t golden = RunRealisticCompilerSimV5Diag(42, 1000, nullptr);
+  Check(golden == 0x880cc0edc3288ba2ull, "realistic V5 golden checksum (all compilers)", Hex(golden));
+  SimV5Diag d;
+  RunRealisticCompilerSimV5Diag(11, 4000, &d);
   const double n = d.nodes ? (double)d.nodes : 1.0;
-  const bool sane = d.functions >= 1 && d.nodes == 7000 && !d.aborted &&
-                    d.folded / n > 0.02 && d.folded / n < 0.40 && d.cseHits / n > 0.01 &&
-                    d.cseHits / n < 0.15 && d.dead / n > 0.05 && d.dead / n < 0.40 &&
-                    d.spills / n < 0.10 && d.peepholes > 0 && d.internHits > 0 &&
-                    d.emittedBytes > d.nodes;
-  Check(sane, "realistic V4 pass statistics are compiler-like",
-        "functions=" + std::to_string(d.functions) + " nodes=" + std::to_string(d.nodes) +
-            " folded=" + std::to_string(d.folded) + " cse=" + std::to_string(d.cseHits) +
-            " dead=" + std::to_string(d.dead) + " spills=" + std::to_string(d.spills));
+  // DXIL arrives optimized: folding comes from specialization constants only,
+  // CSE finds lowering redundancies, most passes sweep without progress.
+  const bool sane = d.functions >= 1 && d.nodes >= 7000 && !d.aborted && d.readErrors == 0 &&
+                    d.irErrors == 0 &&
+                    d.folded / n < 0.10 && d.cseHits / n > 0.005 && d.cseHits / n < 0.10 &&
+                    d.dead / n > 0.05 && d.dead / n < 0.40 && d.spills / n < 0.10 &&
+                    d.internHits > 0 && d.blocks * 8 < d.nodes && d.phis > 0 &&
+                    d.schedMoved > 0 && d.optIters >= 2 * d.functions &&
+                    d.liveVisits >= d.blocks && d.emittedBytes > d.nodes &&
+                    d.lowered / n > 0.001 && d.lowered / n < 0.20 && d.uniform > 0 &&
+                    d.uniform / n < 0.5 && d.divIters >= 2 * d.functions;
+  Check(sane, "realistic V5 pass statistics are compiler-like", SimV5Stats(d));
+  // Every corpus shader decodes and fits the arena bound (overflow = memory
+  // corruption in the benchmark).
+  SimV5Diag all;
+  RunRealisticCompilerSimV5AllShaders(&all);
+  Check(all.readErrors == 0 && all.irErrors == 0 && all.arenaOverflows == 0 && all.arenaPeak <= all.arenaCap &&
+            all.functions == all.corpusShaders && all.corpusShaders >= 48 &&
+            all.branchesFolded > 0 && all.deadBlocks > 0,
+        "realistic V5 corpus: every shader decodes, IR validates, arena bound holds, spec constants fold branches",
+        SimV5Stats(all));
 }
 
 void TestKernels() {
@@ -492,7 +523,7 @@ int RunSelfTests() {
             << ")\n";
   TestSynthFarIndices();
   TestSynthFarGroups();
-  TestRealisticV4();
+  TestRealisticV5();
   TestFormatting();
   TestKernels();
   TestPreemption();

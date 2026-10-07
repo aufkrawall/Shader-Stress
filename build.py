@@ -80,7 +80,10 @@ SRC_COMMON = [
     "src/core/Common.cpp", "src/core/CpuFeatures.cpp", "src/core/Topology.cpp",
     "src/core/Platform.cpp", "src/core/PowerMeasure.cpp", "src/core/CpuGuard.cpp",
     "src/workloads/SynthKernels.cpp", "src/workloads/SynthKernelsX86.cpp",
-    "src/workloads/WorkloadRealistic.cpp", "src/workloads/WorkloadRealisticV4.cpp",
+    "src/workloads/WorkloadRealistic.cpp", "src/workloads/WorkloadRealisticV5.cpp",
+    "src/workloads/WorkloadRealisticV5Corpus.cpp", "src/workloads/WorkloadRealisticV5Front.cpp",
+    "src/workloads/WorkloadRealisticV5Opt.cpp", "src/workloads/WorkloadRealisticV5Lower.cpp",
+    "src/workloads/WorkloadRealisticV5Back.cpp",
     "src/workloads/Decompress.cpp",
     "src/engine/Verification.cpp", "src/engine/Worker.cpp", "src/engine/Scheduler.cpp",
     "src/engine/Watchdog.cpp", "src/engine/RamStress.cpp", "src/engine/IoStress.cpp",
@@ -186,10 +189,10 @@ def common_cxx_flags(out_dir):
         flags.append("-fno-strict-aliasing")
     if variant.endswith("-znver3"):
         flags.append("-mtune=znver3")
-    if variant.endswith("-simv4"):
-        # Test build: scalar-sim runs the experimental V4 shader-compiler model
+    if variant.endswith("-simv5"):
+        # Test build: scalar-sim runs the experimental V5 shader-compiler model
         # instead of the pinned V3 (a workload choice, not a power flag).
-        flags.append("-DSHADERSTRESS_REALISTIC_V4")
+        flags.append("-DSHADERSTRESS_REALISTIC_V5")
     if variant.endswith("-interleave1"):
         # P028: vectorizer interleave 1 for the pinned realistic sim (LTO/main
         # objects only; native kernel objects keep build_kernels.py flags).

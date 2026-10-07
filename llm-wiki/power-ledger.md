@@ -1,8 +1,9 @@
 # Power Experiment Ledger
 
-Last verified: 2026-10-06. Stale-risk: medium — P058 128-bit far stream
+Last verified: 2026-10-07. Stale-risk: medium — P058 128-bit far stream
 adopted (+3.0 W scalar); the accessed-bytes power model was corrected
-(P055); realistic target remains unmet in measured settings, source pinned.
+(P055); the pinned V3 realistic sim stays at ~110 W, the realistic V5 test
+build reaches 118.0 W (P065), adoption is the user's decision.
 
 Durable record of every power experiment (procedure and decision rules:
 [power-optimization.md](power-optimization.md)). Rules: one entry per experiment ID, one
@@ -38,6 +39,12 @@ frame; base 136.6 W in the same session) and avx2 **151.4–151.9 W** (kernel
 unchanged since P045) are in band from one binary. Realistic stays at
 ~108–112 W (user GUI reading ~108 W), 3–12 W short; no permitted
 compiler/flag/scheduling change measured so far closes it.
+
+Status 2026-10-07 (P060–P065): the realistic **V5** shader-compiler model
+(`x64-zig-v3-simv5` test build, V3 still pinned and default) measures
+**118.0 W vs V3 110.0 W (+7.9 ±0.9 W)** — in the realistic band. The levers
+were real-sized 128-byte IR nodes (P062/P063) and a 48-pass NIR-style
+lowering pipeline (P064).
 
 Earlier status (post-P045, session frame with baseline 135.3/148.7/111.5 W):
 scalar synthetic 136.3 W and avx2 151.9 W are in band from one binary; realistic
@@ -89,9 +96,11 @@ power improvements are **unverified for this goal**. Never advertise P023's
 Rechecks use `--mode benchmark --power-window 23` through the updated tool, all
 16 compute workers, no auxiliary work, five interleaved repeats unless specified.
 The normal scored benchmark remains 180 s; no new power run may last that long.
-No default preheat. Close calls may use ten bounded pairs on one ISA; there is
-no batch/load budget (user instruction 2026-10-06 — the per-run 8+15 s bound is
-the only timing rule). Rebuild old snapshots for
+No default preheat. Session procedure (user instruction 2026-10-07, superseding
+the 2026-10-06 "no batch/load budget" rule): 5 paired runs per binary are
+conclusive (paired 95% CI, no fixed-watt tolerance), and a session compares a
+baseline plus at most 2 candidates (<= 345 s planned load, enforced by
+`power_measure.py`; `--allow-long-session` only on user request). Rebuild old snapshots for
 the new CLI option instead of silently falling back to steady mode.
 
 ## Hypothesis backlog
@@ -173,6 +182,12 @@ heavier per-cycle current, matching the boost/backoff model).
 | P056 | kernel | Far cursor advances to new lines every block (index stride 2 or 4, same instruction count) instead of re-swapping the previous block's pair; plus stride-4 with a 4-vector group | scalar, avx2 | s4n4 better on scalar (+3.4 ±0.9 W), avx2 inconclusive (−0.8 ±0.6); s2/s4 not better |
 | P057 | kernel | Larger first-touch far groups on scalar: stride 8 with 4- or 8-vector group, s4n4 recheck | scalar | s4n4 replicated (+2.9 ±0.5 W); s8n8 +2.9 ±1.3 W at −17% jobs/s; s8n4 (skips lines) −0.1 W |
 | P059 | workload | Experimental realistic V4 (shader-compiler model, `x64-zig-v3-simv4` test build) versus pinned V3 | scalar-sim | measured: −4.7 ±0.7 W (105.6 vs 110.4 W); test build only, V3 stays default |
+| P060 | workload | Measurement tooling (foreign-CPU job accounting, session cap) + V3/V4 recheck + first V5 | scalar-sim | V3 111.3 W, V4 106.6 W, V5a 107.2 W |
+| P061 | workload | V5 phase-density probes (one phase repeated 5×) | scalar-sim | liveness/combine dense, schedule/regalloc least dense; probe-found stale-arena determinism bug fixed |
+| P062 | workload | V5 IR node size probe: 32 B → 64/128/192/256 B (padding only) | scalar-sim | 128 B +3.1..3.6 W; 64 B +1.2 W; 192/256 B no further gain |
+| P063 | workload | V5d: real 128-byte LLVM-style nodes (co-allocated uses, lists, parent, type, name) | scalar-sim | accepted (+4.5 ±1.1 W, 111.2 W) |
+| P064 | workload | NIR-style lowering pipeline: 24/48/64/96 filtered list passes + divergence + gather_info | scalar-sim | accepted 48 (+5.0 ±1.1 W, 117.6/118.7 W); 64/96 no conclusive gain |
+| P065 | workload | Final V5 (P064 + IR validator fixes) vs current V3 | scalar-sim | 118.0 W vs 110.0 W (+7.9 ±0.9 W) |
 | P058 | kernel | Production form of P056 s4n4 for 128-bit kernels only (single base pointer, constant offsets: 116 vs 126 loop instructions), confirm against base and the measured candidate | scalar | accepted (+3.0 ±2.1 W scalar, 139.5 W; AVX2 kernel instruction-identical) |
 
 ## Current disposition after P055–P058 (2026-10-06)
@@ -297,6 +312,69 @@ CPU/steady-only rankings as proof of a global optimum.
 ## Entries
 
 Newest first. Copy the template.
+
+### P060–P065 — Realistic V5 shader-compiler model (test build; 118.0 W)
+
+- Date: 2026-10-07. Type: workload (user request: "a workload that is both
+  realistic DXBC/DXIL shader compile load and has a high power draw").
+  V5 replaces the V4 test model: DXIL-like LLVM bitstream corpus (shared,
+  compiled per pipeline variant with specialization constants), bitstream
+  reader, combine / dead-CF / dominators / EarlyCSE / DCE loop, dense-bitset
+  liveness, windowed list scheduling, linear scan, per-opcode emission. Runs as
+  `scalar-sim` only in `x64-zig-v3-simv5`; V3 stays pinned and default.
+- Conditions: 5700X, 16 compute workers, benchmark job mix, 8 + 15 s, five
+  paired repeats per binary, at most baseline + 2 candidates per session,
+  no preheat/decompression/RAM/I/O, foreign CPU <= 10% (auto-repeat).
+- **P060** (tooling + recheck): `power_measure.py` now measures foreign CPU
+  per window via a Windows job object and caps sessions at 345 s.
+  V5a 107.2 (0.6) W baseline; V3 111.3 (1.4) W (+4.1 ±1.9); V4 106.6 (0.6) W
+  (−0.6 ±1.5). Separate recheck: V3 111.7 vs V4 105.9 W.
+- **P061** (phase probes, `-DSIMV5_PROBE_PHASE=k -DSIMV5_PROBE_REPEAT=5`,
+  stopped at 30/35 runs — a 20-minute batch, now forbidden): vs the regalloc
+  probe (106.0 W): liveness +2.8 ±1.7, combine +2.2 ±1.2, read +1.5 ±1.1,
+  emit +1.3 ±1.7, schedule −0.5 ±1.0, plain V5c +1.3 ±2.4. A probe run exited
+  with code 5 (cross-core mismatch): liveness read stale `liveOut` of deleted
+  blocks from earlier arena contents; fixed (sets cleared), regression
+  self-test "independent of the thread's previous jobs".
+- **P062** (hypothesis: real compilers stream real-sized IR objects; V5's
+  32-byte nodes are unrealistically compact): padding probe (removed again).
+  Session 1 vs P062-base 107.9 W: 64 B +1.2 ±0.5, 128 B +3.1 ±1.4 (111.0 W).
+  Session 2 vs 128 B (110.6 W): 192 B −0.4 ±0.8, 256 B +0.2 ±1.0. Jobs/s −3%.
+- **P063** V5d — real 128-byte nodes (LLVM Instruction with co-allocated
+  Uses / NIR instr): doubly linked per-slot use records (O(1) removal;
+  erased instructions drop their uses), parent block, intrusive instruction
+  list (relinked by the scheduler, walked by the emitter), type, name,
+  use count (combine erases trivially dead instructions), liveness index and
+  schedule position; 128-byte allocator size class. vs P062-base 106.8 W:
+  **V5d 111.2 (0.2) W, +4.5 ±1.1**; 128 B padding 110.4 W (+3.6 ±1.7).
+- **P064** lowering pipeline (Mesa `nir_shader_instructions_pass` style):
+  generated passes, each a full instruction-list walk with a filter accepting
+  1/8 of one opcode family and an in-place rewrite (opcode lowering, operand
+  canonicalization, bit-size lowering); half before, half after the opt loop;
+  plus divergence analysis (uniform values get scalar encodings) and
+  gather_info (binary header). vs V5d 112.7 W: **24 passes 115.8 W (+3.1
+  ±0.8), 48 passes 117.6 W (+5.0 ±1.1)**. vs 48 (118.7 W): 64 passes +0.1
+  ±1.6, 96 passes +1.6 ±2.4 (inconclusive, −20% jobs/s). Adopted: 48.
+  Time shares (`--perf-stats`): read 15%, lower 31%, combine 9%, dom+cse 4%,
+  dce 4%, liveness 10%, schedule 11%, regalloc 10%, emit 8%.
+- **P065** final (P064-48 + validator-found list fixes: combine's
+  constant-right swap now moves the uses, folded constants leave the
+  instruction list, erased list heads update):
+
+  | Candidate | W (SD) | dW (CI95) | Eff MHz | Tmax C | Jobs/s | Verdict |
+  |---|---|---|---|---|---|---|
+  | P065-v5-final | 118.0 (1.0) | +7.9 ±0.9 | 4480 | 84.3 | 1808 | better (more power) |
+  | P064-lower48 | 117.4 (0.6) | +7.4 ±0.4 | 4478 | 84.5 | 1838 | better (more power) |
+  | P065-v3-base (V3) | 110.0 (0.4) | – | 4474 | 82.6 | 4630 | baseline |
+
+- Interpretation: consistent with the P055 model (new L2/L3 lines per unit
+  of work drive power): realistic IR footprints and many cheap streaming
+  passes raise power without synthetic tricks; schedule/regalloc-style
+  pointer-heavy work is the least power-dense. Jobs/s are not comparable
+  with V3 (a V5 job is ~2.5× a V3 job). Whether V5 replaces V3 is the
+  user's decision (score continuity, V3 pin).
+- Commands: `python scripts/power_measure.py --mode benchmark --isas scalar-sim --label <label> --baseline <base> --exe audit/power-baselines/<base>/ShaderStress.com,...` with labels P060-v5a, P061-phase-probes, P062-nodepad, P062b-nodepad, P063-v5d, P064-lower, P064b-lower, P065-v5-final.
+- Evidence: `audit/power-measurements/P06*-*/`.
 
 ### P059 — Realistic V4 test build (measured; not a default)
 

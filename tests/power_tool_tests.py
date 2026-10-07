@@ -16,7 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts import power_host  # noqa: E402
 from scripts.power_measure import (binary_sha256, format_summary, load_rows, main,  # noqa: E402
-                                   make_evidence_dir, parse_args, planned_load_seconds, preheat,
+                                   make_evidence_dir, measure, parse_args, planned_load_seconds, preheat,
                                    run_seconds, snapshot, summarize_runs,
                                    summarize_samples, verdict, workload_args, write_rows)
 
@@ -92,7 +92,7 @@ def test_arguments(check):
           run_seconds(d.mode, d.warmup, d.measure) == 23 and d.threads == 0 and
           d.isas == ["scalar-sim"] and
           d.exe == [PROJECT_ROOT / "bin/x64-llvm-v3/ShaderStress.com"] and d.csv is None,
-          "defaults: benchmark job mix, compute only, 8+15 s, five scalar-sim runs, no batch budget")
+          "defaults: benchmark job mix, compute only, 8+15 s, five scalar-sim runs (conclusive)")
     b = parse_args(["--mode", "benchmark"])
     check((b.warmup, b.measure, b.repeats, b.preheat) == (8, 15, 5, 0) and
           run_seconds(b.mode, b.warmup, b.measure) == 23,
@@ -121,12 +121,22 @@ def test_arguments(check):
          mock.patch.object(power_host, "is_admin", return_value=False), \
          mock.patch.object(power_host, "relaunch_elevated", return_value=123) as relaunch:
         rc = main(["--exe", "audit/base/ShaderStress.com,audit/cand/ShaderStress.com",
-                   "--isas", "scalar-sim,scalar,avx2", "--repeats", "30"])
+                   "--isas", "scalar-sim,scalar,avx2", "--repeats", "30", "--allow-long-session"])
     check(rc == 123 and relaunch.called,
-          "no batch/load budget: long comparisons plan and reach elevation instead of refusing")
+          "an explicitly allowed long session plans and reaches elevation")
+    with mock.patch("scripts.power_measure.sys.platform", "win32"), \
+         mock.patch("scripts.power_measure.Path.exists", return_value=True), \
+         mock.patch.object(power_host, "is_admin", return_value=False), \
+         mock.patch.object(power_host, "relaunch_elevated", return_value=123) as relaunch:
+        long_refused = rejects(main, ["--exe", "audit/b/ShaderStress.com,audit/c1/ShaderStress.com,"
+                                      "audit/c2/ShaderStress.com,audit/c3/ShaderStress.com"])
+        three_ok = main(["--exe", "audit/b/ShaderStress.com,audit/c1/ShaderStress.com,"
+                         "audit/c2/ShaderStress.com"]) == 123
+    check(long_refused and three_ok,
+          "session cap: 5 runs of baseline + 2 candidates allowed, 4 binaries refused before UAC")
     heat = parse_args(["--preheat", "23"])
     with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()), \
-         mock.patch("scripts.power_measure.run_workload", return_value=(0, "")) as launch:
+         mock.patch("scripts.power_measure.run_workload", return_value=(0, "", None)) as launch:
         preheat(d.exe[0], heat, Path(tmp))
     check(planned_load_seconds(heat) == 138 and launch.call_args.args[1:5] ==
           ("benchmark", 23, "scalar-sim", 0),
@@ -267,6 +277,67 @@ def test_host(check, tmp):
               "SHELLEXECUTEINFOW layout matches the Windows SDK")
 
 
+def test_foreign_load(check, tmp):
+    # Regression: background bursts (up to 100% CPU) during a window used to go
+    # unnoticed because only the idle time before each run was checked.
+    check(power_host.foreign_percent((0, 0, 0), (100, 1000, 0), 0, 880) == 2.0 and
+          power_host.foreign_percent((0, 0, 0), (0, 1000, 0), 0, 1000) == 0.0 and
+          power_host.foreign_percent((0, 0, 0), (0, 0, 0), 0, 0) == 0.0 and
+          power_host.foreign_percent((0, 0, 0), (0, 500, 500), 0, 0) == 100.0,
+          "foreign CPU share = busy time minus the workload job's CPU time")
+    d = parse_args([])
+    check((d.max_foreign_load, d.foreign_retries, d.quiet_timeout) == (10.0, 4, 600.0),
+          "default: windows with > 10% foreign CPU (3-4% interrupt floor + ~1 busy logical CPU) are repeated")
+    log = "\n".join(stream(range(9000, 23001, 1000)))
+    results = iter([(0, log, 19.5), (0, log, 4.4)])
+    seen, waits = [], []
+
+    def fake_run(exe, mode, seconds, isa, threads, run_dir, window):
+        seen.append((run_dir, window))
+        return next(results)
+    with contextlib.redirect_stdout(io.StringIO()) as out, \
+         mock.patch("scripts.power_measure.binary_sha256", return_value="x"):
+        row = measure(Path(tmp) / "ShaderStress.com", d, "scalar-sim", tmp, "lbl", 1,
+                      run=fake_run, quiet=waits.append)
+    check(row["Attempts"] == 2 and row["ForeignCpuPct"] == 4.4 and len(seen) == 2 and
+          seen[0][0] != seen[1][0] and seen[0][1] == (8, 23) and waits == [10.0] and
+          row["Evidence"] == str(seen[1][0]) and "rejected: foreign CPU load 19.5%" in out.getvalue(),
+          "a run with foreign load is kept as evidence, the system re-checked, the run repeated",
+          str(row))
+    busy = parse_args(["--foreign-retries", "1"])
+    with contextlib.redirect_stdout(io.StringIO()):
+        check(rejects(measure, Path(tmp) / "x.com", busy, "scalar", tmp, "busy", 1,
+                      lambda *a: (0, log, 50.0), lambda m: None),
+              "persistent foreign load fails the session instead of recording confounded data")
+    with contextlib.redirect_stderr(io.StringIO()):
+        for invalid in (["--max-foreign-load", "0"], ["--foreign-retries", "-1"],
+                        ["--quiet-timeout", "1"]):
+            try:
+                parse_args(invalid)
+                rejected = False
+            except SystemExit as error:
+                rejected = error.code == 2
+            check(rejected, "rejects " + " ".join(invalid))
+    with mock.patch.object(power_host, "wait_for_quiet_system", return_value=1.0) as wait:
+        from scripts.power_measure import wait_quiet
+        wait_quiet(d)
+    check(wait.call_args.args == (10.0,) and wait.call_args.kwargs == {"attempts": 200},
+          "quiet check waits up to --quiet-timeout (busy hosts are waited out, not fatal)")
+    if sys.platform == "win32":
+        # The job must account a grandchild (ShaderStress.com -> ShaderStress.exe).
+        child = "s = 0\nfor i in range(2_000_000): s += i"
+        parent = f"import subprocess, sys; sys.exit(subprocess.run([sys.executable, '-c', {child!r}]).returncode + 3)"
+        with open(Path(tmp) / "tracked.log", "wb") as out:
+            tracked = power_host.TrackedProcess([sys.executable, "-c", parent], tmp, out)
+            try:
+                code = tracked.proc.wait(timeout=60)
+                cpu = tracked.cpu_time()
+            finally:
+                tracked.close()
+        check(code == 3 and cpu > 500_000 and tracked.job is None,
+              "job object accounts the CPU time of the launched process tree", f"{code} {cpu}")
+
+
 def run_power_tool_tests(check):
     with tempfile.TemporaryDirectory() as tmp:
         test_samples(check)
@@ -275,3 +346,4 @@ def run_power_tool_tests(check):
         test_snapshot(check, tmp)
         test_evidence_dirs(check, tmp)
         test_host(check, tmp)
+        test_foreign_load(check, tmp)

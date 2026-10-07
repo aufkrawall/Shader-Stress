@@ -114,15 +114,37 @@ JobContext &CurrentJob();
 // Sticky per job. Cheap: one relaxed load in the common case.
 bool StopRequested();
 
-// Realistic V4 diagnostics (self-test / perf-stats only; nullptr in jobs).
-struct SimV4Diag {
-  uint64_t functions = 0, nodes = 0;    // compiled shader functions / IR nodes
+// Realistic V5 diagnostics (self-test / perf-stats only; nullptr in jobs).
+enum SimV5Phase {
+  kPhaseRead, kPhaseLower, kPhaseCombine, kPhaseCse, kPhaseDce, kPhaseLiveness, kPhaseSchedule,
+  kPhaseRegAlloc, kPhaseEmit, kSimV5Phases
+};
+constexpr const char *kSimV5PhaseNames[kSimV5Phases] = {
+    "read", "lower", "combine", "dom+cse", "dce", "liveness", "schedule", "regalloc", "emit"};
+struct SimV5Diag {
+  uint64_t functions = 0, nodes = 0;    // compiled shaders / SSA values (incl. constants)
+  uint64_t blocks = 0, phis = 0;        // basic blocks / phi nodes read
+  uint64_t bitsRead = 0;                // bitstream bits decoded
   uint64_t combined = 0, folded = 0;    // combine handler calls / constant folds
   uint64_t peepholes = 0, cseHits = 0;  // pattern rewrites / merged duplicates
   uint64_t dead = 0, spills = 0;        // DCE kills / register spills
   uint64_t internHits = 0, emittedBytes = 0;
+  uint64_t domIters = 0, liveVisits = 0; // dominator passes / liveness block visits
+  uint64_t liveBits = 0, schedMoved = 0; // liveness set bits / reordered instructions
+  uint64_t branchesFolded = 0, deadBlocks = 0; // dead control flow
+  uint64_t optIters = 0;                // middle-end loop iterations
+  uint64_t lowered = 0, divIters = 0;   // lowering rewrites / divergence sweeps
+  uint64_t uniform = 0;                 // uniform (scalar-encoded) ALU instructions
+  uint64_t livePeak = 0, liveInSum = 0; // largest / summed block live-in set (diag)
+  uint64_t readErrors = 0;              // corpus decode failures (must stay 0)
+  uint64_t irErrors = 0;                // ValidateIr findings (diagnostic runs; must stay 0)
+  uint64_t arenaPeak = 0, arenaCap = 0, arenaOverflows = 0;
+  uint64_t corpusShaders = 0;
+  uint64_t phaseNs[kSimV5Phases] = {};  // wall time per phase
   bool aborted = false;
 };
-uint64_t RunRealisticCompilerSimV4Diag(uint64_t seed, int complexity, SimV4Diag *diag);
+uint64_t RunRealisticCompilerSimV5Diag(uint64_t seed, int complexity, SimV5Diag *diag);
+// Compiles every corpus shader once (self-test: decode and arena-bound check).
+uint64_t RunRealisticCompilerSimV5AllShaders(SimV5Diag *diag);
 // Marks the start of a job on the calling thread.
 void BeginJob(int workload, uint64_t seed, int complexity);
