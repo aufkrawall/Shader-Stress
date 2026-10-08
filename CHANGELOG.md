@@ -7,6 +7,7 @@ Target version: 3.6.0 (`VERSION`).
 ### Fixed
 
 - **RAM errors could be lost when a test stopped.** A mismatch was only reported when the RAM tester finished its whole pass; stopping, switching modes or quitting mid-pass discarded it and the error count stayed at zero. Mismatches are now reported as soon as the 8 MiB step that found them completes (each one counted exactly once).
+- **A real CPU result mismatch could go unreported.** Paired results waited in a 1024-slot table indexed by pair number; when one execution was delayed (a large job, a parked job), a later pair landing in the same slot overwrote the waiting result and the comparison never happened. Pending results are now kept per pair until their partner arrives; aborted jobs release their partner explicitly. The health line now also shows `pending` results.
 
 - **Jumpy jobs/s display:** the live rate counted jobs finished in each 1-second window, and the benchmark's deliberately shader-like job sizes (occasional jobs 10-40x larger) made it swing by about ±6% (simulated with the benchmark job mix). It is now averaged over a sliding 10-second window in benchmark mode (2 seconds in other modes), about ±2%. Benchmark minutes, scores and hashes are unchanged. The CLI's final "Avg Rate" now reports the whole-run average instead of the last second.
 

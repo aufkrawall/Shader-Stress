@@ -346,19 +346,69 @@ void TestPairing() {
   JobSpec o = s;
   o.complexity = 101;
   t.Submit(1, s, 1, 0, 0, nullptr);
-  Check(t.Submit(1, o, 1, 0, 0, nullptr) == PairOutcome::Stored && t.Unpaired() == 1,
-        "pair: different complexity never compared");
-  Check(t.Submit(2, o, 1, 0, 0, nullptr) == PairOutcome::Stored && t.Unpaired() == 2,
+  Check(t.Submit(1, o, 1, 0, 0, nullptr) == PairOutcome::Unpaired && t.Unpaired() == 2 &&
+            t.Pending() == 0,
+        "pair: different complexity never compared (both results final)");
+  t.Submit(1, s, 1, 0, 0, nullptr);
+  Check(t.Submit(2, s, 1, 0, 0, nullptr) == PairOutcome::Unpaired && t.Unpaired() == 4 &&
+            t.Pending() == 0,
         "pair: different workload never compared");
-  JobSpec reseeded = s; // same pair id after a job-stream reset, new run seed
-  reseeded.seed = s.seed + 1;
-  t.Submit(1, s, 7, 0, 0, nullptr);
-  Check(t.Submit(1, reseeded, 8, 1, 1, nullptr) == PairOutcome::Stored && t.Mismatched() == 1,
-        "pair: different seed never compared (run restart race)");
-  JobSpec other = s;
-  other.pairId = s.pairId + PairTable::kSlots;
-  Check(t.Submit(2, other, 1, 0, 0, nullptr) == PairOutcome::Stored && t.Unpaired() == 5,
-        "pair: slot collision evicts stale entry");
+
+  // Regression (review of 8374c0d): the old 1024-slot table let a later pair
+  // with the same slot overwrite a pending result whose partner was merely
+  // delayed; two differing executions then produced no mismatch at all.
+  t.Submit(1, s, 0x11, 0, 3, nullptr);
+  for (uint64_t k = 1; k <= 2048; ++k) { // other pairs complete meanwhile (one per old slot x2)
+    JobSpec x = s;
+    x.pairId = s.pairId + k;
+    t.Submit(1, x, k, 1, 1, nullptr);
+    t.Submit(1, x, k, 2, 2, nullptr);
+  }
+  JobSpec collide = s;
+  collide.pairId = s.pairId + 1024; // old slot of pair 5: first half only
+  t.Submit(1, collide, 0x22, 1, 1, nullptr);
+  const uint64_t mismatchedBefore = t.Mismatched();
+  Check(t.Submit(1, s, 0x12, 4, 9, &peer) == PairOutcome::Mismatch && peer.lp == 3 &&
+            t.Mismatched() == mismatchedBefore + 1,
+        "pair: delayed partner still compared after colliding pair ids (mismatch reported)");
+  Check(t.Submit(1, collide, 0x22, 2, 2, nullptr) == PairOutcome::Match && t.Pending() == 0,
+        "pair: colliding pair keeps its own pending result");
+
+  // Job stream reset: stragglers of the old run never touch the new run.
+  t.Reset(77);
+  JobSpec cur = s;
+  cur.run = 77;
+  JobSpec straggler = s; // same pair id, previous run
+  straggler.run = 76;
+  straggler.seed = s.seed + 1;
+  t.Submit(1, cur, 7, 0, 0, nullptr);
+  Check(t.Submit(1, straggler, 8, 1, 1, nullptr) == PairOutcome::Unpaired &&
+            t.Submit(1, cur, 7, 2, 2, nullptr) == PairOutcome::Match && t.Mismatched() == 0,
+        "pair: straggler of a previous run neither compared nor evicting the new pair");
+
+  // Aborted jobs: the partner's result is released (finished first) or meets
+  // a tombstone (still running); nothing lingers.
+  const uint64_t unpairedBefore = t.Unpaired();
+  t.Submit(1, cur, 1, 0, 0, nullptr);
+  t.Cancel(cur);
+  Check(t.Pending() == 0 && t.Unpaired() == unpairedBefore + 1,
+        "pair: abort releases the finished partner as unpaired");
+  t.Cancel(cur);
+  Check(t.Pending() == 1 && t.Submit(1, cur, 1, 0, 0, nullptr) == PairOutcome::Unpaired &&
+            t.Pending() == 0 && t.Unpaired() == unpairedBefore + 2,
+        "pair: partner finishing after an abort meets the tombstone");
+
+  // Last resort: a full table drops its oldest pending result, counted.
+  t.Reset(0);
+  JobSpec many = s;
+  for (uint64_t k = 0; k <= PairTable::kMaxPending; ++k) {
+    many.pairId = 1000 + k;
+    t.Submit(1, many, k, 0, 0, nullptr);
+  }
+  many.pairId = 1000; // oldest: evicted, so its partner is stored afresh
+  Check(t.Evicted() == 1 && t.Unpaired() == 1 && t.Pending() == PairTable::kMaxPending &&
+            t.Submit(1, many, 0, 1, 1, nullptr) == PairOutcome::Stored && t.Evicted() == 2,
+        "pair: full table evicts the oldest pending result (counted)");
 
   bool steady = true;
   uint64_t big = 0, sum = 0;

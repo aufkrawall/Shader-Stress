@@ -13,7 +13,11 @@ static void LogVerifySummary() {
                    L", I/O " + std::to_wstring(v.ioErrors) + L") | pairs ok " +
                    std::to_wstring(v.pairsMatched) + L", mismatched " +
                    std::to_wstring(v.pairsMismatched) + L", unpaired " +
-                   std::to_wstring(v.unpaired) + L", aborted jobs " +
+                   std::to_wstring(v.unpaired) + L", pending " +
+                   std::to_wstring(v.pairsPending) +
+                   (v.pairsEvicted ? L" (evicted " + std::to_wstring(v.pairsEvicted) + L")"
+                                   : std::wstring()) +
+                   L", aborted jobs " +
                    std::to_wstring(v.computeAborted) + L" | pair placement same-core " +
                    std::to_wstring(v.pairsSameCore) + L", cross-core " +
                    std::to_wstring(v.pairsCrossCore) + L" | golden " +

@@ -78,6 +78,7 @@ void RunComputeJob(int idx, Worker &w, int lp) {
   const uint64_t result = RunComputeWorkload(type, spec.seed, spec.complexity);
   if (CurrentJob().stopped || g_App.quit.load(std::memory_order_relaxed)) {
     CountComputeAborted();
+    GlobalPairTable().Cancel(spec); // the partner's result can never be compared
     return; // partial result: neither counted nor verified
   }
 
@@ -86,7 +87,7 @@ void RunComputeJob(int idx, Worker &w, int lp) {
   PairPeer peer;
   const PairOutcome outcome =
       GlobalPairTable().Submit((uint32_t)type, spec, result, idx, lp, &peer);
-  if (outcome != PairOutcome::Stored)
+  if (outcome == PairOutcome::Match || outcome == PairOutcome::Mismatch)
     CountPairPlacement(lp, peer.lp);
   if (outcome == PairOutcome::Mismatch)
     ResolveMismatch(type, spec, result, lp, peer);

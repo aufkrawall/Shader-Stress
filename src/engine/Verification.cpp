@@ -43,53 +43,88 @@ JobSpec NextComputeJob(int mode) {
   uint64_t runSeed = s_runSeed.load(std::memory_order_relaxed);
   s.seed = SeedForPair(s.pairId, runSeed);
   s.complexity = ComplexityForPair(s.pairId, runSeed, mode);
+  s.run = runSeed;
   return s;
+}
+
+void PairTable::MakeRoom() {
+  if (pending_.size() < kMaxPending) return;
+  // Only reached when ~65k first results wait at once (orders of magnitude
+  // more than workers x jobs in flight): the oldest pair lost its partner.
+  if (!pending_.begin()->second.cancelled) unpaired_.fetch_add(1, std::memory_order_relaxed);
+  evicted_.fetch_add(1, std::memory_order_relaxed);
+  pending_.erase(pending_.begin());
 }
 
 PairOutcome PairTable::Submit(uint32_t key, const JobSpec &spec, uint64_t result,
                               int worker, int lp, PairPeer *peer) {
   std::lock_guard<std::mutex> lk(mtx_);
-  Slot &s = slots_[spec.pairId % kSlots];
-  // The full job identity must match: a job still running across a run
-  // restart / mode switch (job stream reset) can carry a reused pair id with a
-  // different seed, and must never be compared against the new job.
-  if (s.valid && s.pairId == spec.pairId && s.key == key && s.seed == spec.seed &&
-      s.complexity == spec.complexity) {
-    if (peer) {
-      peer->worker = s.worker;
-      peer->lp = s.lp;
-      peer->result = s.result;
-    }
-    s.valid = false;
-    if (s.result == result) {
-      matched_.fetch_add(1, std::memory_order_relaxed);
-      return PairOutcome::Match;
-    }
-    mismatched_.fetch_add(1, std::memory_order_relaxed);
-    return PairOutcome::Mismatch;
-  }
-  // A different (older) pair still occupies the slot: its partner was
-  // preempted, run with a different workload/mode, or is far behind.
-  if (s.valid)
+  // A job still running across a run restart / mode switch (job stream
+  // reset) can carry a reused pair id: never compare it with the new run.
+  if (spec.run != run_) {
     unpaired_.fetch_add(1, std::memory_order_relaxed);
-  s.valid = true;
-  s.key = key;
-  s.pairId = spec.pairId;
-  s.seed = spec.seed;
-  s.complexity = spec.complexity;
-  s.result = result;
-  s.worker = worker;
-  s.lp = lp;
-  return PairOutcome::Stored;
+    return PairOutcome::Unpaired;
+  }
+  auto it = pending_.find(spec.pairId);
+  if (it == pending_.end()) {
+    MakeRoom();
+    Slot &s = pending_[spec.pairId];
+    s.key = key;
+    s.seed = spec.seed;
+    s.complexity = spec.complexity;
+    s.result = result;
+    s.worker = worker;
+    s.lp = lp;
+    return PairOutcome::Stored;
+  }
+  const Slot s = it->second;
+  pending_.erase(it);
+  // The full job identity must match: an ISA switch between the two
+  // executions computes a different problem. Both results are final, so
+  // neither can pair any more.
+  if (s.cancelled || s.key != key || s.seed != spec.seed || s.complexity != spec.complexity) {
+    unpaired_.fetch_add(s.cancelled ? 1 : 2, std::memory_order_relaxed);
+    return PairOutcome::Unpaired;
+  }
+  if (peer) {
+    peer->worker = s.worker;
+    peer->lp = s.lp;
+    peer->result = s.result;
+  }
+  if (s.result == result) {
+    matched_.fetch_add(1, std::memory_order_relaxed);
+    return PairOutcome::Match;
+  }
+  mismatched_.fetch_add(1, std::memory_order_relaxed);
+  return PairOutcome::Mismatch;
 }
 
-void PairTable::Reset() {
+void PairTable::Cancel(const JobSpec &spec) {
   std::lock_guard<std::mutex> lk(mtx_);
-  for (auto &s : slots_)
-    s = Slot{};
+  if (spec.run != run_) return;
+  auto it = pending_.find(spec.pairId);
+  if (it != pending_.end()) { // partner finished first: it stays unverified
+    if (!it->second.cancelled) unpaired_.fetch_add(1, std::memory_order_relaxed);
+    pending_.erase(it);
+    return;
+  }
+  MakeRoom(); // partner still running (or never started): it finds a tombstone
+  pending_[spec.pairId].cancelled = true;
+}
+
+size_t PairTable::Pending() {
+  std::lock_guard<std::mutex> lk(mtx_);
+  return pending_.size();
+}
+
+void PairTable::Reset(uint64_t run) {
+  std::lock_guard<std::mutex> lk(mtx_);
+  run_ = run;
+  pending_.clear();
   matched_ = 0;
   mismatched_ = 0;
   unpaired_ = 0;
+  evicted_ = 0;
 }
 
 PairTable &GlobalPairTable() {
@@ -108,8 +143,10 @@ void ResetVerification() {
   s_jobSeq = 0;
   uint64_t t = (uint64_t)std::chrono::steady_clock::now().time_since_epoch().count();
   uint64_t seed = Mix64(t ^ 0xD6E8FEB86659FD93ull);
-  s_runSeed = seed ? seed : GOLDEN_RATIO;
-  GlobalPairTable().Reset();
+  if (!seed) seed = GOLDEN_RATIO;
+  // Table first: an old-stream job finishing in between counts as a straggler.
+  GlobalPairTable().Reset(seed);
+  s_runSeed = seed;
   s_goldenChecks = 0;
   s_pairsSameCore = 0;
   s_pairsCrossCore = 0;
@@ -161,6 +198,8 @@ VerifyStats GetVerifyStats() {
   v.pairsMatched = t.Matched();
   v.pairsMismatched = t.Mismatched();
   v.unpaired = t.Unpaired();
+  v.pairsPending = t.Pending();
+  v.pairsEvicted = t.Evicted();
   v.pairsSameCore = s_pairsSameCore.load(std::memory_order_relaxed);
   v.pairsCrossCore = s_pairsCrossCore.load(std::memory_order_relaxed);
   v.goldenChecks = s_goldenChecks.load(std::memory_order_relaxed);
