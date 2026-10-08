@@ -303,6 +303,7 @@ void TestPreemption() {
   ctx.worker = 3;
   ctx.preemptible = true;
   g_App.assignment = a.Pack();
+  AdmitWork(RoleOf(3, a), g_App.workGen.load()); // as WaitForRole in the worker loop
   BeginJob(WL_SCALAR, 1, 1);
   Check(!StopRequested(), "no stop without assignment change");
   WorkAssignment b = a;
@@ -317,13 +318,33 @@ void TestPreemption() {
   Check(StopRequested() && StopRequested(), "role change preempts (sticky)");
 
   // A kernel started under a changed role aborts immediately.
-  BeginJob(WL_SCALAR, 1, 1);           // snapshot: idle role
+  AdmitWork(RoleOf(3, c), g_App.workGen.load()); // admitted: idle role
+  BeginJob(WL_SCALAR, 1, 1);
   g_App.assignment = a.Pack();         // becomes compute -> role changed
   g_App.workGen.fetch_add(1);
   KernelDiag d;
   SynthKernel128(1, 1000, &d);
   Check(d.aborted && d.blocks == 0, "kernel honours preemption",
         "aborted=" + std::to_string(d.aborted) + " blocks=" + std::to_string(d.blocks));
+
+  // Regression (review of 8374c0d/6219e17): the role was withdrawn between
+  // WaitForRole and BeginJob; BeginJob re-snapshotted the new state, so the
+  // job ran under the stale admission until the next assignment change.
+  g_App.assignment = a.Pack();
+  AdmitWork(RoleOf(3, a), g_App.workGen.load()); // admitted as compute
+  g_App.assignment = c.Pack();                    // withdrawn before the job begins
+  g_App.workGen.fetch_add(1);
+  BeginJob(WL_SCALAR, 1, 1);
+  Check(CurrentJob().stopped && StopRequested(), "job admitted before a role withdrawal stops at BeginJob");
+  SynthKernel128(1, 1000, &d);
+  Check(d.aborted && d.blocks == 0, "withdrawn admission computes nothing",
+        "blocks=" + std::to_string(d.blocks));
+  // Unrelated change between admission and BeginJob: the job runs.
+  AdmitWork(RoleOf(3, a), g_App.workGen.load() - 1); // admitted one generation earlier
+  g_App.assignment = b.Pack();                        // worker 3 still compute
+  BeginJob(WL_SCALAR, 1, 1);
+  Check(!CurrentJob().stopped && JobAdmitted() && !StopRequested(),
+        "unrelated change after admission keeps the job");
 
   ctx = saved;
   g_App.assignment = savedAssign;

@@ -32,6 +32,45 @@ WorkAssignment ComputeOn(int worker) {
   return a;
 }
 
+// The worker loop's admission (WaitForRole + AdmitWork) without waiting.
+void AdmitCurrent(int worker) {
+  const uint32_t gen = g_App.workGen.load(std::memory_order_acquire);
+  AdmitWork(RoleOf(worker, WorkAssignment::Unpack(g_App.assignment.load())), gen);
+}
+
+// Regression (review of 8374c0d/6219e17): a pause published between the
+// worker's admission and BeginJob was ignored (BeginJob re-snapshotted the
+// paused generation), so the job ran through the whole pause. BeginJob must
+// park until resume. Sequenced by the park counter and a done flag (spin
+// with yield on two events; no sleeps or timeouts).
+bool PauseBeforeBeginParks() {
+  g_App.assignment = ComputeOn(3).Pack();
+  std::promise<void> admitted, go;
+  std::future<void> goF = go.get_future();
+  std::atomic<bool> done{false};
+  bool ranWhilePaused = true;
+  std::thread t([&] {
+    JobContext &c = CurrentJob();
+    c.worker = 3;
+    c.preemptible = true;
+    AdmitCurrent(3);
+    admitted.set_value();
+    goF.wait();
+    BeginJob(WL_SCALAR, 1, 1);
+    ranWhilePaused = WorkAssignment::Unpack(g_App.assignment.load()).paused;
+    done = true;
+  });
+  admitted.get_future().wait();
+  const uint64_t parks = PatternParkCount();
+  PauseWork(true);
+  go.set_value();
+  while (!done.load() && PatternParkCount() == parks) std::this_thread::yield();
+  const bool parked = PatternParkCount() != parks;
+  PauseWork(false); // resume: a parked job continues
+  t.join();
+  return parked && !ranWhilePaused;
+}
+
 // Runs BeginJob on a helper thread (as compute worker `worker`), lets the
 // caller change state between BeginJob and the stop check, and returns the
 // result of StopRequested().
@@ -44,6 +83,7 @@ bool StopCheckAcross(int worker, Between between) {
     JobContext &c = CurrentJob();
     c.worker = worker;
     c.preemptible = true;
+    AdmitCurrent(worker);
     BeginJob(WL_SCALAR, 1, 1);
     begun.set_value();
     goF.wait();
@@ -90,6 +130,9 @@ void TestPauseAndPulse(SelfCheckFn check) {
     PauseWork(false); // publishes with a notify: wakes a parked job
   });
   Check(stopped, "patterns: role change while paused stops the job");
+
+  Check(PauseBeforeBeginParks(), "patterns: pause between admission and BeginJob parks the job");
+  Check(!WorkAssignment::Unpack(g_App.assignment.load()).paused, "patterns: resumed after park test");
 
   // Pulse gate: a job spinning in an off-window leaves it on a role change.
   g_App.assignment = ComputeOn(3).Pack();

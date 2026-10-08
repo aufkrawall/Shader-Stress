@@ -3,8 +3,9 @@
 #include "core/Common.h"
 
 // Blocks the calling worker until it has a non-idle role or must terminate.
-// Returns the role (Idle only when terminating).
-WorkerRole WaitForRole(int workerIdx, const Worker &w);
+// Returns the role (Idle only when terminating) and the assignment generation
+// it was read at (for AdmitWork).
+WorkerRole WaitForRole(int workerIdx, const Worker &w, uint32_t *admittedGen);
 // Starts one thread per g_Workers slot (idempotent).
 void StartWorkerThreads();
 // Terminates, wakes and joins all worker threads (and aux testers).

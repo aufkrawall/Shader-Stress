@@ -188,5 +188,12 @@ uint32_t RealisticV5CodeReplicas();
 uint32_t RunRealisticCompilerSimV5SchedTest();
 // Thread heap, StringMap, DenseMap32 and SHA-1 on known inputs: failed-check bits.
 uint32_t RunRealisticCompilerSimV5AllocTest();
-// Marks the start of a job on the calling thread.
+// Worker loop: WaitForRole admitted this worker with `role` at assignment
+// generation `gen`. Jobs of that admission revalidate it when they begin.
+void AdmitWork(WorkerRole role, uint32_t gen);
+// Revalidates the admission before work starts: parks while the assignment is
+// paused, returns false (job stopped) if the role changed or on quit.
+bool JobAdmitted();
+// Marks the start of a job on the calling thread (includes JobAdmitted; a
+// revoked admission leaves the job stopped before it computes anything).
 void BeginJob(int workload, uint64_t seed, int complexity);

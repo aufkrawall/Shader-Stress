@@ -39,4 +39,4 @@ on `inf`, which masked errors.
 ## Open questions
 
 - A defect that corrupts both executions identically (e.g. a broken unit on every core) is only caught by golden checks; their interval is a trade-off.
-- `unpaired` could grow under extreme preemption churn; not observed in smoke runs (0 unpaired in a 23 s dynamic run).
+- `unpaired` could grow under extreme preemption churn; not observed in smoke runs (0 unpaired in a 23 s dynamic run). `pending` should stay near the number of compute workers; a steadily growing value would mean partners are lost.

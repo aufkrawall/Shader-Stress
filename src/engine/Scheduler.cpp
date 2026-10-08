@@ -114,10 +114,13 @@ WorkAssignment PlanWork(int slots, int ramWanted, int comps, int decomp, bool io
   return a;
 }
 
-WorkerRole WaitForRole(int workerIdx, const Worker &w) {
+WorkerRole WaitForRole(int workerIdx, const Worker &w, uint32_t *admittedGen) {
   if (w.terminate.load(std::memory_order_relaxed)) return WorkerRole::Idle;
-  // A paused assignment (load-pattern off phase) starts no new jobs.
+  // A paused assignment (load-pattern off phase) starts no new jobs. The
+  // generation is read before the assignment (both published together under
+  // s_workMtx): any later change shows up as a newer generation in BeginJob.
   auto active = [&](WorkerRole &role) {
+    *admittedGen = g_App.workGen.load(std::memory_order_acquire);
     const WorkAssignment a =
         WorkAssignment::Unpack(g_App.assignment.load(std::memory_order_acquire));
     role = RoleOf(workerIdx, a);

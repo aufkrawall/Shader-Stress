@@ -70,6 +70,8 @@ uint64_t GoldenInterval(int mode, int activeComputeWorkers) {
 namespace {
 
 void RunComputeJob(int idx, Worker &w, int lp) {
+  // Revoked admission: take no job from the stream (its partner would wait).
+  if (!JobAdmitted()) return;
   const int mode = g_App.mode.load(std::memory_order_relaxed);
   const WorkloadType type = ActiveComputeWorkload();
   const JobSpec spec = NextComputeJob(mode);
@@ -179,8 +181,12 @@ void WorkerThread(int idx) {
 
   uint64_t decompSeq = 0;
   while (true) {
-    WorkerRole role = WaitForRole(idx, w);
+    uint32_t gen = 0;
+    WorkerRole role = WaitForRole(idx, w, &gen);
     if (role == WorkerRole::Idle) break; // terminating
+    // Jobs revalidate this admission in BeginJob: a pause or role change
+    // published after WaitForRole is honored before any work runs.
+    AdmitWork(role, gen);
     switch (role) {
     case WorkerRole::Compute: RunComputeJob(idx, w, lp); break;
     case WorkerRole::Stream: RunStreamJob(idx, w, lp, decompSeq); break;

@@ -20,20 +20,42 @@ JobContext &CurrentJob() {
   return ctx;
 }
 
+void AdmitWork(WorkerRole role, uint32_t gen) {
+  JobContext &ctx = CurrentJob();
+  ctx.role = role;
+  ctx.gen = gen;
+  ctx.stopped = false;
+  // Loaded after `gen` (acquire): a pulse change published later bumps the
+  // generation again and is reloaded by the next stop check.
+  ctx.pulsePeriod = g_App.pulsePeriod.load(std::memory_order_relaxed);
+  ctx.pulseOn = g_App.pulseOn.load(std::memory_order_relaxed);
+  ctx.pulseEpoch = g_App.pulseEpoch.load(std::memory_order_relaxed);
+}
+
+namespace {
+bool RefreshAssignment(JobContext &ctx, uint32_t gen);
+}
+
+bool JobAdmitted() {
+  JobContext &ctx = CurrentJob();
+  ctx.stopped = false;
+  if (!ctx.preemptible) return true;
+  // The admitted role/generation stay authoritative: a pause or role change
+  // published after WaitForRole is honored here, before any work runs (a
+  // paused assignment parks the worker until resume, role change or stop).
+  const uint32_t gen = g_App.workGen.load(std::memory_order_acquire);
+  if ((gen != ctx.gen && RefreshAssignment(ctx, gen)) ||
+      g_App.quit.load(std::memory_order_relaxed)) [[unlikely]]
+    ctx.stopped = true;
+  return !ctx.stopped;
+}
+
 void BeginJob(int workload, uint64_t seed, int complexity) {
   JobContext &ctx = CurrentJob();
   ctx.workload = workload;
   ctx.seed = seed;
   ctx.complexity = complexity;
-  ctx.stopped = false;
-  if (ctx.preemptible) {
-    ctx.gen = g_App.workGen.load(std::memory_order_acquire);
-    ctx.role = RoleOf(ctx.worker,
-                      WorkAssignment::Unpack(g_App.assignment.load(std::memory_order_acquire)));
-    ctx.pulsePeriod = g_App.pulsePeriod.load(std::memory_order_relaxed);
-    ctx.pulseOn = g_App.pulseOn.load(std::memory_order_relaxed);
-    ctx.pulseEpoch = g_App.pulseEpoch.load(std::memory_order_relaxed);
-  }
+  JobAdmitted(); // sets ctx.stopped when the admission was revoked
 }
 
 namespace {
