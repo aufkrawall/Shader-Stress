@@ -6,6 +6,15 @@ Shader Stress is a CPU/RAM stress and stability tester. It combines a realistic 
 
 <img width="591" height="446" alt="shaderstress" src="https://github.com/user-attachments/assets/f8d34343-d9d1-4aee-8ff3-f0925ce1c9ce" />
 
+## Support
+
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor%20on%20GitHub-%23EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/aufkrawall)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-%23FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/aufkrawall)
+
+Support through GitHub Sponsors or Buy Me a Coffee helps with development time, hardware, and tooling. My other
+open-source projects would also profit from donations; they are listed in [Other projects](#other-projects) at the
+bottom of this page.
+
 ## Highlights
 
 - **Every result is verified.** Each compute job runs twice, normally on two different cores, and the results are compared. Mismatches are re-checked to name the faulty CPU (e.g. `CPU 6 (core 3)`) and logged with a `--repro` command. Golden values, decompression output, RAM contents and storage reads are checked too.
@@ -146,3 +155,14 @@ The build script:
 - Windows ships one GUI-first executable plus a tiny `.com` launcher. This keeps the CLI path separate without duplicating the main binary.
 - Release validation is still a manual process; build artifacts include checksums but there is no CI pipeline in this repository. See [CHANGELOG.md](CHANGELOG.md).
 - Package power readout (Windows, elevated) uses LibreHardwareMonitor through the bundled `lhm/` helper and installs the PawnIO driver on first elevated start.
+
+## Other projects
+
+- [capture-engine](https://github.com/aufkrawall/capture-engine) — game capture, recording, overlays, graphics overrides,
+  and frame pacing for Windows
+- [green-curve](https://github.com/aufkrawall/green-curve) — open-source GPU curve undervolting and overclocking
+- [testsmem4u](https://github.com/aufkrawall/testsmem4u) — cross-platform RAM testing tool using proven patterns
+- [obs-indicator](https://github.com/aufkrawall/obs-indicator) — a low-overhead OBS recording-status indicator
+
+More projects are available on [my GitHub profile](https://github.com/aufkrawall?tab=repositories). All of these
+projects would also profit from donations — see [Support](#support) at the top of this page.
