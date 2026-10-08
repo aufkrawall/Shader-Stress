@@ -1,5 +1,6 @@
-// Scheduler.cpp - Work assignment, worker pool control, RAM/IO tester
-// lifecycle, dynamic load patterns and core cycling.
+// Scheduler.cpp - Work assignment (one role per pinned worker slot, including
+// the RAM tester and I/O stream roles), aux resource release, dynamic load
+// patterns and core cycling.
 #include "engine/Scheduler.h"
 #include "engine/AuxStress.h"
 #include "core/Topology.h"
@@ -10,20 +11,98 @@ namespace {
 std::mutex s_setWorkMtx;           // serializes SetWork / ReleaseAuxResources
 std::mutex s_workMtx;              // guards assignment publication for waiters
 std::condition_variable s_workCv;  // workers wait here for a non-idle role
-std::mutex s_auxMtx;
-std::condition_variable s_auxCv;   // RAM/IO testers wait here while inactive
-std::atomic<bool> s_auxTerminate{false};
-std::vector<std::unique_ptr<ThreadWrapper>> s_ramThreads;
-std::unique_ptr<ThreadWrapper> s_ioThread;
 std::atomic<bool> s_workersStarted{false};
+int s_lastAuxShortage = 0;         // last logged slot shortage (under s_setWorkMtx)
+
+// Publishes a new assignment (caller holds s_setWorkMtx) and wakes workers.
+void PublishAssignment(const WorkAssignment &a) {
+  if (a.Pack() == g_App.assignment.load()) return;
+  {
+    std::lock_guard<std::mutex> lk(s_workMtx);
+    g_App.assignment = a.Pack();
+    g_App.workGen.fetch_add(1, std::memory_order_acq_rel);
+    g_App.activeCompilers = a.comps;
+    g_App.activeDecomp = a.decomp;
+    g_App.ioActive = a.io;
+    g_App.ramActive = a.ram > 0;
+  }
+  s_workCv.notify_all();
+}
+
+// Logs (once per state change) when aux roles do not fit the worker pool.
+void LogAuxShortage(int slots, bool io, int ramWanted, const WorkAssignment &a) {
+  const int key = ((io && !a.io) ? 1 : 0) | ((a.ram < ramWanted) ? 2 : 0);
+  if (key == s_lastAuxShortage) return;
+  s_lastAuxShortage = key;
+  if (key == 0) return;
+  g_App.Log(L"Aux slots: " + std::to_wstring(slots) + L" worker slot(s) hold " +
+            std::to_wstring(a.comps) + L" compute + " + std::to_wstring(a.decomp) +
+            L" decompress; I/O stream " +
+            (io ? (a.io ? L"on" : L"skipped (no free slot)") : L"off") + L", RAM testers " +
+            std::to_wstring(a.ram) + L"/" + std::to_wstring(ramWanted) +
+            L" (aux roles never oversubscribe logical CPUs)");
+}
 } // namespace
 
 WorkerRole RoleOf(int workerIdx, const WorkAssignment &a) {
   if (workerIdx < a.offset) return WorkerRole::Idle;
   int rel = workerIdx - a.offset;
   if (rel < a.comps) return WorkerRole::Compute;
-  if (rel < a.comps + a.decomp) return WorkerRole::Decompress;
+  rel -= a.comps;
+  if (rel < a.decomp) return WorkerRole::Decompress;
+  rel -= a.decomp;
+  if (a.io) {
+    if (rel == 0) return WorkerRole::Stream;
+    --rel;
+  }
+  if (rel < a.ram) return WorkerRole::Ram;
   return WorkerRole::Idle;
+}
+
+int RamTesterIndexOf(int workerIdx, const WorkAssignment &a) {
+  if (RoleOf(workerIdx, a) != WorkerRole::Ram) return -1;
+  return workerIdx - a.offset - a.comps - a.decomp - (a.io ? 1 : 0);
+}
+
+WorkAssignment PlanWork(int slots, int ramWanted, int comps, int decomp, bool io, bool ram,
+                        int offset, bool noDecomp) {
+  slots = std::max(0, slots);
+  comps = std::max(0, comps);
+  decomp = std::max(0, decomp);
+  if (noDecomp) {
+    comps += decomp;
+    decomp = 0;
+  }
+  const int ramSlots = ram ? std::clamp(ramWanted, 0, RAM_MAX_TESTERS) : 0;
+  const int reserved = (io ? 1 : 0) + ramSlots;
+  // Aux roles never take the last worker slot (small --threads values would
+  // otherwise run no compute).
+  const int available = std::max(std::min(slots, 1), slots - reserved);
+
+  // Clamp to the budget, preserving the comp/decomp proportion.
+  if (comps + decomp > available) {
+    if (available <= 0) {
+      comps = decomp = 0;
+    } else if (comps > 0 && decomp > 0) {
+      int total = comps + decomp;
+      int clamped = std::max(1, available * comps / total);
+      comps = clamped;
+      decomp = available - clamped;
+    } else if (decomp > 0) {
+      decomp = available;
+    } else {
+      comps = available;
+    }
+  }
+  WorkAssignment a;
+  a.comps = comps;
+  a.decomp = decomp;
+  int free = slots - comps - decomp;
+  a.io = io && free > 0;
+  if (a.io) --free;
+  a.ram = std::clamp(free, 0, ramSlots);
+  a.offset = std::clamp(offset, 0, std::max(0, slots - a.Active()));
+  return a;
 }
 
 WorkerRole WaitForRole(int workerIdx, const Worker &w) {
@@ -81,36 +160,20 @@ int CreateWorkerPool() {
   return n;
 }
 
-// --- RAM / IO tester control -------------------------------------------------
-bool AuxWaitActive(bool io) {
-  std::unique_lock<std::mutex> lk(s_auxMtx);
-  s_auxCv.wait(lk, [&] {
-    return s_auxTerminate.load() || (io ? g_App.ioActive.load() : g_App.ramActive.load());
-  });
-  return !s_auxTerminate.load();
-}
-
-bool AuxShouldYield(bool io) {
-  return s_auxTerminate.load(std::memory_order_relaxed) ||
-         !(io ? g_App.ioActive.load(std::memory_order_relaxed)
-              : g_App.ramActive.load(std::memory_order_relaxed));
-}
-
-bool AuxTerminating() { return s_auxTerminate.load(std::memory_order_relaxed); }
-
+// --- RAM / IO aux resources ------------------------------------------------
 void ReleaseAuxResources() {
   std::lock_guard<std::mutex> lk(s_setWorkMtx);
-  if (s_ramThreads.empty() && !s_ioThread) return;
-  {
-    std::lock_guard<std::mutex> alk(s_auxMtx);
-    s_auxTerminate = true;
-    g_App.ioActive = false;
-    g_App.ramActive = false;
+  // Withdraw the aux roles first: a worker that acquires a tester/streamer
+  // lock afterwards sees the new assignment and never re-allocates.
+  WorkAssignment a = WorkAssignment::Unpack(g_App.assignment.load());
+  if (a.io || a.ram) {
+    a.io = false;
+    a.ram = 0;
+    PublishAssignment(a);
   }
-  s_auxCv.notify_all();
-  s_ramThreads.clear(); // joins
-  s_ioThread.reset();
-  s_auxTerminate = false;
+  const bool ram = ReleaseRamTesters(); // waits for a running slice to stop
+  const bool io = ReleaseIoStream();    // cancels + drains in-flight reads
+  if (!ram && !io) return;
   AuxStatusReset();
   g_App.Log(L"RAM/I/O testers released");
 }
@@ -127,74 +190,12 @@ void SetWork(int requestComps, int requestDecomp, bool io, bool ram, int offset)
   if (g_RunOpts.noRam) ram = false;
 
   const int cpuTotal = (int)g_Workers.size();
-  const int ramThreads = ram ? RamThreadCountFor(cpuTotal) : 0;
-  const int reserved = (io ? 1 : 0) + ramThreads;
-  // RAM/IO testers float on unpinned threads; never let them take the last
-  // worker slot (small --threads values would otherwise run no compute).
-  const int available = std::max(std::min(cpuTotal, 1), cpuTotal - reserved);
-  requestComps = std::max(0, requestComps);
-  requestDecomp = std::max(0, requestDecomp);
-  if (g_RunOpts.noDecomp) {
-    requestComps += requestDecomp;
-    requestDecomp = 0;
-  }
-
-  // Clamp to the budget, preserving the comp/decomp proportion.
-  if (requestComps + requestDecomp > available) {
-    if (available <= 0) {
-      requestComps = requestDecomp = 0;
-    } else if (requestComps > 0 && requestDecomp > 0) {
-      int total = requestComps + requestDecomp;
-      int clamped = std::max(1, available * requestComps / total);
-      requestComps = clamped;
-      requestDecomp = available - clamped;
-    } else if (requestDecomp > 0) {
-      requestDecomp = available;
-    } else {
-      requestComps = available;
-    }
-  }
-  const int active = requestComps + requestDecomp;
-  offset = std::clamp(offset, 0, std::max(0, cpuTotal - active));
-
+  const int ramWanted = ram ? RamThreadCountFor(cpuTotal) : 0;
+  const WorkAssignment a = PlanWork(cpuTotal, ramWanted, requestComps, requestDecomp, io, ram,
+                                    offset, g_RunOpts.noDecomp);
+  LogAuxShortage(cpuTotal, io, ramWanted, a);
   StartWorkerThreads();
-
-  if (ram && s_ramThreads.empty()) {
-    for (int i = 0; i < ramThreads; ++i) {
-      auto t = std::make_unique<ThreadWrapper>();
-      t->t = std::thread(RamTesterThread, i, ramThreads);
-      s_ramThreads.push_back(std::move(t));
-    }
-  }
-  if (io && !s_ioThread) {
-    s_ioThread = std::make_unique<ThreadWrapper>();
-    s_ioThread->t = std::thread(IoTesterThread);
-  }
-
-  WorkAssignment a;
-  a.offset = offset;
-  a.comps = requestComps;
-  a.decomp = requestDecomp;
-  a.io = io;
-  a.ram = ram;
-  if (a.Pack() != g_App.assignment.load()) {
-    {
-      std::lock_guard<std::mutex> lk(s_workMtx);
-      g_App.assignment = a.Pack();
-      g_App.workGen.fetch_add(1, std::memory_order_acq_rel);
-      g_App.activeCompilers = requestComps;
-      g_App.activeDecomp = requestDecomp;
-    }
-    s_workCv.notify_all();
-  }
-  if (g_App.ioActive.load() != io || g_App.ramActive.load() != ram) {
-    {
-      std::lock_guard<std::mutex> alk(s_auxMtx);
-      g_App.ioActive = io;
-      g_App.ramActive = ram;
-    }
-    s_auxCv.notify_all();
-  }
+  PublishAssignment(a);
 }
 
 // Apply Realistic configuration (StressConfig is informational only)

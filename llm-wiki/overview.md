@@ -29,16 +29,16 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
 | `WorkloadRealisticV5*.cpp` | DXIL shader-compiler model V5, the default `scalar-sim` (Ops.h op table, Corpus generator + Gen.h program types, Encode bitstream/corpus storage, Front, Lower, Fold, Opt, Back, Isel/Mopt/Sched/Ra/Asm machine back end, Alloc memory); V3 only in the `x64-zig-v3-simv3` comparison build, self-tested everywhere ([opt-audit.md](opt-audit.md)) |
 | `Decompress.h/.cpp` | LZ77 codec, data generator, `HashBytes`, self-verifying decompression job |
 | `Verification.h/.cpp` | Job stream (pair ids), `PairTable`, error accounting per source/CPU, stats |
-| `Worker.cpp` | Worker thread loop, compute job + pairing + golden checks, decompress job |
+| `Worker.cpp` | Worker thread loop, compute job + pairing + golden checks, decompress job, stream job (decompress + `IoStreamer::Service`), RAM slice dispatch |
 | `Scheduler.h/.cpp` | `SetWork`, event-driven role waits, RAM/IO tester lifecycle, `StartModeWork`, `DynamicLoop` (16 phases), `CoreCycleLoop` |
 | `Topology.h/.cpp` | Logical CPU enumeration, worker order, pinning, `DescribeLp` |
-| `RamStress.cpp` / `IoStress.cpp` / `AuxStress.h` | Verified RAM and storage testers, pattern helpers |
+| `RamStress.cpp` / `IoStress.cpp` / `AuxStress.h` | Verified RAM tester slices and I/O streamer (run on pinned RAM / stream worker slots), pattern helpers |
 | `Watchdog.cpp` | Rates, benchmark minutes/hash, max duration, health log every 60 s |
 | `RateMeter.h` | Live jobs/s display: sliding window (benchmark 10 s, other modes 2 s) over 250 ms watchdog samples; heavy-tailed job sizes made 1 s windows swing ~±6% (simulated). Scores use benchmark minutes, not this |
 | `Platform.cpp` | Power request + 1 ms timer (Windows), throttling opt-out, FTZ/DAZ, crash handlers |
 | `PowerMeasure.cpp` | LHM `PowerReader.exe` sampling of package power, effective clock, temperature, Vcore (Windows, admin); reader-line parser + `Power sample` log format |
 | `Cli.h`, `CliArgs.cpp`, `CliRun.cpp`, `ShaderStress.cpp` | CLI parsing/help/wizard, commands + dashboard, entry points |
-| `SelfTest.cpp` | `--self-test` in-binary unit tests |
+| `SelfTest.cpp` / `SelfTestAux.cpp` | `--self-test` in-binary unit tests (Aux: slot planner, RAM chains, I/O streamer round trip) |
 | `Gui.cpp` | Windows GDI UI |
 | `build.py` | Build orchestration (LLVM MinGW + Zig from `toolchains/`, optional native MSVC), sanitizers, symbols, archives |
 | `scripts/build_options.py` / `build_kernels.py` / `build_msvc.py` | Target table + aliases; non-LTO no-SLP kernel objects; MSVC discovery (manifest, vswhere, vcvarsall) and build |
@@ -49,7 +49,7 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
 ## Modes (`RunMode`)
 
 - `MODE_DYNAMIC` (2, default): 16 phases x 10 s (`DynamicPhaseName`): full load, mixed + RAM/IO, 500 ms on/off, decompress-heavy, random counts, 1-2 threads on random cores, bursts, 100 ms compute<->decompress, 50 ms square wave, staircase ramp, decompress + RAM/IO, single-core sweep.
-- `MODE_STEADY` (1): `cpu - min(4, cpu/2)` compute + decompress, RAM + IO testers.
+- `MODE_STEADY` (1): `cpu - min(4, cpu/2)` compute + decompress, RAM + IO testers. Aux roles take worker slots first (16 LPs: 9 compute + 4 decompress + 1 I/O stream + 2 RAM).
 - `MODE_BENCHMARK` (0): all workers compute, 180 s, no RAM/IO; default ISA scalar-sim.
 - `MODE_CORE_CYCLE` (3): one compute worker on each physical core's primary thread for `--dwell` seconds (default 60), fastest cores first.
 
@@ -93,7 +93,7 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
   accesses must stay in bounds. `TestSynthFarIndices()` covers tuning sizes
   and all vector widths using arithmetic only; default mapping is unchanged.
 - All compute goes through `RunComputeWorkload` (NOINLINE) so golden values, paired jobs and repro share one compiled body.
-- `WorkAssignment` is published as one packed atomic plus `workGen`; workers wait on `s_workCv`, aux testers on `s_auxCv` (no idle polling).
+- `WorkAssignment` is published as one packed atomic plus `workGen`; workers wait on `s_workCv` (no idle polling). Roles per slot from `offset`: compute, decompress, I/O stream (0/1), RAM testers (0..8); `PlanWork` (pure, self-tested) never assigns more roles than pool slots, keeps >= 1 compute/decompress worker, then stream, then RAM. RAM/I/O state lives in global objects guarded by mutexes; `ReleaseAuxResources` withdraws the roles before taking those locks, and workers re-check their role after locking (no re-allocation for a stale role).
 - Logical-CPU slot order: fastest perf class first, SMT primaries before siblings.
 - Benchmark/core-cycle modes force RAM/IO off; `--no-*` options always win.
 

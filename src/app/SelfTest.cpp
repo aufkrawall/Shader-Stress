@@ -26,6 +26,8 @@ void Check(bool ok, const char *name, const std::string &detail = std::string())
 
 std::string Hex(uint64_t v) { return ToNarrow(FmtHex64(v)); }
 
+void CheckFn(bool ok, const char *name, const std::string &detail) { Check(ok, name, detail); }
+
 struct KernelEntry {
   const char *name;
   uint64_t (*fn)(uint64_t, int, KernelDiag *);
@@ -612,6 +614,9 @@ void TestFormatting() {
 }
 } // namespace
 
+// SelfTestAux.cpp: slot planner, RAM chains, I/O pattern + streamer.
+void RunAuxSelfTests(void (*check)(bool ok, const char *name, const std::string &detail));
+
 int RunSelfTests() {
   g_pass = g_fail = 0;
   std::cout << "ShaderStress " << ToNarrow(APP_VERSION) << " self-test (" << ToNarrow(g_Cpu.brand)
@@ -626,6 +631,7 @@ int RunSelfTests() {
   TestPairing();
   TestTopologyOrder();
   TestPatterns();
+  RunAuxSelfTests(CheckFn);
   TestLz();
   std::cout << "Self-test: " << g_pass << " passed, " << g_fail << " failed"
             << (g_fail == 0 ? " - ALL PASSED" : "") << '\n';

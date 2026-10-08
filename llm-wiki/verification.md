@@ -16,8 +16,8 @@ on `inf`, which masked errors.
 | Mismatch resolution | Third run on the detecting core decides: reproduces own result -> suspect peer; matches peer -> suspect self; third value -> self non-deterministic. Logged with both CPUs, checksums and a `--repro` line. | `Worker.cpp: ResolveMismatch` |
 | Golden values | Seed 42, complexity 1000, computed at startup on the main thread; checked every 128 jobs (64 benchmark, 8 core-cycle). Catches faults common to all cores. | `Common.cpp: InitGoldenValues`, `Worker.cpp` |
 | Decompression | Every pass's output hash vs. the original data hash; failing datasets are rebuilt. | `Decompress.cpp: RunDecompressJob` |
-| RAM | Address-dependent pattern (`PatternWord`), moving inversions, full write + verify passes, dependent random reads verifying values. | `RamStress.cpp`, `AuxStress.h` |
-| Storage | 4 KiB-block-tagged pattern file, random uncached 256 KiB reads, every word checked. | `IoStress.cpp` |
+| RAM | Address-dependent pattern (`PatternWord`), moving inversions, full write + verify passes, dependent random reads (16 interleaved chains) verifying values. Passes run in slices on the RAM worker slot and resume after interruptions. | `RamStress.cpp: RunRamTesterSlice, RandomVerify`, `AuxStress.h` |
+| Storage | 4 KiB-block-tagged pattern file, random uncached 256 KiB reads (8 in flight on Windows), every word checked; serviced between the stream slot's decompression passes. 8 consecutive read failures disable I/O for the run (logged). | `IoStress.cpp: IoStreamer`, `Worker.cpp: RunStreamJob` |
 | Repro | `--repro` runs a job twice on one thread and compares (exit 5 on mismatch). | `CliRun.cpp: RunReproCommand` |
 
 ## Invariants

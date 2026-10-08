@@ -228,7 +228,8 @@ struct DecompDataset {
 };
 } // namespace
 
-DecompressJobResult RunDecompressJob(uint64_t seed, int complexity) {
+DecompressJobResult RunDecompressJob(uint64_t seed, int complexity, DecompPassHook hook,
+                                     void *hookCtx) {
   static thread_local DecompDataset ds;
   DecompressJobResult res;
   const bool regenerate = !ds.valid || (ds.jobs % 32) == 0;
@@ -265,6 +266,7 @@ DecompressJobResult RunDecompressJob(uint64_t seed, int complexity) {
       if (res.failures == 0) res.firstBadHash = h;
       ++res.failures;
     }
+    if (hook) hook(hookCtx);
   }
   // A failing dataset may itself be corrupted in memory; rebuild it so one
   // fault is reported once instead of on every following job.

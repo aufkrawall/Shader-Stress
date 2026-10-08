@@ -637,8 +637,8 @@ Last verified: 2026-10-03.
 
 - Accepted risks (deliberate, for a local stress tool): `-fno-stack-protector`, no CFG /
   `-fcf-protection`, predictable per-PID temp file name for the I/O tester
-  (`%TEMP%\ShaderStress_io_<pid>.tmp`, `$TMPDIR` or `/var/tmp` on Unix) without
-  symlink/TOCTOU hardening.
+  (`%TEMP%\ShaderStress_io_<pid>.tmp`, `$TMPDIR` or `/var/tmp` on Unix; `--self-test`
+  uses `ShaderStress_selftest_<pid>.tmp`, 1 MiB) without symlink/TOCTOU hardening.
 - Privileged paths: when started elevated on Windows with `lhm/` present, the app runs
   `lhm/PawnIO_setup.exe -install -silent` (kernel driver) and spawns `lhm/PowerReader.exe`
   every 5 s. `LibreHardwareMonitorLib.dll` is unsigned; the build verifies SHA-256 and

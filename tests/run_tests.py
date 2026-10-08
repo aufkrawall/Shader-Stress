@@ -236,8 +236,22 @@ def test_invariant_event_driven_scheduler(b):
     sched = _read("src/engine/Scheduler.cpp")
     worker = _read("src/engine/Worker.cpp")
     check("s_workCv.wait" in sched and "sleep_for(1ms)" not in worker and
-          "s_auxCv.wait" in sched and "WorkerSlotForCoreRank" in _read("src/core/Topology.h"),
-          "workers/testers wake on events (no idle polling), topology-aware slots")
+          "s_auxCv" not in sched and "WorkerSlotForCoreRank" in _read("src/core/Topology.h"),
+          "workers wake on events (no idle polling), topology-aware slots")
+
+
+def test_invariant_aux_roles_on_pinned_workers(b):
+    worker = _read("src/engine/Worker.cpp")
+    ram = _read("src/engine/RamStress.cpp")
+    io = _read("src/engine/IoStress.cpp")
+    sched = _read("src/engine/Scheduler.cpp")
+    check("WorkerRole::Stream" in worker and "WorkerRole::Ram" in worker and
+          "std::thread" not in ram and "std::thread" not in io and
+          "RamTesterThread" not in sched and "PlanWork(" in sched and
+          "FILE_FLAG_OVERLAPPED" in io and "HasOverlappedIoCompleted" in io and
+          "CancelIoEx" in io and "RAM_RANDOM_CHAINS" in ram,
+          "RAM/I/O testers run on pinned worker slots (no extra threads), async I/O, "
+          "interleaved RAM chains")
 
 
 def test_invariant_ram_io_verified(b):
@@ -472,6 +486,7 @@ LIGHTWEIGHT_TESTS = [
     test_invariant_realistic_unchanged,
     test_invariant_kernels_unitary_bounded,
     test_invariant_kernels_preemptible_and_strict_fp,
+    test_invariant_aux_roles_on_pinned_workers,
     test_invariant_paired_verification,
     test_invariant_event_driven_scheduler,
     test_invariant_ram_io_verified,
@@ -510,6 +525,14 @@ def test_smoke_steady(b):
                  ["--mode", "steady", "--duration", "3"])
     check(re.search(r"Verified: [1-9]\d* job pairs", out) is not None and "I/O 0 B" not in out,
           "steady run verifies job pairs and I/O data", out)
+
+
+def test_smoke_ram_slot(b):
+    out = _smoke(b, "steady with --no-io (compute + RAM tester slot)",
+                 ["--mode", "steady", "--duration", "2", "--no-io"])
+    check("RAM 0 B" not in out and "I/O 0 B" in out and
+          re.search(r"Verified: [1-9]\d* job pairs", out) is not None,
+          "RAM tester runs on a worker slot next to compute", out)
 
 
 def test_smoke_dynamic(b):
@@ -597,6 +620,7 @@ def verify_comparison_builds():
 STRESS_TESTS = [
     test_repro_all_isas,
     test_smoke_steady,
+    test_smoke_ram_slot,
     test_smoke_dynamic,
     test_smoke_corecycle,
     test_smoke_no_ram_no_io,

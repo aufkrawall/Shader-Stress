@@ -32,7 +32,12 @@ struct DecompressJobResult {
   uint64_t expectedHash = 0;
 };
 
+// Called after every decompression pass (~0.2 ms): lets the I/O stream worker
+// service its in-flight reads between passes without a thread of its own.
+using DecompPassHook = void (*)(void *ctx);
+
 // One decompression job on the calling thread: decodes the thread's dataset
 // `complexity / 48` times and verifies every pass against the original hash.
 // The dataset is regenerated from `seed` every 32 jobs.
-DecompressJobResult RunDecompressJob(uint64_t seed, int complexity);
+DecompressJobResult RunDecompressJob(uint64_t seed, int complexity,
+                                     DecompPassHook hook = nullptr, void *hookCtx = nullptr);

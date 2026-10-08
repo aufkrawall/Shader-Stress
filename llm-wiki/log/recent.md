@@ -1,5 +1,26 @@
 # Recent Changes Log
 
+## 2026-10-08 — RAM/I/O testers on pinned worker slots, async I/O, 16 RAM chains
+
+- User goal: e.g. 12 compiler + 2 decompress + 1 RAM + 1 I/O threads keep a
+  16-thread CPU at a constant 100% without extra threads (context switches).
+- Measured before (5700X, steady `--threads 6`, during heavy foreign load,
+  so only the structure was used): I/O thread ~22% CPU (8% kernel), QD1
+  synchronous reads. RAM random phase: 1 dependent chain (12 M reads/s).
+- Done: `WorkerRole::Stream` / `WorkerRole::Ram` slots (`PlanWork`), aux
+  threads and `s_auxCv` removed; `IoStreamer` (overlapped QD 8 on Windows,
+  creation interleaved), `RunDecompressJob` per-pass hook; RAM resumable
+  slices, `RandomVerify` 16 chains (micro-benchmark in opt-audit), steps
+  `words/32`. Fallbacks: unavailable RAM tester or `--no-decompress` with a
+  disabled streamer run compute jobs; `--no-decompress` stream slot blocks
+  on its own reads (no filler).
+- Measured after (no foreign load): all 6 threads 96-100%, I/O 47.7 vs
+  11.4 GiB verified per run. Power: unmeasured.
+- Tests: self-test slot planner + sweep, chain read counts, I/O pattern,
+  real 1 MiB overlapped streamer round trip; smoke `steady --no-io` (RAM
+  slot). Open: Linux io_uring/AIO (cross-compiled only); steady mix and
+  `RamThreadCountFor` (2 on 8+ LPs) left unchanged pending user decision.
+
 ## 2026-10-07 — Jumpy jobs/s display fixed (RateMeter)
 
 - User report (cosmetic): rate very jumpy during the benchmark. Root

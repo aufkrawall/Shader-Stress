@@ -96,6 +96,12 @@ Target version: 3.6.0 (`VERSION`).
 
 ### Improved
 
+- **RAM and I/O testers keep their CPU threads fully busy without extra threads.** Previously the I/O tester issued one uncached read at a time and its thread sat blocked in the kernel most of the run (measured: ~22% CPU on a 5700X with NVMe), so a fully assigned CPU never reached 100% load. Both testers ran as extra floating threads on top of the pinned workers. Now every tester occupies one pinned worker slot (one thread per logical CPU, no oversubscription):
+  - **I/O:** the I/O slot decompresses (like game asset streaming) and services 8 queued asynchronous uncached reads between decompression passes (Windows). Every word of every read is still verified. The pattern file is also written between passes instead of blocking a thread. Linux/macOS still use one synchronous read per pass.
+  - **RAM:** the dependent random-read phase now walks 16 independent chains instead of one, so the core keeps many DRAM misses in flight (5700X single thread: 133 vs 12 M verified reads/s), and each pass does 8x as many random reads. Interrupted passes resume instead of restarting.
+  - **Measured (5700X, steady, 6 threads, 512 MiB RAM/I/O):** all six threads 96-100% busy (before: I/O ~22%); I/O throughput ~4x (47.7 vs 11.4 GiB verified in the same run length). Power effect: not measured.
+  - With very small `--threads` values, testers that do not fit get no slot (logged) instead of running as extra threads; at least one compute worker always remains.
+
 - **Higher scalar (SSE2) synthetic power draw:** the 128-bit kernel's far
   data cursor now streams two new cache lines per block instead of swapping
   the previous block's data back. Measured +3.0 W (136.6 → 139.5 W package

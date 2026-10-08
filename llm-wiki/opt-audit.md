@@ -191,13 +191,26 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
 - LZ decompression: real decoder (overlapping matches, wild copies) + per-64-byte DIV in
   the verification hash. Targets the failure class of game-asset decompression crashes
   on degraded/unstable cores.
-- RAM tester: 2 threads (8+ LPs), 70% of free RAM up to 16 GiB, ~20-25 GiB/s write and
-  verify per thread observed (64 MiB smoke run); dependent random reads for row/latency stress.
+- RAM tester: 2 pinned worker slots (8+ LPs), 70% of free RAM up to 16 GiB; resumable
+  passes of fill / verify / random. Random phase: `RAM_RANDOM_CHAINS` = 16 interleaved
+  dependent chains, `words/32` reads per pass. 5700X single-thread micro-benchmark (1 GiB,
+  no background load, 2026-10-08): 1 chain 12 M/s, 8 chains 77 M/s, 12 chains 113 M/s,
+  16-32 chains 133 M/s (saturated) -> 16. In-app 512 MiB: write ~20 GiB/s, verify ~25 GiB/s,
+  random ~70 M reads/s.
+- I/O streamer (2026-10-08): the stream slot runs decompression jobs and calls
+  `IoStreamer::Service` after every pass (~0.2 ms). Windows: 8 overlapped uncached 256 KiB
+  reads in flight, completion checked via `HasOverlappedIoCompleted` (memory read, no
+  syscall), so the worker never parks. Before: 1 synchronous read per loop, thread ~22% busy
+  (5700X NVMe, 6-thread steady). After: all 6 threads 96-100%, I/O ~2.3 GiB/s verified,
+  service calls with all reads pending 6%, queue drained 0.4%. Linux/macOS: 1 synchronous
+  read per pass (cross-compiled only; Linux io_uring/AIO is an open follow-up).
 
 ## Placement and load patterns
 
 - Worker slots: fastest cores first, SMT primaries before siblings (partial loads spread
-  over physical cores; SMT siblings get decompress/RAM/IO in steady mode).
+  over physical cores; SMT siblings get decompress/RAM/IO in steady mode). Every role,
+  including the RAM tester and I/O stream, is one pinned slot: no oversubscription
+  (`PlanWork`, `src/engine/Scheduler.cpp`).
 - Dynamic phases include 50 ms square waves, 100 ms compute<->decompress, bursts,
   staircase ramp (load-line/VRM step response) and a single-core boost sweep.
 - Core-cycle mode: one thread per physical core (max boost; Curve-Optimizer style faults).

@@ -92,7 +92,7 @@ SRC_COMMON = [
     "src/workloads/Decompress.cpp",
     "src/engine/Verification.cpp", "src/engine/Worker.cpp", "src/engine/Scheduler.cpp",
     "src/engine/Watchdog.cpp", "src/engine/RamStress.cpp", "src/engine/IoStress.cpp",
-    "src/app/CliArgs.cpp", "src/app/CliRun.cpp", "src/app/SelfTest.cpp",
+    "src/app/CliArgs.cpp", "src/app/CliRun.cpp", "src/app/SelfTest.cpp", "src/app/SelfTestAux.cpp",
     "src/app/ShaderStress.cpp",
 ]
 

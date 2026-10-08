@@ -106,6 +106,7 @@ struct JobContext {
 constexpr int JOB_WORKLOAD_DECOMPRESS = 100;
 constexpr int JOB_WORKLOAD_RAM = 101;
 constexpr int JOB_WORKLOAD_IO = 102;
+constexpr int JOB_WORKLOAD_STREAM = 103; // stream slot: decompression + async verified reads
 
 JobContext &CurrentJob();
 

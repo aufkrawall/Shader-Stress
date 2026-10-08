@@ -271,9 +271,12 @@ static std::vector<std::string> BuildDashboardLines() {
   std::string ram = g_App.ramActive ? "ACTIVE" : "idle";
   if (aux.ramBytes) ram += " (" + ToNarrow(FmtBytes(aux.ramBytes)) + ", " +
                            std::to_string(aux.ramPasses) + " passes)";
+  const WorkAssignment wa = WorkAssignment::Unpack(g_App.assignment.load());
+  if (wa.ram) ram += " [" + std::to_string(wa.ram) + " worker(s)]";
   L.push_back("Workers: compute " + std::to_string(g_App.activeCompilers.load()) +
               ", decompress " + std::to_string(g_App.activeDecomp.load()) + " | RAM: " + ram +
-              " | I/O: " + (g_App.ioActive ? "ACTIVE" : "idle"));
+              " | I/O: " + (g_App.ioActive ? "ACTIVE (stream worker)" : "idle") + " | " +
+              std::to_string(wa.Active()) + "/" + std::to_string(g_Workers.size()) + " slots");
   VerifyStats v = GetVerifyStats();
   L.push_back("Verified: " + std::to_string(v.pairsMatched) + " job pairs, " +
               std::to_string(v.goldenChecks) + " golden, " + std::to_string(v.decompPasses) +

@@ -378,17 +378,21 @@ WorkloadType ResolveSelectedWorkload(int workloadSel);
 void ApplyWorkloadConfig(int workloadSel);
 
 // Packed work assignment so readers always observe a consistent snapshot.
-// Layout: [offset:16][comps:16][decomp:16][flags:16] (flags: bit0 io, bit1 ram)
+// Layout: [offset:16][comps:16][decomp:16][flags:16] (flags: bit0 io stream
+// slot, bits1-8 RAM tester slots). Every role occupies one pinned worker slot,
+// in the order compute, decompress, I/O stream, RAM testers (from `offset`).
 struct WorkAssignment {
   int offset = 0;
   int comps = 0;
   int decomp = 0;
-  bool io = false;
-  bool ram = false;
+  bool io = false;  // one I/O streaming worker (decompression + async verified reads)
+  int ram = 0;      // RAM tester workers (0..255)
 
+  int Active() const { return comps + decomp + (io ? 1 : 0) + ram; }
   uint64_t Pack() const {
     return ((uint64_t)(uint16_t)offset << 48) | ((uint64_t)(uint16_t)comps << 32) |
-           ((uint64_t)(uint16_t)decomp << 16) | (io ? 1u : 0u) | (ram ? 2u : 0u);
+           ((uint64_t)(uint16_t)decomp << 16) | (io ? 1u : 0u) |
+           ((uint64_t)(uint8_t)ram << 1);
   }
   static WorkAssignment Unpack(uint64_t v) {
     WorkAssignment a;
@@ -396,7 +400,7 @@ struct WorkAssignment {
     a.comps = (int)(uint16_t)(v >> 32);
     a.decomp = (int)(uint16_t)(v >> 16);
     a.io = (v & 1u) != 0;
-    a.ram = (v & 2u) != 0;
+    a.ram = (int)(uint8_t)(v >> 1);
     return a;
   }
   bool operator==(const WorkAssignment &o) const {
@@ -405,8 +409,15 @@ struct WorkAssignment {
   bool operator!=(const WorkAssignment &o) const { return !(*this == o); }
 };
 
-enum class WorkerRole : int { Idle = 0, Compute = 1, Decompress = 2 };
+enum class WorkerRole : int { Idle = 0, Compute = 1, Decompress = 2, Stream = 3, Ram = 4 };
 WorkerRole RoleOf(int workerIdx, const WorkAssignment &a);
+// RAM tester index (0..a.ram-1) of a worker with WorkerRole::Ram, else -1.
+int RamTesterIndexOf(int workerIdx, const WorkAssignment &a);
+// Pure slot planner behind SetWork: clamps the request to `slots` pinned
+// workers (one role per slot, never oversubscribed). Priority when slots are
+// short: >= 1 compute/decompress worker, then the I/O stream, then RAM.
+WorkAssignment PlanWork(int slots, int ramWanted, int comps, int decomp, bool io, bool ram,
+                        int offset, bool noDecomp);
 
 struct AppState {
   // Cache-line 1: Worker-Read-Hot — read by ALL worker threads every

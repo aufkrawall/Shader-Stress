@@ -105,6 +105,7 @@ const char *WorkloadCliName(int workload) {
   case JOB_WORKLOAD_DECOMPRESS: return "decompress";
   case JOB_WORKLOAD_RAM: return "ram-tester";
   case JOB_WORKLOAD_IO: return "io-tester";
+  case JOB_WORKLOAD_STREAM: return "io-stream (decompress + verified reads)";
   default: return "none";
   }
 }

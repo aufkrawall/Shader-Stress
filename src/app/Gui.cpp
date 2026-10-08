@@ -257,16 +257,18 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                          FmtNum(vs.goldenChecks) + L" golden, " + FmtNum(vs.decompPasses) +
                          L" decompress passes";
     part3 += L"\n\n--- Stress Status ---";
-    part3 += L"\nWorker Threads: " +
-             FmtNum(g_App.activeCompilers + g_App.activeDecomp) + L" of " +
-             std::to_wstring(g_Workers.size());
+    const WorkAssignment wa = WorkAssignment::Unpack(g_App.assignment.load());
+    part3 += L"\nWorker Threads: " + FmtNum(wa.Active()) + L" of " +
+             std::to_wstring(g_Workers.size()) + L" (one per logical CPU)";
     part3 += L"\n  > Sim Compilers: " + FmtNum(g_App.activeCompilers);
     part3 += L"\n  > Decompressors: " + FmtNum(g_App.activeDecomp);
     part3 += L"\nRAM Tester: " + std::wstring(g_App.ramActive ? L"ACTIVE" : L"Idle");
+    if (wa.ram) part3 += L" [" + std::to_wstring(wa.ram) + L" worker(s)]";
     if (aux.ramBytes)
       part3 += L" (" + FmtBytes(aux.ramBytes) + L", " + std::to_wstring(aux.ramPasses) +
                L" passes, " + FmtBytes(vs.ramBytesVerified) + L" verified)";
-    part3 += L"\nI/O Tester: " + std::wstring(g_App.ioActive ? L"ACTIVE" : L"Idle");
+    part3 += L"\nI/O Tester: " +
+             std::wstring(g_App.ioActive ? L"ACTIVE [1 worker: decompress + async reads]" : L"Idle");
     if (vs.ioBytesVerified)
       part3 += L" (" + FmtBytes(vs.ioBytesVerified) + L" verified)";
 
