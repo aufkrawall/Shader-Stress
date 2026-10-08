@@ -348,6 +348,29 @@ def test_invariant_repo_layout(b):
           f"stray={stray} missing={missing}")
 
 
+def test_debug_tool_discovery(b):
+    if not IS_WINDOWS:
+        return
+    script = os.path.join(PROJECT_ROOT, "tests", "test-debug-tool-discovery.ps1")
+    if not os.path.exists(script):
+        return
+    discovery_tool = os.path.join(PROJECT_ROOT, "tools", "discover-debug-tools.ps1")
+    if not os.path.exists(discovery_tool):
+        check(False, "debug-tool discovery script unit test", "tools/discover-debug-tools.ps1 missing")
+        return
+    pwsh_bin = "pwsh"
+    try:
+        r = subprocess.run([pwsh_bin, "-NoProfile", "-File", script, "-DiscoveryScriptPath", discovery_tool],
+                           capture_output=True, timeout=60, cwd=PROJECT_ROOT)
+    except FileNotFoundError:
+        pwsh_bin = "powershell"
+        r = subprocess.run([pwsh_bin, "-NoProfile", "-File", script, "-DiscoveryScriptPath", discovery_tool],
+                           capture_output=True, timeout=60, cwd=PROJECT_ROOT)
+    out = r.stdout.decode(errors="replace") + r.stderr.decode(errors="replace")
+    check(r.returncode == 0 and "regression checks passed" in out,
+          "debug-tool discovery script unit test", out)
+
+
 def test_build_comparisons(b):
     sys.path.insert(0, PROJECT_ROOT) if PROJECT_ROOT not in sys.path else None
     import build
@@ -506,6 +529,7 @@ LIGHTWEIGHT_TESTS = [
     test_invariant_file_sizes,
     test_cpu_level_guard,
     test_invariant_repo_layout,
+    test_debug_tool_discovery,
 ]
 
 

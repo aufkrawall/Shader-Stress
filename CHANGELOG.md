@@ -96,6 +96,10 @@ Target version: 3.6.0 (`VERSION`).
 
 ### Improved
 
+- **Agent instructions and discovery test coverage synchronized with upstream templates:**
+  - Synchronized `AGENTS.md` with upstream `llm-prompt-templates` (commits `fdc6a2b`, `1bbdd1c`, `bfafdd5`, `338ae94`), adding the test application and process lifecycle contract (`## Test apps and computer use`), economical logging guidelines, task-splitting into reviewable small commits, and deeper change verification.
+  - Added automated unit test coverage for `tools/discover-debug-tools.ps1` (`tests/test-debug-tool-discovery.ps1`) integrated into `python tests/run_tests.py`.
+
 - **Dynamic mode redesigned to find unstable hardware faster.** One loop now takes about 2 minutes (14 phases x 8 s, was 16 x 10 s) and covers each instability trigger once, with random parameters per loop (the pattern seed is logged):
   - **Right load per phase (ISA "Auto"):** the heavy synthetic AVX2/AVX-512 load gets the largest share (~64% of compute phases: heat, current, load steps, pulses, ramp). The realistic compiler sim (~24%) and light SSE load (~12%) rotate with it per loop in the light-load and single-core phases, where undervolt / Curve Optimizer instability usually appears at maximum boost (a heavy load lowers boost clocks there). An explicitly chosen ISA still applies to every phase.
   - **New: synchronized fast load pulses.** All cores switch between full load and a low-power spin on a shared clock (20 ms, 5 ms, 1 ms and 250 µs periods, random duty), producing package-wide current steps far faster than the old 50 ms minimum.

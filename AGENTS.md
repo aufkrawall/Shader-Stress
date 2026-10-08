@@ -1,11 +1,14 @@
 # Agent Instructions
 
+Keep always-on rules here (commit gates, tool and platform precedence, stop conditions) and keep full procedures, style guides, and worked examples in `llm-wiki/`, referenced by path. Do not maintain the same rule in both places; the exception is a highest-stakes commit gate, which may stay here as a compressed checklist so it holds even when no wiki page is loaded.
+
 ## Critical workflow
 
-- Windows-first project: prefer PowerShell 7.6, Windows-native paths, and installed project tools unless there is a clear reason to move away from them!
+- Windows-first project: prefer PowerShell 7.6, Windows-native paths, and installed project tools; never silently substitute another ecosystem, tool version, or globally installed tool. If declarations conflict or a required tool is unavailable, stop and report instead of working around it!
 - After code changes, always run `python build.py` to rebuild all targets!
-- Confirm the changed behavior or artifact when practical; do not infer success from exit status alone.
+- Verify the change itself, not just command exit status: prefer a check that would fail without the change; otherwise inspect the artifact directly (it exists and its content, format, or size changed as expected); otherwise read the actual output to confirm the relevant tests or build ran. If none is practical, state what was and was not verified!
 - Keep large logs, generated output, traces, dumps, and minified files out of working context unless needed; inspect targeted ranges or summaries and retain full output only as evidence.
+- Split up non-trivial tasks into a series of small, self-contained commits (but don't compile every small commit!), not one large commit, so later review stays easy; each commit must independently hold together and pass verification and secret-leak checks.
 - Always git commit after code changes!
 - Before committing, run ALL tests and ensure they pass: `python tests/run_tests.py --stress --sanitize`!
 - Sanitizer builds catch UB and memory errors before they reach release.
@@ -24,6 +27,7 @@
 ## Commit messages
 
 - One summary line (imperative or noun phrase, <= ~100 characters) naming the user-visible effect; optional blank line plus `-` bullet body for details and the tests that were run.
+- When committing, use a concise title plus a short bullet-point body for non-trivial changes stating what changed and why.
 - No absolute user paths, user names, secrets, or raw log excerpts in messages; keep the pseudonymous `ShaderStress Developer` identity.
 
 ## Changelog and release notes
@@ -83,13 +87,20 @@ Regression coverage and diagnosability are first-class deliverables, not optiona
 ## Debugging and logging
 
 - We are paranoid about having sufficient debug logging!
-- Add additional debug logging when it helps diagnose issue root causes, state transitions, failure modes, unexpected runtime conditions, or future regressions! Keep diagnostics non-secret and low-overhead.
+- Add additional debug logging when it helps diagnose issue root causes, state transitions, failure modes, unexpected runtime conditions, or future regressions! Keep diagnostics non-secret, low-overhead, and economical to consume (human- and token-efficient): single-line entries with stable prefixes; log each distinct event once; rate-limit repeats with counters and summaries; cap collections and truncate long values (first few items plus totals, sizes/hashes instead of full bodies); keep verbose detail behind an explicit flag. Preserve useful debug information when compatible with release policy.
 - Ensure builds preserve useful debug symbols etc. so crash dumps contain actionable information!
 - Inspect relevant dumps, logs, traces, symbols, and produced artifacts when they can establish the reported failure or its root cause.
 - Prefer project-documented debugger and symbol-path guidance (`llm-wiki/debug-tools.md`).
 - When `tools/discover-debug-tools.ps1` and `debug-tool-manifest.json` exist on Windows, use the manifest as machine-specific path evidence instead of duplicating SDK/MSVC discovery logic. Do not commit the manifest.
 - Verify tool availability before relying on documented paths. Treat hardcoded paths as examples unless the repository declares them mandatory.
 - Do not mutate global debugger flags, registry/system settings, binaries, symbols, drivers (PawnIO scripts!), or persistent environment state unless explicitly requested and justified.
+
+## Test apps and computer use
+
+- Prefer scripted, API-, CLI-, or harness-driven verification, including scripted input and screenshots, over interactive computer use; computer use remains allowed when GUI interaction itself is what must be verified.
+- Keep runs short and bounded: start with a brief duration, extend only when evidence requires it, give every started process an explicit stop condition, and never leave test apps running longer than needed.
+- Own the full lifecycle: shut down everything started, including child processes, when done or on failure, then confirm nothing lingers in the background.
+- Start interdependent apps in dependency order and let each signal readiness (open port, created file, health check, visible process state) before starting the next; use only a brief stagger when no such signal exists.
 
 ## `llm-wiki/` workflow
 

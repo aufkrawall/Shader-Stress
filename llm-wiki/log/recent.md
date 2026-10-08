@@ -1,5 +1,21 @@
 # Recent Changes Log
 
+## 2026-10-08 — Upstream prompt-template synchronization & discovery tests
+
+- Synchronized `AGENTS.md` with upstream `llm-prompt-templates` (commits `fdc6a2b`,
+  `1bbdd1c`, `bfafdd5`, `338ae94`).
+- Added `## Test apps and computer use` section: preference for scripted/CLI/harness
+  verification over interactive computer use, bounded test durations, complete
+  process lifecycle management (confirming no child processes linger), and gated
+  interdependent app startups.
+- Refined debug logging guidance to require economical consumption (token/human-efficient,
+  single-line entries, rate-limiting, and truncation/capping).
+- Added rule to split non-trivial tasks into small, self-contained reviewable commits.
+- Added deeper change verification principles and strict tool substitution rules.
+- Added automated unit test `tests/test-debug-tool-discovery.ps1` for
+  `tools/discover-debug-tools.ps1` and wired it into `tests/run_tests.py` under
+  `LIGHTWEIGHT_TESTS`.
+
 ## 2026-10-08 — Dynamic mode redesign (detection per time)
 
 - User: make dynamic optimal, short runs. Gaps found: one ISA for all
