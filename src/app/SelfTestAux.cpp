@@ -3,6 +3,7 @@
 // streamer round trip). Single-threaded, a few MiB, well under a second.
 #include "engine/AuxStress.h"
 #include "engine/Verification.h"
+#include "workloads/Workloads.h"
 #include <string>
 
 using SelfCheckFn = void (*)(bool ok, const char *name, const std::string &detail);
@@ -160,11 +161,59 @@ void TestIoStreamer(SelfCheckFn check) {
   io.Shutdown(true);
   Check(!io.Configured(), "io stream: shutdown idempotent");
 }
+
+// Regression (review of 7075df0): mismatches stayed pending until a pass
+// finished, and stopping/releasing the tester reset them unreported. One real
+// 16 MiB tester on this thread (two fill steps, one verify step), no timing.
+void TestRamInterruptedPass(SelfCheckFn check) {
+  auto Check = [check](bool ok, const char *name, const std::string &detail = {}) {
+    check(ok, name, detail);
+  };
+  const uint64_t savedAssign = g_App.assignment.load();
+  const uint64_t savedRamBytes = g_RunOpts.ramBytes;
+  const JobContext savedCtx = CurrentJob();
+  CurrentJob().preemptible = false; // stop checks see quit only
+  WorkAssignment a; // worker 0 = RAM tester 0
+  a.ram = 1;
+  g_App.assignment = a.Pack();
+  g_RunOpts.ramBytes = 16ull << 20;
+
+  auto errorsNow = [] { return GetVerifyStats().ramErrors; };
+  const uint64_t before = errorsNow(), globalBefore = g_App.errors.load();
+  const bool filled = RunRamTesterSlice(0, 0, 1, 2); // fill both 8 MiB chunks
+  const bool injected = RamTesterCorruptForTest(0, 12345, 1ull << 17);
+  RunRamTesterSlice(0, 0, 1, 1); // verify chunk 0: finds the flipped word
+  const uint64_t detected = errorsNow() - before;
+  Check(filled && injected && detected == 1 && g_App.errors.load() - globalBefore == 1,
+        "ram: mismatch reported when detected, not at the end of the pass",
+        "injected " + std::to_string(injected) + " reported " + std::to_string(detected));
+  ReleaseRamTesters(); // stop mid-pass (mode change / quit)
+  Check(errorsNow() - before == 1, "ram: releasing an interrupted pass keeps its errors",
+        std::to_string(errorsNow() - before));
+
+  // A completed pass must not count an already reported error again.
+  const uint64_t before2 = errorsNow();
+  RunRamTesterSlice(0, 0, 1, 2);
+  RamTesterCorruptForTest(0, 777, 1);
+  RunRamTesterSlice(0, 0, 1, 1);
+  RamTesterCorruptForTest(0, 777, 1); // repaired: the random phase reads it clean
+  RunRamTesterSlice(0, 0, 1);         // rest of the pass
+  Check(errorsNow() - before2 == 1 && GetAuxStatus().ramPasses >= 1,
+        "ram: finishing the pass does not double-count reported errors",
+        std::to_string(errorsNow() - before2));
+  ReleaseRamTesters();
+  AuxStatusReset();
+
+  g_App.assignment = savedAssign;
+  g_RunOpts.ramBytes = savedRamBytes;
+  CurrentJob() = savedCtx;
+}
 } // namespace
 
 void RunAuxSelfTests(SelfCheckFn check) {
   TestSlotPlanner(check);
   TestRandomChains(check);
+  TestRamInterruptedPass(check);
   TestIoPattern(check);
   TestIoStreamer(check);
 }

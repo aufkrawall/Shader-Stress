@@ -60,8 +60,14 @@ uint64_t ComputeRamTestBytes();
 // until its current pass completes or the worker's role changes. Interrupted
 // passes resume where they stopped (on whichever worker holds the role next).
 // Returns false when the tester is unavailable (allocation failed); the caller
-// then keeps the slot busy with other work.
-bool RunRamTesterSlice(int workerIdx, int testerIdx, int testerCount);
+// then keeps the slot busy with other work. Mismatches are reported as soon as
+// a step detects them. `maxSteps` (8 MiB fill/verify chunks or random-read
+// blocks) ends the slice early; only the self-test limits it.
+bool RunRamTesterSlice(int workerIdx, int testerIdx, int testerCount,
+                       uint64_t maxSteps = ~0ull);
+// Flips bits of one word of tester `testerIdx` (self-test fault injection);
+// false when the tester holds no memory or the index is out of range.
+bool RamTesterCorruptForTest(int testerIdx, uint64_t wordIdx, uint64_t xorMask);
 // Frees all RAM tester memory (waits for a running slice). True if any was held.
 bool ReleaseRamTesters();
 

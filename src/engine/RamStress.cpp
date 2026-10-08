@@ -57,7 +57,11 @@ struct RamTester {
   uint64_t slices = 0;       // slices that touched the current pass
   double sec[3] = {};        // active seconds per phase in the current pass
   uint64_t lastLogTick = 0;
-  size_t errors = 0, recorded = 0;
+  // Mismatches of the current pass: `errors` found, `recorded` listed in
+  // `records`. Errors are reported when detected (ReportNew); `reported` /
+  // `reportedRecords` say how many already reached the global counters, so an
+  // interrupted or released pass never loses or double-counts one.
+  size_t errors = 0, recorded = 0, reported = 0, reportedRecords = 0;
   PatternError records[kMaxRecords];
 
   void ResetPass() {
@@ -65,7 +69,7 @@ struct RamTester {
     progress = 0;
     slices = 0;
     sec[0] = sec[1] = sec[2] = 0;
-    errors = recorded = 0;
+    errors = recorded = reported = reportedRecords = 0;
   }
 };
 
@@ -98,17 +102,32 @@ bool Allocate(RamTester &t, int idx, int count) {
   return true;
 }
 
-void FinishPass(RamTester &t, int idx) {
-  for (size_t r = 0; r < t.recorded; ++r) {
-    const PatternError &e = t.records[r];
+const wchar_t *PhaseName(RamPhase p) {
+  return p == RamPhase::Fill ? L"fill" : p == RamPhase::Verify ? L"verify" : L"random";
+}
+
+// Reports the mismatches found since the last call: newly listed words one by
+// one, the unlisted rest as a count. Runs right after every verify step, so a
+// pass that is interrupted (pause, role change, stop) or released never holds
+// unreported errors.
+void ReportNew(RamTester &t, int idx, RamPhase found) {
+  for (; t.reportedRecords < t.recorded; ++t.reportedRecords, ++t.reported) {
+    const PatternError &e = t.records[t.reportedRecords];
     ReportHardwareError(
         ErrorSource::Ram, -1,
-        L"tester " + std::to_wstring(idx) + L" pass " + std::to_wstring(t.pass) + L" offset " +
-            FmtHex64((e.index - t.baseIndex) * 8) + L" expected " + FmtHex64(e.expected) +
-            L" got " + FmtHex64(e.actual) + L" (xor " + FmtHex64(e.expected ^ e.actual) + L")");
+        L"tester " + std::to_wstring(idx) + L" pass " + std::to_wstring(t.pass) + L" " +
+            PhaseName(found) + L" offset " + FmtHex64((e.index - t.baseIndex) * 8) +
+            L" expected " + FmtHex64(e.expected) + L" got " + FmtHex64(e.actual) + L" (xor " +
+            FmtHex64(e.expected ^ e.actual) + L")");
   }
+  if (t.errors > t.reported) {
+    AddHardwareErrors(ErrorSource::Ram, -1, t.errors - t.reported);
+    t.reported = t.errors;
+  }
+}
+
+void FinishPass(RamTester &t, int idx) {
   if (t.errors > t.recorded) {
-    AddHardwareErrors(ErrorSource::Ram, -1, t.errors - t.recorded);
     g_App.Log(L"RAM ERROR: tester " + std::to_wstring(idx) + L" pass " +
               std::to_wstring(t.pass) + L": " + std::to_wstring(t.errors) +
               L" mismatching words in total (" + std::to_wstring(t.recorded) + L" listed)");
@@ -230,7 +249,7 @@ void AuxStatusReset() {
   s_status = AuxStatus{};
 }
 
-bool RunRamTesterSlice(int workerIdx, int testerIdx, int testerCount) {
+bool RunRamTesterSlice(int workerIdx, int testerIdx, int testerCount, uint64_t maxSteps) {
   if (testerIdx < 0 || testerIdx >= RAM_MAX_TESTERS) return true; // stale role snapshot
   RamTester &t = s_testers[testerIdx];
   std::lock_guard<std::mutex> lk(t.mtx);
@@ -251,8 +270,9 @@ bool RunRamTesterSlice(int workerIdx, int testerIdx, int testerCount) {
   const uint64_t seed = Mix64(t.threadSeed + t.pass);
   const uint64_t invert = (t.pass & 1) ? ~0ull : 0ull; // moving inversions
   const uint64_t randomSteps = RamRandomStepsFor(t.words);
-  while (!StopRequested()) {
+  for (uint64_t step = 0; step < maxSteps && !StopRequested(); ++step) {
     const auto t0 = std::chrono::steady_clock::now();
+    const size_t errorsBefore = t.errors;
     const int ph = (int)t.phase;
     if (t.phase == RamPhase::Fill) {
       size_t n = std::min<size_t>(kChunkWords, t.words - (size_t)t.progress);
@@ -274,6 +294,8 @@ bool RunRamTesterSlice(int workerIdx, int testerIdx, int testerCount) {
       t.progress += n;
     }
     t.sec[ph] += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    if (t.errors != errorsBefore) [[unlikely]]
+      ReportNew(t, testerIdx, (RamPhase)ph);
     if (t.phase == RamPhase::Random && t.progress >= randomSteps) {
       FinishPass(t, testerIdx);
       break; // one pass per slice: the worker re-checks its role between passes
@@ -288,6 +310,16 @@ bool ReleaseRamTesters() {
   bool any = false;
   for (RamTester &t : s_testers) {
     std::lock_guard<std::mutex> lk(t.mtx);
+    if (t.mem && (t.progress || t.phase != RamPhase::Fill)) {
+      // Diagnostics only: errors of the unfinished pass were reported when found.
+      const uint64_t total = t.phase == RamPhase::Random ? RamRandomStepsFor(t.words) : t.words;
+      g_App.Log(Fmt("RAM tester %d released mid-pass: pass %llu, ", (int)(&t - s_testers),
+                    (unsigned long long)t.pass) +
+                PhaseName(t.phase) +
+                Fmt(" %.0f%%, %llu error(s) this pass (all reported)",
+                    total ? 100.0 * (double)t.progress / (double)total : 0.0,
+                    (unsigned long long)t.errors));
+    }
     if (t.mem) {
       AuxStatusSetRam(-1, (uint64_t)0 - (uint64_t)t.mem.sz, 0);
       t.mem.Release();
@@ -300,4 +332,13 @@ bool ReleaseRamTesters() {
     t.ResetPass();
   }
   return any;
+}
+
+bool RamTesterCorruptForTest(int testerIdx, uint64_t wordIdx, uint64_t xorMask) {
+  if (testerIdx < 0 || testerIdx >= RAM_MAX_TESTERS) return false;
+  RamTester &t = s_testers[testerIdx];
+  std::lock_guard<std::mutex> lk(t.mtx);
+  if (!t.mem || wordIdx >= t.words) return false;
+  t.mem.As<uint64_t>()[wordIdx] ^= xorMask;
+  return true;
 }
