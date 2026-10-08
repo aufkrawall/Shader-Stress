@@ -117,8 +117,13 @@ int PatternWorkloadFor(int isaClass, int selectedWorkload) {
   }
 }
 
+int PatternWorkloadNow() {
+  const int cls = g_App.patternIsaClass.load(std::memory_order_relaxed);
+  return cls < 0 ? -1 : PatternWorkloadFor(cls, g_App.selectedWorkload.load(std::memory_order_relaxed));
+}
+
 WorkloadType ActiveComputeWorkload() {
-  const int p = g_App.patternWorkload.load(std::memory_order_relaxed);
+  const int p = PatternWorkloadNow();
   return p >= 0 ? (WorkloadType)p : ResolveSelectedWorkload(g_App.selectedWorkload.load());
 }
 
@@ -171,13 +176,12 @@ void DynamicLoop() {
   int isaClass = kIsaHeavy;
   auto SetIsa = [&](int cls) {
     isaClass = cls;
-    g_App.patternWorkload = PatternWorkloadFor(cls, g_App.selectedWorkload.load());
+    g_App.patternIsaClass = cls; // resolved per job against the live selection
   };
   auto PhaseIsaName = [&]() {
-    return g_App.patternWorkload.load() >= 0
-               ? std::wstring(IsaClassName(isaClass)) + L" = " +
-                     GetResolvedISAName(g_App.patternWorkload.load())
-               : GetResolvedISAName(g_App.selectedWorkload.load());
+    const int p = PatternWorkloadNow();
+    return p >= 0 ? std::wstring(IsaClassName(isaClass)) + L" = " + GetResolvedISAName(p)
+                  : GetResolvedISAName(g_App.selectedWorkload.load()) + L" (fixed by user)";
   };
 
   for (int pIdx = 0; g_App.running && g_App.mode == mode; pIdx = (pIdx + 1) % DYNAMIC_PHASES) {
@@ -312,7 +316,7 @@ void DynamicLoop() {
       g_App.loops++;
   }
   SetPulse(0, 0);
-  g_App.patternWorkload = -1;
+  g_App.patternIsaClass = -1;
 }
 
 void CoreCycleLoop() {

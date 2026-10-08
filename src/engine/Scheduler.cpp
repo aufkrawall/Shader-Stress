@@ -320,7 +320,7 @@ void StartModeWork() {
   ApplyWorkloadConfig(g_App.selectedWorkload.load());
   if (g_DynThread && g_DynThread->t.joinable())
     g_DynThread->t.join();
-  g_App.patternWorkload = -1; // dynamic-mode ISA override never leaks into other modes
+  g_App.patternIsaClass = -1; // dynamic-mode ISA override never leaks into other modes
   const int cpu = (int)g_Workers.size();
   switch (g_App.mode.load()) {
   case MODE_DYNAMIC:

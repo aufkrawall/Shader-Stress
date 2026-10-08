@@ -184,13 +184,26 @@ void TestPhasePlan(SelfCheckFn check) {
         "patterns: Auto picks heavy SIMD / compiler sim / light ISA per phase");
   Check(PatternWorkloadFor(kIsaSim, WL_AVX2) == -1 && PatternWorkloadFor(kIsaHeavy, WL_SCALAR_SIM) == -1,
         "patterns: an explicit ISA selection applies to every phase");
-  const int savedPattern = g_App.patternWorkload.load();
-  g_App.patternWorkload = WL_SCALAR_SIM;
+  const int savedClass = g_App.patternIsaClass.load();
+  const int savedSel = g_App.selectedWorkload.load();
+  g_App.selectedWorkload = WL_AUTO;
+  g_App.patternIsaClass = kIsaSim;
   const bool overridden = ActiveComputeWorkload() == WL_SCALAR_SIM;
-  g_App.patternWorkload = -1;
-  const bool selection = ActiveComputeWorkload() == ResolveSelectedWorkload(g_App.selectedWorkload.load());
-  g_App.patternWorkload = savedPattern;
+  // Regression (review of 6219e17): the phase override was cached as a
+  // workload at phase start, so a manual ISA choice only applied at the next
+  // phase (~8 s later). The class now resolves against the live selection.
+  g_App.selectedWorkload = WL_SCALAR;
+  const bool manual = ActiveComputeWorkload() == ResolveSelectedWorkload(WL_SCALAR) &&
+                      PatternWorkloadNow() == -1;
+  g_App.selectedWorkload = WL_AUTO; // back to Auto mid-phase: the phase class applies again
+  const bool backToAuto = ActiveComputeWorkload() == WL_SCALAR_SIM;
+  g_App.patternIsaClass = -1;
+  const bool selection = ActiveComputeWorkload() == ResolveSelectedWorkload(WL_AUTO);
+  g_App.patternIsaClass = savedClass;
+  g_App.selectedWorkload = savedSel;
   Check(overridden && selection, "patterns: compute jobs follow the phase ISA override");
+  Check(manual && backToAuto,
+        "patterns: a manual ISA change applies immediately inside a dynamic phase (and back to Auto)");
   Check(GoldenInterval(MODE_DYNAMIC, 1) == 8 && GoldenInterval(MODE_DYNAMIC, 2) == 8 &&
             GoldenInterval(MODE_DYNAMIC, 16) == 128 && GoldenInterval(MODE_BENCHMARK, 1) == 64 &&
             GoldenInterval(MODE_CORE_CYCLE, 1) == 8 && GoldenInterval(MODE_STEADY, 1) == 128,

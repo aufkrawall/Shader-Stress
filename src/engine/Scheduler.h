@@ -27,6 +27,8 @@ int PatternWorkloadFor(int isaClass, int selectedWorkload);
 // PatternIsa class of dynamic phase `phase0` (0-based) in loop `loop`;
 // `random` picks the class in the random-mix phase. Pure (unit tested).
 int DynamicPhaseIsaClass(int phase0, int loop, uint64_t random);
+// Dynamic phase workload for the current selection, -1 = the selection applies.
+int PatternWorkloadNow();
 // Workload of compute jobs right now (dynamic override or the selection).
 WorkloadType ActiveComputeWorkload();
 // Worker slots before the first SMT sibling (one per core, fastest first).

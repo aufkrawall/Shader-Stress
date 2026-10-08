@@ -450,7 +450,10 @@ struct AppState {
   std::atomic<bool> resetTimer{false};
   std::atomic<int> currentPhase{0};
   // Dynamic-mode overrides (reset by every SetWork / mode start):
-  std::atomic<int> patternWorkload{-1};       // WorkloadType for compute jobs, -1 = selection
+  // PatternIsa class of the dynamic phase, -1 = none. Resolved against the
+  // live ISA selection on every job (PatternWorkloadNow), so a manual ISA
+  // change applies immediately, also back to Auto.
+  std::atomic<int> patternIsaClass{-1};
   std::atomic<uint64_t> pulsePeriod{0};       // synchronized duty cycle (PulseNow ticks), 0 = off
   std::atomic<uint64_t> pulseOn{0};           // on-window per period
   std::atomic<uint64_t> pulseEpoch{0};        // common phase origin for all cores

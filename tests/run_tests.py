@@ -260,8 +260,16 @@ def test_invariant_dynamic_patterns(b):
     stop = _read("src/workloads/SynthKernels.cpp")
     check("PauseWork(true)" in pat and "SetPulse(" in pat and "LogPhaseSummary" in pat and
           "WaitForAssignmentChange" in stop and "PulseGate" in stop and
-          "g_App.patternWorkload = -1" in sched and "g_App.pulsePeriod = 0" in sched,
+          "g_App.patternIsaClass = -1" in sched and "g_App.pulsePeriod = 0" in sched,
           "dynamic patterns pause/pulse jobs in place; SetWork/mode start clear pulse + ISA override")
+    # The phase stores its ISA class; jobs resolve it against the live selection.
+    check("PatternWorkloadFor(cls, g_App.selectedWorkload" in pat and
+          "g_App.patternWorkload" not in pat,
+          "dynamic ISA override follows a manual ISA change immediately")
+    worker = _read("src/engine/Worker.cpp")
+    check("WaitForRole(idx, w, &gen)" in worker and "AdmitWork(role, gen)" in worker and
+          "JobAdmitted();" in stop and "ctx.gen = g_App.workGen" not in stop,
+          "jobs revalidate their admission (pause/role change before BeginJob is honored)")
 
 
 def test_invariant_ram_io_verified(b):

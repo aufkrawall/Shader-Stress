@@ -233,7 +233,7 @@ static std::vector<std::string> BuildDashboardLines() {
   const int mode = g_App.mode.load();
   L.push_back("ShaderStress " + ToNarrow(APP_VERSION) + " | " + ToNarrow(GetRuntimeOsName()) +
               " (" + ToNarrow(GetArchName()) + ") | " + ToNarrow(g_Cpu.brand));
-  const int patternIsa = g_App.patternWorkload.load();
+  const int patternIsa = PatternWorkloadNow();
   const std::wstring isa = (mode == MODE_DYNAMIC && patternIsa >= 0)
                                ? L"auto per phase, now " + GetResolvedISAName(patternIsa)
                                : GetResolvedISAName(g_App.selectedWorkload.load());
