@@ -379,20 +379,23 @@ void ApplyWorkloadConfig(int workloadSel);
 
 // Packed work assignment so readers always observe a consistent snapshot.
 // Layout: [offset:16][comps:16][decomp:16][flags:16] (flags: bit0 io stream
-// slot, bits1-8 RAM tester slots). Every role occupies one pinned worker slot,
-// in the order compute, decompress, I/O stream, RAM testers (from `offset`).
+// slot, bits1-8 RAM tester slots, bit9 paused). Every role occupies one pinned
+// worker slot, in the order compute, decompress, I/O stream, RAM testers (from
+// `offset`). `paused` (dynamic load patterns): running jobs park in place and
+// resume unchanged when the pause ends, so work across load steps is verified.
 struct WorkAssignment {
   int offset = 0;
   int comps = 0;
   int decomp = 0;
   bool io = false;  // one I/O streaming worker (decompression + async verified reads)
   int ram = 0;      // RAM tester workers (0..255)
+  bool paused = false;
 
   int Active() const { return comps + decomp + (io ? 1 : 0) + ram; }
   uint64_t Pack() const {
     return ((uint64_t)(uint16_t)offset << 48) | ((uint64_t)(uint16_t)comps << 32) |
            ((uint64_t)(uint16_t)decomp << 16) | (io ? 1u : 0u) |
-           ((uint64_t)(uint8_t)ram << 1);
+           ((uint64_t)(uint8_t)ram << 1) | (paused ? (1u << 9) : 0u);
   }
   static WorkAssignment Unpack(uint64_t v) {
     WorkAssignment a;
@@ -401,6 +404,7 @@ struct WorkAssignment {
     a.decomp = (int)(uint16_t)(v >> 16);
     a.io = (v & 1u) != 0;
     a.ram = (int)(uint8_t)(v >> 1);
+    a.paused = (v & (1u << 9)) != 0;
     return a;
   }
   bool operator==(const WorkAssignment &o) const {
@@ -445,6 +449,11 @@ struct AppState {
   std::atomic<bool> ramActive{false};
   std::atomic<bool> resetTimer{false};
   std::atomic<int> currentPhase{0};
+  // Dynamic-mode overrides (reset by every SetWork / mode start):
+  std::atomic<int> patternWorkload{-1};       // WorkloadType for compute jobs, -1 = selection
+  std::atomic<uint64_t> pulsePeriod{0};       // synchronized duty cycle (PulseNow ticks), 0 = off
+  std::atomic<uint64_t> pulseOn{0};           // on-window per period
+  std::atomic<uint64_t> pulseEpoch{0};        // common phase origin for all cores
   std::atomic<uint64_t> benchRates[3];
   std::atomic<int> benchWinner{-1};
   std::atomic<bool> benchComplete{false};
@@ -612,8 +621,22 @@ void WorkerThread(int idx);
 void DynamicLoop();
 void CoreCycleLoop();
 void Watchdog();
-// Assigns work. offset = first worker index of the active window.
+// Assigns work. offset = first worker index of the active window. Clears any
+// pause and pulse pattern.
 void SetWork(int comps, int decomp, bool io, bool ram, int offset = 0);
+// Dynamic patterns: park every running job in place (true) / resume (false).
+void PauseWork(bool paused);
+// Dynamic patterns: synchronized on/off duty cycle inside running jobs (all
+// cores share one clock phase; off = pause-spin in C0). periodUs 0 = off.
+void SetPulse(int periodUs, int dutyPct);
+// Blocks a parked worker until the assignment generation moves past `seenGen`
+// (or quit/terminate). Event-driven via the worker condition variable.
+void WaitForAssignmentChange(uint32_t seenGen, int workerIdx);
+// Number of park waits so far (diagnostics).
+uint64_t PatternParkCount();
+// Monotonic, core-synchronized clock for pulses (TSC / CNTVCT) and its rate.
+uint64_t PulseNow();
+uint64_t PulseTicksPerUs();
 // Stops IO/RAM testers and releases their memory/temp files.
 void ReleaseAuxResources();
 // Starts the worker pool / control threads for the current g_App.mode.

@@ -197,6 +197,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
     std::wstring modeName = GetModeName(g_App.mode.load());
     std::wstring activeISA = GetResolvedISAName(sel);
+    if (g_App.mode == MODE_DYNAMIC && g_App.patternWorkload.load() >= 0)
+      activeISA = L"Auto per phase, now " + GetResolvedISAName(g_App.patternWorkload.load());
 
     std::wstring part1 =
         L"Shader Stress " + APP_VERSION + L"\nOS: Windows (" + GetArchName() +

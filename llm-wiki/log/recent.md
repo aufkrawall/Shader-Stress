@@ -1,5 +1,33 @@
 # Recent Changes Log
 
+## 2026-10-08 — Dynamic mode redesign (detection per time)
+
+- User: make dynamic optimal, short runs. Gaps found: one ISA for all
+  phases (Auto = AVX2), jobs aborted at every load step (unverified), no
+  load steps faster than 50 ms (PatternSleep 10 ms / timer 15.6 ms), golden
+  checks every 128 jobs even with 1 thread, phases not attributable.
+- Done: `src/engine/Patterns.cpp` (14 x 8 s, seed logged, per-phase
+  summary), `WorkAssignment::paused` + `PauseWork` (jobs park in
+  `StopRequested` via `WaitForAssignmentChange`), `SetPulse` (TSC epoch,
+  pause-spin off-windows, `PulseGate`), `g_App.patternWorkload` +
+  `ActiveComputeWorkload`, `GoldenInterval(mode, comps)`,
+  `CountComputeAborted`. SetWork clears pulse/pause; StartModeWork resets
+  the ISA override (benchmark untouched).
+- Validation run (5700X, `--threads 10`, 118 s, 512 MiB RAM/I/O): 0
+  aborted in phases 3/4/7/14, parks 280 (load steps) / 798 (square wave);
+  pulse phase ~68% of full-load throughput at ~53% duty; 0 errors.
+- Tests: self-test pause/resume, pause+role change, pulse off-window exit,
+  pulse arithmetic, SetPulse ticks, phase ISA plan, golden intervals
+  (futures, no timing); invariant `test_invariant_dynamic_patterns`.
+- User priority: the hardest (synthetic AVX2/AVX-512) load gets the
+  biggest share -> `DynamicPhaseIsaClass` (heavy ~64%, sim ~24%, light
+  ~12%; light-load phases rotate per loop, sim first, because heavy loads
+  lower boost clocks there). Self-test asserts the ordering.
+- Open: time-to-detection vs OCCT / y-cruncher / CoreCycler on a
+  deliberately unstable setting; sim stop-check granularity (per shader
+  function) limits sub-ms pulse edges for the sim ISA (pulse phases use
+  synthetic kernels with Auto).
+
 ## 2026-10-08 — RAM/I/O testers on pinned worker slots, async I/O, 16 RAM chains
 
 - User goal: e.g. 12 compiler + 2 decompress + 1 RAM + 1 I/O threads keep a

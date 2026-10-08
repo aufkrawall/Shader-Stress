@@ -30,7 +30,8 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
 | `Decompress.h/.cpp` | LZ77 codec, data generator, `HashBytes`, self-verifying decompression job |
 | `Verification.h/.cpp` | Job stream (pair ids), `PairTable`, error accounting per source/CPU, stats |
 | `Worker.cpp` | Worker thread loop, compute job + pairing + golden checks, decompress job, stream job (decompress + `IoStreamer::Service`), RAM slice dispatch |
-| `Scheduler.h/.cpp` | `SetWork`, event-driven role waits, RAM/IO tester lifecycle, `StartModeWork`, `DynamicLoop` (16 phases), `CoreCycleLoop` |
+| `Scheduler.h/.cpp` | `SetWork`/`PlanWork`, event-driven role waits, pause/pulse control (`PauseWork`, `SetPulse`, `PulseNow`), aux release, `StartModeWork` |
+| `Patterns.cpp` | `DynamicLoop` (14 phases x 8 s, per-phase ISA and summary), `CoreCycleLoop`, `PatternSleep` |
 | `Topology.h/.cpp` | Logical CPU enumeration, worker order, pinning, `DescribeLp` |
 | `RamStress.cpp` / `IoStress.cpp` / `AuxStress.h` | Verified RAM tester slices and I/O streamer (run on pinned RAM / stream worker slots), pattern helpers |
 | `Watchdog.cpp` | Rates, benchmark minutes/hash, max duration, health log every 60 s |
@@ -48,7 +49,7 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
 
 ## Modes (`RunMode`)
 
-- `MODE_DYNAMIC` (2, default): 16 phases x 10 s (`DynamicPhaseName`): full load, mixed + RAM/IO, 500 ms on/off, decompress-heavy, random counts, 1-2 threads on random cores, bursts, 100 ms compute<->decompress, 50 ms square wave, staircase ramp, decompress + RAM/IO, single-core sweep.
+- `MODE_DYNAMIC` (2, default): 14 phases x 8 s (~112 s loop, `DynamicPhaseName`, `src/engine/Patterns.cpp`): heat soak (heavy), all units + RAM/IO, synchronized pulses heavy (20 ms/5 ms/1 ms/250 us, random 30-70% duty), idle->load steps (pause), compiler sim all threads, SMT mix (sim on primaries + decompress on siblings), pulses light ISA, 1-2 sim threads on random cores, single-core bursts from idle, single-core sweep (sim / light alternating per loop), random mix, staircase, decompress + RAM/IO, 50 ms whole-system square wave. ISA per phase only when the selection is Auto (`DynamicPhaseIsaClass` + `PatternWorkloadFor`): heavy synthetic SIMD ~64% of compute phases (user priority 2026-10-08), compiler sim ~24%, light ~12%; light-load/single-core phases rotate per loop (sim first). Pattern seed logged; per-phase summary line (jobs, aborted, pairs, golden, parks, errors, RAM/I/O).
 - `MODE_STEADY` (1): `cpu - min(4, cpu/2)` compute + decompress, RAM + IO testers. Aux roles take worker slots first (16 LPs: 9 compute + 4 decompress + 1 I/O stream + 2 RAM).
 - `MODE_BENCHMARK` (0): all workers compute, 180 s, no RAM/IO; default ISA scalar-sim.
 - `MODE_CORE_CYCLE` (3): one compute worker on each physical core's primary thread for `--dwell` seconds (default 60), fastest cores first.
@@ -96,6 +97,7 @@ ShaderStress, SelfTest, Gui, TerminalUtils), `launcher/` (cli_launcher.c). Other
 - `WorkAssignment` is published as one packed atomic plus `workGen`; workers wait on `s_workCv` (no idle polling). Roles per slot from `offset`: compute, decompress, I/O stream (0/1), RAM testers (0..8); `PlanWork` (pure, self-tested) never assigns more roles than pool slots, keeps >= 1 compute/decompress worker, then stream, then RAM. RAM/I/O state lives in global objects guarded by mutexes; `ReleaseAuxResources` withdraws the roles before taking those locks, and workers re-check their role after locking (no re-allocation for a stale role).
 - Logical-CPU slot order: fastest perf class first, SMT primaries before siblings.
 - Benchmark/core-cycle modes force RAM/IO off; `--no-*` options always win.
+- Pause/pulse (dynamic only): `WorkAssignment::paused` parks running jobs inside `StopRequested` (`WaitForAssignmentChange`, condition variable) and `WaitForRole` starts none; a pulse pattern (`g_App.pulsePeriod/On/Epoch`, TSC/CNTVCT ticks, common epoch) pause-spins jobs through off-windows. Jobs resume unchanged, so results stay verified. Every `SetWork` clears pulse and pause; `StartModeWork` resets `patternWorkload` -> benchmark is never affected. Stop-check granularity: AVX2 synthetic ~13 us, sim per shader function, decompression per pass (~0.2 ms).
 
 ## Open questions / stale-risk
 

@@ -12,6 +12,7 @@ std::atomic<uint64_t> s_pairsSameCore{0}, s_pairsCrossCore{0};
 std::atomic<uint64_t> s_decompPasses{0}, s_decompFailures{0};
 std::atomic<uint64_t> s_cpuErrors{0}, s_ramErrors{0}, s_ioErrors{0};
 std::atomic<uint64_t> s_ramBytes{0}, s_ioBytes{0};
+std::atomic<uint64_t> s_computeAborted{0};
 
 std::mutex s_lpErrMtx;
 std::map<int, uint64_t> s_lpErrors; // lp -> count (lp -1 = unknown)
@@ -120,6 +121,7 @@ void ResetVerification() {
   s_ioErrors = 0;
   s_ramBytes = 0;
   s_ioBytes = 0;
+  s_computeAborted = 0;
   {
     std::lock_guard<std::mutex> lk(s_lpErrMtx);
     s_lpErrors.clear();
@@ -170,8 +172,11 @@ VerifyStats GetVerifyStats() {
   v.ioErrors = s_ioErrors.load(std::memory_order_relaxed);
   v.ramBytesVerified = s_ramBytes.load(std::memory_order_relaxed);
   v.ioBytesVerified = s_ioBytes.load(std::memory_order_relaxed);
+  v.computeAborted = s_computeAborted.load(std::memory_order_relaxed);
   return v;
 }
+
+void CountComputeAborted() { s_computeAborted.fetch_add(1, std::memory_order_relaxed); }
 
 void CountGoldenCheck(bool failed) {
   s_goldenChecks.fetch_add(1, std::memory_order_relaxed);

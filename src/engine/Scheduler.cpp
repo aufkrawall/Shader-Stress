@@ -1,10 +1,17 @@
 // Scheduler.cpp - Work assignment (one role per pinned worker slot, including
-// the RAM tester and I/O stream roles), aux resource release, dynamic load
-// patterns and core cycling.
+// the RAM tester and I/O stream roles), pattern pause/pulse control, aux
+// resource release and mode start. Load patterns live in Patterns.cpp.
 #include "engine/Scheduler.h"
 #include "engine/AuxStress.h"
 #include "core/Topology.h"
 #include "engine/Verification.h"
+#if defined(__x86_64__) || defined(_M_X64)
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#else
+#include <x86intrin.h>
+#endif
+#endif
 using namespace std::chrono_literals;
 
 namespace {
@@ -13,10 +20,12 @@ std::mutex s_workMtx;              // guards assignment publication for waiters
 std::condition_variable s_workCv;  // workers wait here for a non-idle role
 std::atomic<bool> s_workersStarted{false};
 int s_lastAuxShortage = 0;         // last logged slot shortage (under s_setWorkMtx)
+std::atomic<uint64_t> s_parkCount{0};
 
 // Publishes a new assignment (caller holds s_setWorkMtx) and wakes workers.
-void PublishAssignment(const WorkAssignment &a) {
-  if (a.Pack() == g_App.assignment.load()) return;
+// `force` bumps the generation even for an unchanged layout (pulse changes).
+void PublishAssignment(const WorkAssignment &a, bool force = false) {
+  if (!force && a.Pack() == g_App.assignment.load()) return;
   {
     std::lock_guard<std::mutex> lk(s_workMtx);
     g_App.assignment = a.Pack();
@@ -107,16 +116,97 @@ WorkAssignment PlanWork(int slots, int ramWanted, int comps, int decomp, bool io
 
 WorkerRole WaitForRole(int workerIdx, const Worker &w) {
   if (w.terminate.load(std::memory_order_relaxed)) return WorkerRole::Idle;
-  WorkerRole role = RoleOf(workerIdx, WorkAssignment::Unpack(g_App.assignment.load(std::memory_order_acquire)));
-  if (role != WorkerRole::Idle) return role;
+  // A paused assignment (load-pattern off phase) starts no new jobs.
+  auto active = [&](WorkerRole &role) {
+    const WorkAssignment a =
+        WorkAssignment::Unpack(g_App.assignment.load(std::memory_order_acquire));
+    role = RoleOf(workerIdx, a);
+    return role != WorkerRole::Idle && !a.paused;
+  };
+  WorkerRole role;
+  if (active(role)) return role;
 
   std::unique_lock<std::mutex> lk(s_workMtx);
   s_workCv.wait(lk, [&] {
     if (w.terminate.load(std::memory_order_relaxed)) return true;
-    role = RoleOf(workerIdx, WorkAssignment::Unpack(g_App.assignment.load(std::memory_order_acquire)));
-    return role != WorkerRole::Idle;
+    return active(role);
   });
   return w.terminate.load() ? WorkerRole::Idle : role;
+}
+
+void WaitForAssignmentChange(uint32_t seenGen, int workerIdx) {
+  s_parkCount.fetch_add(1, std::memory_order_relaxed);
+  const Worker *w = (workerIdx >= 0 && workerIdx < (int)g_Workers.size())
+                        ? g_Workers[(size_t)workerIdx].get()
+                        : nullptr;
+  std::unique_lock<std::mutex> lk(s_workMtx);
+  s_workCv.wait(lk, [&] {
+    return g_App.workGen.load(std::memory_order_acquire) != seenGen ||
+           g_App.quit.load(std::memory_order_relaxed) ||
+           (w && w->terminate.load(std::memory_order_relaxed));
+  });
+}
+
+uint64_t PatternParkCount() { return s_parkCount.load(std::memory_order_relaxed); }
+
+uint64_t PulseNow() {
+#if defined(__x86_64__) || defined(_M_X64)
+  return __rdtsc(); // invariant TSC, synchronized across cores
+#elif defined(__aarch64__)
+  uint64_t v;
+  __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(v));
+  return v;
+#else
+  return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+#endif
+}
+
+uint64_t PulseTicksPerUs() {
+  static const uint64_t ticks = [] {
+#if defined(__aarch64__)
+    uint64_t f;
+    __asm__ __volatile__("mrs %0, cntfrq_el0" : "=r"(f));
+    return std::max<uint64_t>(1, f / 1000000);
+#elif defined(__x86_64__) || defined(_M_X64)
+    // One-time calibration against steady_clock (20 ms, not a wait for an event).
+    const auto t0 = std::chrono::steady_clock::now();
+    const uint64_t c0 = PulseNow();
+    std::this_thread::sleep_for(20ms);
+    const uint64_t c1 = PulseNow();
+    const double us =
+        std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+    const uint64_t r = us > 0 ? (uint64_t)((double)(c1 - c0) / us) : 1000;
+    g_App.Log(L"Pulse clock: " + std::to_wstring(r) + L" TSC ticks/us");
+    return std::max<uint64_t>(1, r);
+#else
+    return (uint64_t)1000; // steady_clock nanoseconds
+#endif
+  }();
+  return ticks;
+}
+
+void PauseWork(bool paused) {
+  std::lock_guard<std::mutex> lk(s_setWorkMtx);
+  WorkAssignment a = WorkAssignment::Unpack(g_App.assignment.load());
+  if (a.paused == paused) return;
+  a.paused = paused;
+  PublishAssignment(a);
+}
+
+void SetPulse(int periodUs, int dutyPct) {
+  const uint64_t tpu = periodUs > 0 ? PulseTicksPerUs() : 0; // calibrate outside locks
+  std::lock_guard<std::mutex> lk(s_setWorkMtx);
+  const uint64_t period = periodUs > 0 ? (uint64_t)periodUs * tpu : 0;
+  const uint64_t on = period * (uint64_t)std::clamp(dutyPct, 1, 99) / 100;
+  if (period == g_App.pulsePeriod.load() && on == g_App.pulseOn.load()) return;
+  g_App.pulseEpoch = PulseNow();
+  g_App.pulseOn = on;
+  g_App.pulsePeriod = period;
+  // Workers pick the pattern up on the generation change; roles are unchanged
+  // so no job is preempted.
+  PublishAssignment(WorkAssignment::Unpack(g_App.assignment.load()), true);
 }
 
 void StartWorkerThreads() {
@@ -195,7 +285,13 @@ void SetWork(int requestComps, int requestDecomp, bool io, bool ram, int offset)
                                     offset, g_RunOpts.noDecomp);
   LogAuxShortage(cpuTotal, io, ramWanted, a);
   StartWorkerThreads();
-  PublishAssignment(a);
+  // Every new assignment ends a pulse pattern (and a pause: PlanWork is unpaused).
+  const bool pulse = g_App.pulsePeriod.load() != 0;
+  if (pulse) {
+    g_App.pulsePeriod = 0;
+    g_App.pulseOn = 0;
+  }
+  PublishAssignment(a, pulse);
 }
 
 // Apply Realistic configuration (StressConfig is informational only)
@@ -221,6 +317,7 @@ void StartModeWork() {
   ApplyWorkloadConfig(g_App.selectedWorkload.load());
   if (g_DynThread && g_DynThread->t.joinable())
     g_DynThread->t.join();
+  g_App.patternWorkload = -1; // dynamic-mode ISA override never leaks into other modes
   const int cpu = (int)g_Workers.size();
   switch (g_App.mode.load()) {
   case MODE_DYNAMIC:
@@ -246,220 +343,3 @@ void StartModeWork() {
   }
 }
 
-bool PatternSleep(int ms, int mode) {
-  // Load-pattern pacing (defines the stress waveform); exits early when the
-  // run stops or the mode changes.
-  auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
-  while (true) {
-    if (!g_App.running || g_App.quit || g_App.mode != mode) return false;
-    auto now = std::chrono::steady_clock::now();
-    if (now >= deadline) return true;
-    auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
-    std::this_thread::sleep_for(std::min<std::chrono::milliseconds>(left, 10ms));
-  }
-}
-
-int CoreCycleCoreCount() {
-  const CpuTopology &t = GetTopology();
-  int n = 0;
-  for (size_t r = 0; r < t.corePrimary.size(); ++r) {
-    int slot = WorkerSlotForCoreRank((int)r);
-    if (slot >= 0 && slot < (int)g_Workers.size()) ++n;
-  }
-  return n;
-}
-
-static int SlotForReachableCore(int rank) {
-  int seen = 0;
-  const CpuTopology &t = GetTopology();
-  for (size_t r = 0; r < t.corePrimary.size(); ++r) {
-    int slot = WorkerSlotForCoreRank((int)r);
-    if (slot < 0 || slot >= (int)g_Workers.size()) continue;
-    if (seen++ == rank) return slot;
-  }
-  return 0;
-}
-
-const wchar_t *DynamicPhaseName(int phase1Based) {
-  static const wchar_t *kNames[DYNAMIC_PHASES] = {
-      L"Full load",
-      L"Mixed + RAM/IO",
-      L"Mixed on/off 500 ms",
-      L"Decompress-heavy + RAM/IO",
-      L"Decompress on/off 500 ms",
-      L"Random thread count",
-      L"Random decompress + RAM/IO",
-      L"1-2 decompress threads, random cores",
-      L"1-2 compute threads, random cores",
-      L"Random compute/decompress split",
-      L"Bursts",
-      L"Compute <-> decompress 100 ms",
-      L"Square wave 50 ms",
-      L"Staircase ramp",
-      L"Decompress + RAM/IO",
-      L"Single-core sweep",
-  };
-  if (phase1Based < 1 || phase1Based > DYNAMIC_PHASES) return L"-";
-  return kNames[phase1Based - 1];
-}
-
-void DynamicLoop() {
-  DisablePowerThrottling();
-  const int cpu = (int)g_Workers.size();
-  const int mode = MODE_DYNAMIC;
-  std::mt19937 rng((unsigned)GetTick());
-  const int PHASE_DURATION_MS = 10000;
-  bool toggle = false;
-  int sweepRank = 0;
-  g_App.loops = 0;
-  auto Sleep = [&](int ms) { return PatternSleep(ms, mode); };
-  auto RandomCoreSlot = [&]() {
-    int cores = std::max(1, CoreCycleCoreCount());
-    return SlotForReachableCore((int)(rng() % (unsigned)cores));
-  };
-
-  for (int pIdx = 0; g_App.running && g_App.mode == mode; pIdx = (pIdx + 1) % DYNAMIC_PHASES) {
-    g_App.currentPhase = pIdx + 1;
-    g_App.Log(L"Dynamic phase " + std::to_wstring(pIdx + 1) + L"/" +
-              std::to_wstring(DYNAMIC_PHASES) + L": " + DynamicPhaseName(pIdx + 1));
-    auto phaseStart = std::chrono::steady_clock::now();
-    auto elapsedMs = [&] {
-      return (int)std::chrono::duration_cast<std::chrono::milliseconds>(
-                 std::chrono::steady_clock::now() - phaseStart)
-          .count();
-    };
-    bool ok = true;
-    while (ok && elapsedMs() < PHASE_DURATION_MS) {
-      switch (pIdx) {
-      case 0:
-        SetWork(cpu, 0, false, false);
-        ok = Sleep(PHASE_DURATION_MS);
-        break;
-      case 1:
-        SetWork(std::max(0, cpu - 4), 2, true, true);
-        ok = Sleep(PHASE_DURATION_MS);
-        break;
-      case 2:
-        toggle = !toggle;
-        if (toggle) SetWork(0, 0, false, false);
-        else SetWork(std::max(0, cpu - 4), 2, true, true);
-        ok = Sleep(500);
-        break;
-      case 3:
-        SetWork(0, std::max(0, cpu - 2), true, true);
-        ok = Sleep(PHASE_DURATION_MS);
-        break;
-      case 4:
-        toggle = !toggle;
-        if (toggle) SetWork(0, 0, false, false);
-        else SetWork(0, std::max(0, cpu - 2), true, true);
-        ok = Sleep(500);
-        break;
-      case 5:
-        SetWork(1 + (int)(rng() % (unsigned)cpu), 0, false, false);
-        ok = Sleep(500);
-        break;
-      case 6:
-        SetWork(0, (int)(rng() % (unsigned)(cpu + 1)), rng() % 2, rng() % 2);
-        ok = Sleep(500);
-        break;
-      case 7:
-        SetWork(0, 1 + (int)(rng() % 2), false, false, RandomCoreSlot());
-        ok = Sleep(500);
-        break;
-      case 8:
-        SetWork(1 + (int)(rng() % 2), 0, false, false, RandomCoreSlot());
-        ok = Sleep(500);
-        break;
-      case 9: {
-        int c = (int)(rng() % (unsigned)(cpu + 1));
-        SetWork(c, cpu - c, rng() % 2, rng() % 2);
-        ok = Sleep(500);
-        break;
-      }
-      case 10:
-        SetWork(cpu, 0, false, false);
-        ok = Sleep(200 + (int)(rng() % 800));
-        if (ok) {
-          SetWork(0, 0, false, false);
-          ok = Sleep(300 + (int)(rng() % 500));
-        }
-        break;
-      case 11:
-        SetWork(cpu, 0, false, false);
-        ok = Sleep(100);
-        if (ok) {
-          SetWork(0, cpu, false, false);
-          ok = Sleep(100);
-        }
-        break;
-      case 12:
-        SetWork(cpu, 0, true, true);
-        ok = Sleep(50);
-        if (ok) {
-          SetWork(0, 0, false, false);
-          ok = Sleep(50);
-        }
-        break;
-      case 13: {
-        // Staircase: 1, 2, ... all workers (load-line / VRM step response).
-        int stepMs = std::max(100, PHASE_DURATION_MS / std::max(1, cpu));
-        for (int n = 1; ok && n <= cpu && elapsedMs() < PHASE_DURATION_MS; ++n) {
-          SetWork(n, 0, false, false);
-          ok = Sleep(stepMs);
-        }
-        break;
-      }
-      case 14:
-        SetWork(0, std::max(1, cpu - 2), true, true);
-        ok = Sleep(1000);
-        break;
-      case 15: {
-        // Single-core boost sweep: one compute thread per physical core,
-        // continuing where the previous loop stopped.
-        int cores = std::max(1, CoreCycleCoreCount());
-        int dwell = std::max(1000, PHASE_DURATION_MS / cores);
-        int slot = SlotForReachableCore(sweepRank % cores);
-        SetWork(1, 0, false, false, slot);
-        ok = Sleep(dwell);
-        sweepRank = (sweepRank + 1) % cores;
-        break;
-      }
-      }
-    }
-    if (ok && pIdx == DYNAMIC_PHASES - 1)
-      g_App.loops++;
-  }
-}
-
-void CoreCycleLoop() {
-  DisablePowerThrottling();
-  const int mode = MODE_CORE_CYCLE;
-  const int cores = std::max(1, CoreCycleCoreCount());
-  const int dwellSec = std::max(1, g_RunOpts.coreCycleDwellSec);
-  g_App.loops = 0;
-  g_App.Log(L"Core cycle: " + std::to_wstring(cores) + L" cores, " +
-            std::to_wstring(dwellSec) + L" s per core, ISA " +
-            GetResolvedISAName(g_App.selectedWorkload.load()));
-  for (int rank = 0; g_App.running && g_App.mode == mode; rank = (rank + 1) % cores) {
-    int slot = SlotForReachableCore(rank);
-    const CpuTopology &t = GetTopology();
-    int lp = (slot < (int)t.workerOrder.size())
-                 ? t.cpus[(size_t)t.workerOrder[(size_t)slot]].lp
-                 : -1;
-    g_App.cycleCore = rank;
-    g_App.cycleNextTick = GetTick() + (uint64_t)dwellSec * 1000;
-    g_App.currentPhase = rank + 1;
-    g_App.Log(L"Core cycle: core " + std::to_wstring(rank + 1) + L"/" +
-              std::to_wstring(cores) + L" -> " + DescribeLp(lp));
-    SetWork(1, 0, false, false, slot);
-    if (!PatternSleep(dwellSec * 1000, mode)) break;
-    if (rank == cores - 1) {
-      g_App.loops++;
-      std::wstring errs = FormatErrorCpus(32);
-      g_App.Log(L"Core cycle: loop " + std::to_wstring(g_App.loops.load()) +
-                L" complete, CPU errors: " + (errs.empty() ? L"none" : errs));
-    }
-  }
-  g_App.cycleCore = -1;
-}

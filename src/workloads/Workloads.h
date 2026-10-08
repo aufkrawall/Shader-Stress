@@ -102,7 +102,14 @@ struct JobContext {
   WorkerRole role = WorkerRole::Idle;
   uint32_t gen = 0;           // assignment generation seen at job start
   bool stopped = false;       // sticky: job was stopped early
+  uint64_t pulsePeriod = 0;   // dynamic pulse pattern (PulseNow ticks), 0 = off
+  uint64_t pulseOn = 0;
+  uint64_t pulseEpoch = 0;
 };
+// True while `now` lies in the on-window of a synchronized duty cycle.
+inline bool PulseOnWindow(uint64_t now, uint64_t epoch, uint64_t period, uint64_t on) {
+  return period == 0 || (now - epoch) % period < on;
+}
 constexpr int JOB_WORKLOAD_DECOMPRESS = 100;
 constexpr int JOB_WORKLOAD_RAM = 101;
 constexpr int JOB_WORKLOAD_IO = 102;
@@ -112,7 +119,9 @@ JobContext &CurrentJob();
 
 // True when the current job must stop: global quit, or (for preemptible
 // worker jobs) the work assignment changed so this worker's role differs.
-// Sticky per job. Cheap: one relaxed load in the common case.
+// Sticky per job. Cheap: one relaxed load in the common case. Dynamic
+// patterns act here too: a paused assignment parks the job in place (resumes
+// unchanged), a pulse pattern pause-spins through the off-windows.
 bool StopRequested();
 
 // Realistic V5 diagnostics (self-test / perf-stats only; nullptr in jobs).

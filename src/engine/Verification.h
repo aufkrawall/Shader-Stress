@@ -85,12 +85,14 @@ struct VerifyStats {
   uint64_t ioErrors = 0;
   uint64_t ramBytesVerified = 0;
   uint64_t ioBytesVerified = 0;
+  uint64_t computeAborted = 0;  // compute jobs preempted before completion (never verified)
 };
 VerifyStats GetVerifyStats();
 void CountGoldenCheck(bool failed);
 void CountDecompPasses(uint64_t passes, uint64_t failures);
 void CountRamVerified(uint64_t bytes);
 void CountIoVerified(uint64_t bytes);
+void CountComputeAborted();
 
 // "CPU 3 (core 1) x2, CPU 9 (core 4) x1" or empty if no CPU errors.
 std::wstring FormatErrorCpus(size_t maxEntries = 6);

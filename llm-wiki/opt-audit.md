@@ -211,8 +211,11 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
   over physical cores; SMT siblings get decompress/RAM/IO in steady mode). Every role,
   including the RAM tester and I/O stream, is one pinned slot: no oversubscription
   (`PlanWork`, `src/engine/Scheduler.cpp`).
-- Dynamic phases include 50 ms square waves, 100 ms compute<->decompress, bursts,
-  staircase ramp (load-line/VRM step response) and a single-core boost sweep.
+- Dynamic mode (2026-10-08, `Patterns.cpp`): 14 x 8 s phases ordered heat soak first,
+  then pulses/steps, light-load boost phases while hot, random mixes last. Synchronized
+  pulses (TSC epoch, pause-spin off-window) reach 250 us periods; on/off steps park jobs
+  in place (verified, not aborted). Rejected: 100 ms compute<->decompress swaps (aborted
+  the compute job at every swap; replaced by the SMT-mix phase).
 - Core-cycle mode: one thread per physical core (max boost; Curve-Optimizer style faults).
 
 ## Build flags

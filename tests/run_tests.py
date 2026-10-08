@@ -254,6 +254,16 @@ def test_invariant_aux_roles_on_pinned_workers(b):
           "interleaved RAM chains")
 
 
+def test_invariant_dynamic_patterns(b):
+    pat = _read("src/engine/Patterns.cpp")
+    sched = _read("src/engine/Scheduler.cpp")
+    stop = _read("src/workloads/SynthKernels.cpp")
+    check("PauseWork(true)" in pat and "SetPulse(" in pat and "LogPhaseSummary" in pat and
+          "WaitForAssignmentChange" in stop and "PulseGate" in stop and
+          "g_App.patternWorkload = -1" in sched and "g_App.pulsePeriod = 0" in sched,
+          "dynamic patterns pause/pulse jobs in place; SetWork/mode start clear pulse + ISA override")
+
+
 def test_invariant_ram_io_verified(b):
     ram = _read("src/engine/RamStress.cpp")
     io = _read("src/engine/IoStress.cpp")
@@ -487,6 +497,7 @@ LIGHTWEIGHT_TESTS = [
     test_invariant_kernels_unitary_bounded,
     test_invariant_kernels_preemptible_and_strict_fp,
     test_invariant_aux_roles_on_pinned_workers,
+    test_invariant_dynamic_patterns,
     test_invariant_paired_verification,
     test_invariant_event_driven_scheduler,
     test_invariant_ram_io_verified,

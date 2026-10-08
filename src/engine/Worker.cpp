@@ -53,23 +53,33 @@ void ResolveMismatch(WorkloadType type, const JobSpec &spec, uint64_t mine, int 
   }
 }
 
-uint64_t GoldenInterval(int mode) {
+} // namespace
+
+uint64_t GoldenInterval(int mode, int activeComputeWorkers) {
   switch (mode) {
   case MODE_CORE_CYCLE: return 8;   // single thread: no cross-core partner
   case MODE_BENCHMARK: return 64;
+  case MODE_DYNAMIC:
+    // 1-2 compute threads (light-load / single-core phases): pairs mostly run
+    // on the same core, so deterministic per-core faults need golden checks.
+    return activeComputeWorkers <= 2 ? 8 : 128;
   default: return 128;
   }
 }
 
+namespace {
+
 void RunComputeJob(int idx, Worker &w, int lp) {
   const int mode = g_App.mode.load(std::memory_order_relaxed);
-  const WorkloadType type = ResolveSelectedWorkload(g_App.selectedWorkload.load());
+  const WorkloadType type = ActiveComputeWorkload();
   const JobSpec spec = NextComputeJob(mode);
 
   BeginJob(type, spec.seed, spec.complexity);
   const uint64_t result = RunComputeWorkload(type, spec.seed, spec.complexity);
-  if (CurrentJob().stopped || g_App.quit.load(std::memory_order_relaxed))
+  if (CurrentJob().stopped || g_App.quit.load(std::memory_order_relaxed)) {
+    CountComputeAborted();
     return; // partial result: neither counted nor verified
+  }
 
   const uint64_t count = w.localShaders.fetch_add(1, std::memory_order_relaxed) + 1;
 
@@ -84,7 +94,7 @@ void RunComputeJob(int idx, Worker &w, int lp) {
   // Periodic golden-value check: catches faults that hit every core the same
   // way (and single-thread modes where pairs run on one core).
   if (g_Golden.initialized.load(std::memory_order_acquire) &&
-      (count % GoldenInterval(mode)) == 0) {
+      (count % GoldenInterval(mode, g_App.activeCompilers.load(std::memory_order_relaxed))) == 0) {
     BeginJob(type, 42, VERIFY_COMPLEXITY);
     uint64_t got = RunComputeWorkload(type, 42, VERIFY_COMPLEXITY);
     if (CurrentJob().stopped || g_App.quit.load(std::memory_order_relaxed))

@@ -233,8 +233,11 @@ static std::vector<std::string> BuildDashboardLines() {
   const int mode = g_App.mode.load();
   L.push_back("ShaderStress " + ToNarrow(APP_VERSION) + " | " + ToNarrow(GetRuntimeOsName()) +
               " (" + ToNarrow(GetArchName()) + ") | " + ToNarrow(g_Cpu.brand));
-  L.push_back("Mode: " + ToNarrow(GetModeName(mode)) + " | ISA: " +
-              ToNarrow(GetResolvedISAName(g_App.selectedWorkload.load())) + " | Threads: " +
+  const int patternIsa = g_App.patternWorkload.load();
+  const std::wstring isa = (mode == MODE_DYNAMIC && patternIsa >= 0)
+                               ? L"auto per phase, now " + GetResolvedISAName(patternIsa)
+                               : GetResolvedISAName(g_App.selectedWorkload.load());
+  L.push_back("Mode: " + ToNarrow(GetModeName(mode)) + " | ISA: " + ToNarrow(isa) + " | Threads: " +
               std::to_string(g_Workers.size()) + " (" + ToNarrow(TopologySummary()) + ")");
   std::string perf = "Time: " + ToNarrow(FmtTime(g_App.elapsed.load())) + " | Jobs: " +
                      ToNarrow(FmtNum(g_App.shaders.load())) + " | Rate: " +

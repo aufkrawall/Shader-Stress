@@ -616,6 +616,8 @@ void TestFormatting() {
 
 // SelfTestAux.cpp: slot planner, RAM chains, I/O pattern + streamer.
 void RunAuxSelfTests(void (*check)(bool ok, const char *name, const std::string &detail));
+// SelfTestPatterns.cpp: dynamic pattern pause/pulse, phase ISA plan.
+void RunPatternSelfTests(void (*check)(bool ok, const char *name, const std::string &detail));
 
 int RunSelfTests() {
   g_pass = g_fail = 0;
@@ -632,6 +634,7 @@ int RunSelfTests() {
   TestTopologyOrder();
   TestPatterns();
   RunAuxSelfTests(CheckFn);
+  RunPatternSelfTests(CheckFn);
   TestLz();
   std::cout << "Self-test: " << g_pass << " passed, " << g_fail << " failed"
             << (g_fail == 0 ? " - ALL PASSED" : "") << '\n';

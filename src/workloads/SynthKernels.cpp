@@ -30,8 +30,68 @@ void BeginJob(int workload, uint64_t seed, int complexity) {
     ctx.gen = g_App.workGen.load(std::memory_order_acquire);
     ctx.role = RoleOf(ctx.worker,
                       WorkAssignment::Unpack(g_App.assignment.load(std::memory_order_acquire)));
+    ctx.pulsePeriod = g_App.pulsePeriod.load(std::memory_order_relaxed);
+    ctx.pulseOn = g_App.pulseOn.load(std::memory_order_relaxed);
+    ctx.pulseEpoch = g_App.pulseEpoch.load(std::memory_order_relaxed);
   }
 }
+
+namespace {
+inline void CpuRelax() {
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__)
+  _mm_pause();
+#elif defined(__aarch64__) || defined(_M_ARM64)
+  __asm__ __volatile__("yield");
+#endif
+}
+
+// Slow path after an assignment change. Returns true when the job must stop
+// (role changed / quit / terminate); parks while the assignment is paused.
+bool RefreshAssignment(JobContext &ctx, uint32_t gen) {
+  for (;;) {
+    ctx.gen = gen;
+    const WorkAssignment a =
+        WorkAssignment::Unpack(g_App.assignment.load(std::memory_order_acquire));
+    // Only stop if *this* worker's role changed, so that unrelated
+    // re-assignments do not throw away work.
+    if (RoleOf(ctx.worker, a) != ctx.role || g_App.quit.load(std::memory_order_relaxed))
+      return true;
+    ctx.pulsePeriod = g_App.pulsePeriod.load(std::memory_order_relaxed);
+    ctx.pulseOn = g_App.pulseOn.load(std::memory_order_relaxed);
+    ctx.pulseEpoch = g_App.pulseEpoch.load(std::memory_order_relaxed);
+    if (!a.paused) return false;
+    // Load-pattern pause: keep the job's state on this stack and sleep until
+    // the next assignment change (resume, role change, stop).
+    WaitForAssignmentChange(gen, ctx.worker);
+    const uint32_t next = g_App.workGen.load(std::memory_order_acquire);
+    if (next == gen) return true; // woken by quit/terminate
+    gen = next;
+  }
+}
+
+// Off-window of a pulse pattern: spin with pause/yield (core stays in C0 at
+// low current) until the shared clock re-enters the on-window. Every core
+// uses the same epoch, so the load edges are synchronized package-wide.
+bool PulseGate(JobContext &ctx) {
+  if (PulseOnWindow(PulseNow(), ctx.pulseEpoch, ctx.pulsePeriod, ctx.pulseOn)) [[likely]]
+    return false;
+  const Worker *w = (ctx.worker >= 0 && ctx.worker < (int)g_Workers.size())
+                        ? g_Workers[(size_t)ctx.worker].get()
+                        : nullptr;
+  for (;;) {
+    CpuRelax();
+    if (g_App.workGen.load(std::memory_order_relaxed) != ctx.gen ||
+        g_App.quit.load(std::memory_order_relaxed))
+      return StopRequested(); // pattern/assignment changed: re-evaluate
+    if (w && w->terminate.load(std::memory_order_relaxed)) [[unlikely]] {
+      ctx.stopped = true; // pool shutdown never waits on a spinning worker
+      return true;
+    }
+    if (PulseOnWindow(PulseNow(), ctx.pulseEpoch, ctx.pulsePeriod, ctx.pulseOn))
+      return false;
+  }
+}
+} // namespace
 
 bool StopRequested() {
   JobContext &ctx = CurrentJob();
@@ -44,17 +104,14 @@ bool StopRequested() {
   if (!ctx.preemptible)
     return false;
   uint32_t gen = g_App.workGen.load(std::memory_order_relaxed);
-  if (gen == ctx.gen) [[likely]]
-    return false;
-  // Assignment changed: only stop if *this* worker's role changed, so that
-  // unrelated re-assignments do not throw away work.
-  ctx.gen = gen;
-  WorkerRole now = RoleOf(ctx.worker,
-                          WorkAssignment::Unpack(g_App.assignment.load(std::memory_order_acquire)));
-  if (now != ctx.role) {
-    ctx.stopped = true;
-    return true;
+  if (gen != ctx.gen) [[unlikely]] {
+    if (RefreshAssignment(ctx, gen)) {
+      ctx.stopped = true;
+      return true;
+    }
   }
+  if (ctx.pulsePeriod) [[unlikely]]
+    return PulseGate(ctx);
   return false;
 }
 
