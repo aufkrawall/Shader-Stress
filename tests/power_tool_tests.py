@@ -17,7 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts import power_host  # noqa: E402
 from scripts.power_measure import (binary_sha256, format_summary, load_rows, main,  # noqa: E402
                                    make_evidence_dir, measure, parse_args, planned_load_seconds, preheat,
-                                   run_seconds, snapshot, summarize_runs,
+                                   run_seconds, run_session, snapshot, summarize_runs,
                                    summarize_samples, verdict, workload_args, write_rows)
 
 # Must equal the line asserted by TestPowerReaderFormat in src/app/SelfTest.cpp.
@@ -164,23 +164,34 @@ def runs(build, isa, watts, effs):
 
 
 def test_summary(check, tmp):
-    base = runs("base", "avx2", [120.0, 121.0, 122.0], [4500, 4510, 4490])
-    better = runs("cand", "avx2", [125.1, 126.0, 126.9], [4450, 4460, 4440])
-    noise = runs("noisy", "avx2", [119.0, 123.5, 121.0], [4500, 4505, 4495])
-    tie = runs("tie", "avx2", [120.2, 121.1, 122.1], [4440, 4452, 4428])
+    base = runs("base", "avx2", [120.0, 121.0, 122.0, 121.0, 120.0], [4500, 4510, 4490, 4500, 4505])
+    better = runs("cand", "avx2", [125.1, 126.0, 126.9, 126.0, 125.0], [4450, 4460, 4440, 4450, 4455])
+    noise = runs("noisy", "avx2", [119.0, 123.5, 121.0, 119.5, 122.5], [4500, 4505, 4495, 4510, 4500])
+    tie = runs("tie", "avx2", [120.2, 121.1, 122.1, 120.8, 120.1], [4440, 4452, 4428, 4441, 4447])
     entries = summarize_runs(base + better + noise + tie)
     by = {e["Candidate"]: e for e in entries}
     check(by["base"].get("Verdict") is None and by["cand"]["DeltaW"] == 5.0 and
-          by["cand"]["Pairs"] == 3 and by["cand"]["Verdict"].startswith("better") and
+          by["cand"]["Pairs"] == 5 and by["cand"]["Verdict"].startswith("better") and
           by["cand"]["DeltaEffMHz"] == -50,
           "summary: paired per-repeat deltas vs the first candidate", str(by["cand"]))
     check(by["noisy"]["Verdict"].startswith("inconclusive") and by["tie"]["Verdict"].startswith("tie-break better"),
           "summary: noise is inconclusive; equal power with lower effective clock wins the tie",
           f"{by['noisy']} {by['tie']}")
-    check(verdict(-3.0, 1.0, 0, 5) == "worse (less power)" and
-          verdict(0.8, 0.1, None, None).startswith("inconclusive") and
-          verdict(5.0, None, None, None).startswith("inconclusive (needs"),
-          "verdict: power loss is worse; < 1 W never decides; one repeat is not enough")
+    check(verdict(-3.0, 1.0, 0, 5, 5) == "worse (less power)" and
+          verdict(5.0, None, None, None, 1).startswith("inconclusive (needs"),
+          "verdict: power loss is worse; one repeat is not enough")
+    # Regression (review of 374065e): the 1 W floor let a clear power loss
+    # (CI excludes zero) fall through to the clock tie-break, and two pairs
+    # already gave conclusive verdicts. Five pairs, power CI first.
+    check(verdict(-0.8, 0.05, -60, 5, 5) == "worse (less power)" and
+          verdict(0.8, 0.05, 60, 5, 5) == "better (more power)",
+          "verdict: a sub-1 W power difference outside its CI decides before the clock tie-break")
+    check(all(verdict(9.0, 1.0, -60, 5, n).startswith("inconclusive (needs >= 5")
+              for n in (2, 3, 4)) and verdict(9.0, 1.0, None, None, 5).startswith("better"),
+          "verdict: conclusive only with 5 paired repeats")
+    short = {e["Candidate"]: e for e in summarize_runs(base[:2] + better[:2])}
+    check(short["cand"]["Pairs"] == 2 and short["cand"]["Verdict"].startswith("inconclusive (needs"),
+          "summary: two pairs are inconclusive", str(short["cand"]))
     hot = summarize_runs(runs("hot", "scalar", [130.0, 131.0], [4300, 4310]), temp_limit=80.5)
     check(hot[0]["ThermalLimit"] and "(thermal limit)" in format_summary(hot),
           "summary flags runs at the temperature limit")
@@ -193,6 +204,45 @@ def test_summary(check, tmp):
     swapped = {e["Candidate"]: e.get("DeltaW") for e in summarize_runs(base + better, "cand")}
     check(swapped == {"base": -5.0, "cand": None} and rejects(summarize_runs, base, "typo"),
           "summary baseline can be chosen; an unknown baseline is an error", str(swapped))
+    # Rows are stored in shuffled order: a re-summary uses the recorded baseline.
+    recorded = [dict(r, Baseline="cand") for r in base + better]
+    write_rows(path, recorded)
+    resumed = {e["Candidate"]: e.get("DeltaW") for e in summarize_runs(load_rows(path))}
+    check(resumed == {"base": -5.0, "cand": None},
+          "summary of a saved CSV keeps the recorded baseline, not the first row", str(resumed))
+
+
+def test_session_baseline(check, tmp):
+    # Regression (review of 7f3c26f): the summary baseline was the first
+    # *shuffled* result; with the default seed a two-binary session compared
+    # against the second --exe. Mocked runs: no workload, no UAC.
+    watts = {"b1": 120.0, "b2": 125.0}
+
+    def fake_measure(exe, options, isa, session, label, repeat):
+        w = watts[label] + 0.1 * repeat
+        return {"ISA": isa, "Watts": w, "StdDevW": 0.1, "Samples": 15, "ForeignCpuPct": 1.0,
+                "EffMHz": 4500.0, "TempMaxC": 80.0, "VcoreV": 1.2, "JobsPerSecond": 100.0}
+    options = parse_args(["--exe", "audit/b1/ShaderStress.com,audit/b2/ShaderStress.com",
+                          "--label", "T1"])
+    evidence = Path(tmp) / "session-evidence"
+    with mock.patch("scripts.power_measure.EVIDENCE", evidence), \
+         mock.patch("scripts.power_measure.measure", side_effect=fake_measure), \
+         mock.patch("scripts.power_measure.wait_quiet", return_value=0.0), \
+         mock.patch("scripts.power_measure.git", return_value=""), \
+         contextlib.redirect_stdout(io.StringIO()):
+        rc = run_session(options, [])
+    session = next(evidence.iterdir())
+    rows = load_rows(session / "results.csv")
+    meta = json.loads((session / "session.json").read_text(encoding="utf-8"))
+    summary = (session / "summary.md").read_text(encoding="utf-8")
+    check(rc == 0 and rows[0]["Build"] == "b2" and meta["Baseline"] == "b1" and
+          all(r["Baseline"] == "b1" for r in rows),
+          "session: declared baseline (first --exe) recorded although b2 ran first",
+          f"first row {rows[0]['Build']}, meta {meta.get('Baseline')}")
+    entries = {e["Candidate"]: e for e in summarize_runs(rows)}
+    check(entries["b2"].get("Baseline") == "b1" and entries["b2"]["DeltaW"] == 5.0 and
+          "| b1 | scalar-sim | 5 |" in summary and "+5.0" in summary,
+          "session: summary deltas refer to the first --exe", summary)
 
 
 def test_snapshot(check, tmp):
@@ -343,6 +393,7 @@ def run_power_tool_tests(check):
         test_samples(check)
         test_arguments(check)
         test_summary(check, tmp)
+        test_session_baseline(check, tmp)
         test_snapshot(check, tmp)
         test_evidence_dirs(check, tmp)
         test_host(check, tmp)

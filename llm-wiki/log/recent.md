@@ -1,5 +1,36 @@
 # Recent Changes Log
 
+## 2026-10-08 — Review fixes: lost RAM/pair errors, job admission, ISA override, power verdicts
+
+- External review of 45 commits (09-24..10-08) raised 7 findings; all confirmed
+  in code and fixed, each with a self-test that fails before the fix (checked
+  with a build that reverted the fixes: 7 FAIL; pair-table / ISA-override
+  tests fail by construction of the old code).
+- RAM (`7075df0`): errors were reported only in `FinishPass`;
+  `ReleaseRamTesters` reset them. Now `ReportNew` after each step;
+  `RunRamTesterSlice(..., maxSteps)` + `RamTesterCorruptForTest` drive a real
+  16 MiB tester in `--self-test`.
+- Pairs (`8374c0d`): `pairId % 1024` slots -> ordered map of pending results
+  (`kMaxPending` 65536, oldest evicted + counted), `JobSpec::run` for
+  stragglers, `PairTable::Cancel` on aborted jobs, outcome `Unpaired`;
+  `Health:` shows `pending` / `evicted`.
+- Admission (`8374c0d`/`6219e17`): `WaitForRole(..., &gen)` + `AdmitWork`;
+  `BeginJob` -> `JobAdmitted` revalidates (park/stop) instead of
+  re-snapshotting. `RunComputeJob` checks before taking a job from the stream.
+  Pause test sequences on `PatternParkCount` with a yield loop (no sleeps).
+- ISA (`6219e17`): `g_App.patternWorkload` -> `patternIsaClass`, resolved per
+  job by `PatternWorkloadNow` against the live selection.
+- V5 unroll (`7917db4`): exit phis skipped; V5 golden unchanged (golden input
+  does not hit the case). `RunRealisticCompilerSimV5LoopTest` hand-builds the
+  loop and evaluates the unrolled values (101 before, 106 after).
+- Power tool (`7f3c26f`/`374065e`): `declared_baseline` before shuffling,
+  `Baseline` in rows + `session.json`; `verdict(..., pairs)` needs 5 pairs,
+  no 1 W floor (user rule: no fixed watt tolerance). Tests use 5 pairs; new
+  mocked `run_session` test.
+- Open: ARM64 / AVX-512 / Unix runtime of these paths unverified (Windows x64
+  only); whether any shipped V5 corpus shader has an exit phi fed by an
+  unrolled loop is unmeasured.
+
 ## 2026-10-08 — Upstream prompt-template synchronization & discovery tests
 
 - Synchronized `AGENTS.md` with upstream `llm-prompt-templates` (commits `fdc6a2b`,

@@ -1,6 +1,6 @@
 # Power Optimization Runbook ("continue power draw optimization")
 
-Last verified: 2026-10-06. User constraints: benchmark job mix, compiler-sim
+Last verified: 2026-10-08 (decision rules), 2026-10-06 (rest). User constraints: benchmark job mix, compiler-sim
 threads only, 8 s warm-up + 15 s measurement per run (capped at 23 s);
 conclusive = 5 paired runs, at most baseline + 2 candidates per session
 (<= 345 s planned load, enforced; 2026-10-07).
@@ -89,12 +89,20 @@ recorded conditions, never a proof that untested settings cannot draw more power
 ### Decision rules (implemented in `scripts/power_measure.py` `verdict()`)
 
 Deltas are **paired per repeat** (candidate minus baseline in the same shuffled round, which
-reduces thermal/ambient drift) with a Student-t 95% CI:
+reduces thermal/ambient drift) with a Student-t 95% CI. The baseline is the first `--exe`
+(or `--baseline`), fixed before the shuffles and recorded in `session.json` and every
+result row (`Baseline` column), so `--summarize` reproduces it. Until 2026-10-08 the
+summary used the first *shuffled* row (with the default seed the second `--exe` of a
+two-binary session); summaries of older CSVs without the column need `--baseline`.
 
-- `better (more power)`: ΔW > CI and ΔW >= 1 W. `worse (less power)`: mirror image.
-- `tie-break better/worse`: power within noise, but the effective clock differs beyond its
-  CI and by >= 15 MHz (lower = better).
-- `inconclusive`: otherwise, or < 2 paired repeats. A close call can use ten
+- Fewer than `MIN_PAIRS` (5) paired repeats: always `inconclusive (needs >= 5 ...)`.
+- `better (more power)`: ΔW > CI (no fixed watt floor). `worse (less power)`: mirror image.
+- `tie-break better/worse`: power CI includes zero, but the effective clock differs beyond
+  its CI and by >= 15 MHz (lower = better). A power difference outside its CI is never
+  overruled by the clock (until 2026-10-08 a 1 W floor let e.g. -0.8 +-0.05 W reach the
+  tie-break and come out `tie-break better`; power-ledger verdicts from 2-4 pairs or with
+  |ΔW| < 1 W predate this rule).
+- `inconclusive`: otherwise. A close call can use ten
   bounded pairs on the targeted ISA, never ten full
   benchmarks or a switch to steady mode. Never accept on an inconclusive verdict.
 - **Accept** a change only if it is `better` (or `tie-break better`) on the ISA(s) it targets

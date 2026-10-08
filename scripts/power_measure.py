@@ -54,7 +54,7 @@ SAMPLE = re.compile(r"^\[\d{2}:\d{2}:\d{2}\.\d{3}\] Power sample: "
 # Two-sided 95% Student-t quantiles by degrees of freedom (paired repeats - 1).
 T95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306,
        9: 2.262, 10: 2.228}
-MIN_POWER_DELTA_W = 1.0      # smaller power deltas are never acted on
+MIN_PAIRS = 5                # paired repeats for a conclusive verdict (user rule 2026-10-07)
 # Session size (user instruction 2026-10-07): conclusive = 5 paired runs, and a
 # session compares at most a baseline + 2 candidates (3 x 5 x 23 s = 345 s).
 # Twenty-minute sessions are overkill; larger plans need --allow-long-session.
@@ -352,11 +352,15 @@ def paired_delta(base_runs, cand_runs, key):
     return statistics.mean(diffs), t * statistics.stdev(diffs) / math.sqrt(len(diffs)), len(diffs)
 
 
-def verdict(dw, dw_ci, de, de_ci):
-    """Higher package power is better; at equal power a lower effective clock wins."""
-    if dw is None or dw_ci is None:
-        return "inconclusive (needs >= 2 paired repeats)"
-    if abs(dw) > dw_ci and abs(dw) >= MIN_POWER_DELTA_W:
+def verdict(dw, dw_ci, de, de_ci, pairs):
+    """Higher package power is better; at equal power a lower effective clock wins.
+
+    Conclusive only with MIN_PAIRS paired repeats (user rule 2026-10-07). The
+    power CI decides first, with no fixed watt tolerance: a power difference
+    whose CI excludes zero is never overruled by the clock tie-break."""
+    if dw is None or dw_ci is None or pairs < MIN_PAIRS:
+        return f"inconclusive (needs >= {MIN_PAIRS} paired repeats, has {pairs})"
+    if abs(dw) > dw_ci:
         return "better (more power)" if dw > 0 else "worse (less power)"
     if de is not None and de_ci is not None and abs(de) > de_ci and abs(de) >= MIN_CLOCK_DELTA_MHZ:
         return ("tie-break better (same power, lower eff clock)" if de < 0
@@ -370,11 +374,29 @@ def candidate_name(row):
     return f"{row['Build']} buf={row['BufKiB']} rounds={row['Rounds']}"
 
 
+def declared_baseline(options, candidates):
+    """Baseline named before any shuffling: --baseline, else the first --exe
+    (sweep: the first planned candidate). Persisted with every result row."""
+    if options.baseline:
+        return options.baseline
+    candidate, buf, rounds = candidates[0]
+    if buf is None:
+        return Path(candidate).parent.name
+    return candidate_name({"Build": Path(candidate[1] + "-tuning").name, "BufKiB": buf,
+                           "Rounds": rounds})
+
+
 def summarize_runs(rows, baseline=None, temp_limit=90.0):
     groups = {}
     for row in rows:
         groups.setdefault((candidate_name(row), row["ISA"]), []).append(row)
     names = list(dict.fromkeys(name for name, _ in groups))
+    # Re-summarizing a saved CSV keeps the session's declared baseline; the
+    # first row is only a fallback for CSVs written before it was recorded
+    # (rows are in shuffled order, so that may not be the first --exe).
+    recorded = list(dict.fromkeys(r["Baseline"] for r in rows if r.get("Baseline")))
+    if not baseline and len(recorded) == 1 and recorded[0] in names:
+        baseline = recorded[0]
     if baseline and baseline not in names:
         raise ValueError(f"baseline {baseline!r} not among candidates: {', '.join(names)}")
     base = baseline or (names[0] if names else None)
@@ -398,7 +420,7 @@ def summarize_runs(rows, baseline=None, temp_limit=90.0):
                           "DeltaWCI95": None if dw_ci is None else round(dw_ci, 2),
                           "DeltaEffMHz": None if de is None else round(de),
                           "DeltaEffCI95": None if de_ci is None else round(de_ci),
-                          "Verdict": verdict(dw, dw_ci, de, de_ci)})
+                          "Verdict": verdict(dw, dw_ci, de, de_ci, n)})
         entries.append(entry)
     return entries
 
@@ -445,7 +467,8 @@ def parse_args(argv=None):
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--exe", default="bin/x64-llvm-v3/ShaderStress.com",
                         help="comma-separated executables (repo-relative); the first is the "
-                             "baseline, runs are interleaved in shuffled order")
+                             "baseline (recorded in every result row), runs are interleaved in "
+                             "shuffled order")
     parser.add_argument("--label", default="adhoc", help="experiment id, e.g. P003-fadd-lane")
     parser.add_argument("--mode", choices=tuple(MODE_DEFAULTS), default="benchmark",
                         help="benchmark (default): GUI benchmark job mix in a <=23 s compute-only window; "
@@ -553,8 +576,19 @@ def run_session(options, argv):
     csv_path = options.csv or session / "results.csv"
     if csv_path.exists():
         raise RuntimeError(f"refusing to replace existing results: {csv_path}; choose --csv")
+    if options.sweep:
+        from scripts.build_options import select_configs  # configuration only, no toolchains
+        configs = select_configs(comma_values(options.targets))
+        if any(not c[3] for c in configs):
+            raise RuntimeError("power sweep targets must be Windows builds")
+        candidates = list(itertools.product(configs, options.buffers, options.rounds))
+        random.Random(options.seed).shuffle(candidates)
+    else:
+        candidates = [(exe, None, None) for exe in options.exe]
+    # Fixed before the per-repeat shuffles: deltas always refer to this one.
+    baseline = declared_baseline(options, candidates)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    meta = {"Label": options.label, "Arguments": argv, "Started": stamp,
+    meta = {"Label": options.label, "Arguments": argv, "Started": stamp, "Baseline": baseline,
             "Mode": options.mode, "Warmup": options.warmup, "Measure": options.measure,
             "Repeats": options.repeats, "Preheat": options.preheat,
             "GitHead": (git("rev-parse", "HEAD") or "").strip() or None,
@@ -566,21 +600,12 @@ def run_session(options, argv):
     seconds = run_seconds(options.mode, options.warmup, options.measure)
     print(f"Manual full CPU load: {threads} threads, {options.mode} mode, {seconds} s/run "
           f"(warmup {options.warmup} s, window {options.measure} s), {options.repeats} repeats, "
-          f"ISAs {','.join(options.isas)}. Evidence: {session}", flush=True)
+          f"ISAs {','.join(options.isas)}. Baseline: {baseline}. Evidence: {session}", flush=True)
     print(f"Workload contract: compute/compiler-sim workers only; decompression, RAM and "
           f"I/O disabled. Planned load: {planned_load_seconds(options)} s.", flush=True)
     if options.mode == "short":
         print("Legacy steady-mode job mix: these readings are NOT GUI benchmark evidence.",
               flush=True)
-    if options.sweep:
-        from scripts.build_options import select_configs  # configuration only, no toolchains
-        configs = select_configs(comma_values(options.targets))
-        if any(not c[3] for c in configs):
-            raise RuntimeError("power sweep targets must be Windows builds")
-        candidates = list(itertools.product(configs, options.buffers, options.rounds))
-        random.Random(options.seed).shuffle(candidates)
-    else:
-        candidates = [(exe, None, None) for exe in options.exe]
     stop_file = Path(options.stop_file) if options.stop_file else None
     rows, stopped = [], False
     if options.preheat:
@@ -613,7 +638,8 @@ def run_session(options, argv):
                 print(f"Measuring {exe.parent.name}: {isa}, buffer={buf}, rounds={rounds}, "
                       f"repeat={repeat} (background load {load}%)", flush=True)
                 row = {"Label": options.label, "Build": exe.parent.name, "BufKiB": buf,
-                       "Rounds": rounds, "Repeat": repeat, "BackgroundLoadPct": load,
+                       "Rounds": rounds, "Repeat": repeat, "Baseline": baseline,
+                       "BackgroundLoadPct": load,
                        **measure(exe, options, isa, session, exe.parent.name, repeat)}
                 rows.append(row)
                 write_rows(csv_path, rows)  # each completed run survives later failures
@@ -628,8 +654,9 @@ def run_session(options, argv):
             break
     (session / "results.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
     if rows:
-        baseline = options.baseline or candidate_name(rows[0])
-        summary = format_summary(summarize_runs(rows, baseline, temp_limit=options.temp_limit))
+        if baseline not in {candidate_name(r) for r in rows}:
+            print(f"Baseline {baseline} has no completed run; deltas use the first row.", flush=True)
+        summary = format_summary(summarize_runs(rows, temp_limit=options.temp_limit))
         (session / "summary.md").write_text(summary + "\n", encoding="utf-8")
         print("\n" + summary)
     print(f"Results: {csv_path}\nEvidence: {session}")
