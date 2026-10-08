@@ -187,12 +187,13 @@ bool Unroll(Fn &f, const Loop &l) {
     }
     f.st.unrolledNodes += nbody;
   }
-  // Values used after the loop take the last iteration's copies; the header
-  // phis resolve to the last iteration's incoming values.
+  // Values used after the loop take the last iteration's copies, for phis of
+  // the exit (merge) blocks too: the loop is left only after its last
+  // iteration. The header phis resolve to the last iteration's incoming values.
   for (uint32_t k = 0; k < nbody; ++k) {
     for (uint32_t u = f.nodes[body[k]].firstUse; u != kNone;) {
       const uint32_t next = f.UseNext(u), user = UseUser(u);
-      if (f.nodes[user].block != l.header && !IsPhi(f.nodes[user])) SetOperand(f, user, u & 3, map[k]);
+      if (f.nodes[user].block != l.header) SetOperand(f, user, u & 3, map[k]);
       u = next;
     }
   }
@@ -239,3 +240,110 @@ bool RunLoopPasses(Fn &f, Arena &ar) {
   return progress;
 }
 } // namespace simv5
+
+// Full unrolling on a hand-built counted loop (review of 7917db4): values that
+// leave the loop must take the last iteration's copies, for ordinary users and
+// for phis of the exit block alike. Returns failed-check bits.
+//   b0: br c, b3, b2       b3 (preheader): br b1
+//   b1: iv = phi(0, inext); acc = phi(100, accn)
+//       inext = iv + 1; accn = acc + inext; br (inext <u 3), b1, b2
+//   b2: x = phi(7 from b0, accn from b1); y = accn + 0
+// Three iterations: accn = 101, 103, 106 -> x (from b1) and y must read 106.
+uint32_t RunRealisticCompilerSimV5LoopTest() {
+  using namespace simv5;
+  constexpr uint32_t kCap = 64, kBlocks = 4;
+  std::vector<uint8_t> mem((size_t)1 << 16);
+  uint8_t *base = mem.data() + ((64 - (reinterpret_cast<uintptr_t>(mem.data()) & 63)) & 63);
+  Arena ar{base, 0, mem.size() - 64};
+  Fn f;
+  f.ar = &ar;
+  f.cap = kCap;
+  f.nblocks = kBlocks;
+  f.nodes = ar.Take<Node>(kCap);
+  f.phiPred = ar.Take<uint32_t>(kCap);
+  f.stack = ar.Take<uint32_t>(kCap);
+  f.blocks = ar.Take<Block>(kBlocks);
+  f.preds = ar.Take<uint32_t>((size_t)kBlocks * kMaxSucc);
+  for (uint32_t b = 0; b < kBlocks; ++b) {
+    f.blocks[b] = Block{};
+    f.blocks[b].head = f.blocks[b].cond = kNone;
+    f.blocks[b].succ[0] = f.blocks[b].succ[1] = kNone;
+  }
+  std::vector<uint32_t> tail(kBlocks, kNone);
+  auto append = [&](uint32_t b, uint32_t i) {
+    Node &n = f.nodes[i];
+    n.block = b;
+    n.prev = tail[b];
+    n.next = kNone;
+    if (tail[b] == kNone) f.blocks[b].head = i;
+    else f.nodes[tail[b]].next = i;
+    tail[b] = i;
+  };
+  auto cst = [&](uint64_t v, uint32_t ty = kI32) {
+    const uint32_t i = NewNode(f, kConstFlag | kNotAnOp, ty, kNone, kNone, kNone);
+    f.nodes[i].val = v;
+    return i;
+  };
+  auto inst = [&](uint32_t b, uint32_t op, uint32_t ty, uint32_t a, uint32_t c) {
+    const uint32_t i = NewNode(f, op, ty, a, c, kNone);
+    append(b, i);
+    return i;
+  };
+  auto phi = [&](uint32_t b, uint32_t a, uint32_t aPred, uint32_t placeholder) {
+    const uint32_t i = NewNode(f, kPhiFlag | kNotAnOp, kI32, a, placeholder, kNone);
+    f.phiPred[i] = aPred;
+    append(b, i);
+    return i;
+  };
+  const uint32_t c0 = cst(0), c1 = cst(1), c3 = cst(3), c7 = cst(7), c100 = cst(100);
+  const uint32_t ctrue = cst(1, kI1);
+  f.blocks[0].cond = ctrue;
+  f.nodes[ctrue].op |= kCondFlag;
+  f.blocks[0].succ[0] = 3;
+  f.blocks[0].succ[1] = 2;
+  f.blocks[3].succ[0] = 1;
+  const uint32_t iv = phi(1, c0, 3, c0), acc = phi(1, c100, 3, c0);
+  const uint32_t inext = inst(1, kIAdd, kI32, iv, c1);
+  const uint32_t accn = inst(1, kIAdd, kI32, acc, inext);
+  const uint32_t cmp = inst(1, kICmpUlt, kI1, inext, c3);
+  SetOperand(f, iv, 1, inext);
+  SetOperand(f, acc, 1, accn);
+  f.blocks[1].cond = cmp;
+  f.nodes[cmp].op |= kCondFlag;
+  f.blocks[1].succ[0] = 1;
+  f.blocks[1].succ[1] = 2;
+  const uint32_t x = phi(2, c7, 0, accn);
+  const uint32_t y = inst(2, kIAdd, kI32, accn, c0);
+  RebuildPreds(f);
+  BuildDominators(f, ar);
+
+  uint32_t fail = 0;
+  if (ValidateIr(f) != 0) fail |= 1;
+  if (!RunLoopPasses(f, ar) || f.st.loopsUnrolled != 1) fail |= 2;
+  // The loop is straight-line code now: evaluate the values the exit reads.
+  auto eval = [&](uint32_t v) {
+    uint64_t r = 0;
+    std::vector<uint32_t> work{v};
+    while (!work.empty() && work.size() < 256) {
+      const Node &n = f.nodes[work.back()];
+      work.pop_back();
+      if (IsConst(n)) {
+        r += n.val;
+      } else if (IsInst(n) && OpOf(n) == kIAdd) {
+        work.push_back(n.a);
+        work.push_back(n.b);
+      } else {
+        return ~0ull; // phi or another op left over
+      }
+    }
+    return work.empty() ? r : ~0ull;
+  };
+  const Node &xn = f.nodes[x];
+  const uint32_t fromLoop = f.phiPred[x] == 1 ? xn.a : xn.b;
+  const uint32_t fromEntry = f.phiPred[x] == 1 ? xn.b : xn.a;
+  if (eval(fromLoop) != 106) fail |= 4;     // exit phi: last iteration's value
+  if (fromEntry != c7) fail |= 8;
+  if (eval(f.nodes[y].a) != 106) fail |= 16; // ordinary user outside the loop
+  if (ValidateIr(f) != 0) fail |= 32;
+  return fail;
+}

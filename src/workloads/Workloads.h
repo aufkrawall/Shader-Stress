@@ -186,6 +186,9 @@ uint32_t RunRealisticCompilerSimV5MachineTest();
 uint32_t RealisticV5CodeReplicas();
 // Register demand and machine scheduler on hand-built code: failed-check bits.
 uint32_t RunRealisticCompilerSimV5SchedTest();
+// Loop unrolling on a hand-built counted loop (values leaving the loop, exit
+// phis): failed-check bits.
+uint32_t RunRealisticCompilerSimV5LoopTest();
 // Thread heap, StringMap, DenseMap32 and SHA-1 on known inputs: failed-check bits.
 uint32_t RunRealisticCompilerSimV5AllocTest();
 // Worker loop: WaitForRole admitted this worker with `role` at assignment

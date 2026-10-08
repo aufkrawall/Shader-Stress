@@ -140,7 +140,9 @@ Intel P/E cores and ARM64, while every result stays verifiable. Principles:
   hashes and per-compile machine summaries (find history-dependent passes).
   **M3 (P068, 111.9 W):** `..Loop.cpp` (natural loops, LICM, full unroll of
   single-block counted loops, inside the opt loop; dominators rebuilt after
-  the loop), `..IselCf.cpp` (post-dominators, exec-mask lowering: saveexec /
+  the loop; values leaving the loop, exit-block phis included, take the last
+  iteration's copies: fixed 2026-10-08, `RunRealisticCompilerSimV5LoopTest`,
+  V5 golden unchanged), `..IselCf.cpp` (post-dominators, exec-mask lowering: saveexec /
   execz / flip blocks / restore, divergent loop masks; machine blocks carry
   linear `pred`/`succ` and logical `lpred` for phis), `..Mopt.cpp` (ssa_info
   labels, inline constants, modifiers, bool round trips, lshl_add / add3 /

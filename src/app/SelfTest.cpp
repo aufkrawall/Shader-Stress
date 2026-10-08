@@ -173,6 +173,11 @@ void TestRealisticV5() {
   const uint32_t sc = RunRealisticCompilerSimV5SchedTest();
   Check(sc == 0, "realistic V5 register demand + scheduler: SMEM/VMEM hoisting, dependencies, exec, occupancy limit",
         "failed checks " + std::to_string(sc));
+  // Regression (review of 7917db4): unrolling left exit-block phis on the
+  // first iteration's copy; structural IR validation cannot see that.
+  const uint32_t lt = RunRealisticCompilerSimV5LoopTest();
+  Check(lt == 0, "realistic V5 loop unroll: exit phis and users read the last iteration's values",
+        "failed checks " + std::to_string(lt));
   SimV5Diag d;
   RunRealisticCompilerSimV5Diag(11, 4000, &d);
   const double n = d.nodes ? (double)d.nodes : 1.0;
